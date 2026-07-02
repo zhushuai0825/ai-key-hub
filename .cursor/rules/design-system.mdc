@@ -1,0 +1,29 @@
+---
+description: Project design system contract for all UI work
+globs: "**/*.{html,css,js}"
+alwaysApply: false
+---
+
+# Design System
+
+Read `DESIGN.md` before any UI change. Color tokens live in `theme.css`.
+
+## Quick reference
+
+- Background: `--paper` / `--card`
+- Text: `--ink` / `--muted`
+- Accent: `--accent` (amber) — the only chromatic brand color
+- Radius: `--radius` (2px) — do not increase globally
+- Mono for keys, codes, timestamps
+
+## Files
+
+| File | Purpose |
+|------|---------|
+| `theme.css` | Tokens, nav, buttons, panels |
+| `styles.css` | Dashboard layout |
+| `key.css` | Key management page |
+| `DESIGN.md` | Full design contract |
+| `vendor/no-slop-ui/` | Anti-AI-slop rules |
+
+When unsure, match existing pages (`index.html`, `keys.html`) rather than generating new patterns.

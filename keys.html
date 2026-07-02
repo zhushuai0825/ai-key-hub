@@ -3,63 +3,57 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>AI 模型 Key 管理中枢</title>
+  <title>AIToken · Key 管理</title>
+  <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./key.css" />
 </head>
-<body>
-  <header class="page-header">
-    <div>
-      <a class="back-link" href="/">返回大屏</a>
-      <h1>AI 模型 Key 管理中枢</h1>
-      <p>集中管理厂商、余额、模型和可复制调用信息。</p>
-    </div>
-    <div class="header-meta">
-      <span id="clock">--</span>
-      <span class="status-dot">本地数据库</span>
-    </div>
-  </header>
-
-  <main class="page-shell">
-    <section class="card summary-card">
-      <div class="card-head">
-        <div>
-          <h2>资产总览</h2>
-          <p>Key 数量、余额、调用和异常状态汇总。</p>
-        </div>
+<body class="module">
+  <div class="module-shell">
+    <header class="module-bar">
+      <a class="module-back" href="/">
+        <img src="./assets/icons/aitoken.svg" alt="" width="18" height="18" />
+        <span>返回指挥台</span>
+      </a>
+      <div class="module-title">
+        <strong>AIToken</strong>
+        <span>API Key · 余额 · 模型目录</span>
       </div>
-      <div id="stats" class="stats-grid"></div>
-    </section>
+      <div class="module-actions">
+        <time id="clock" class="cockpit-clock">--</time>
+        <button class="btn" id="refreshBtn" type="button">刷新</button>
+      </div>
+    </header>
 
-    <section class="main-grid">
-      <section class="card key-card-wrap">
-        <div class="card-head split-head">
-          <div>
-            <h2>Key 管理</h2>
-            <p>按厂商筛选 Key，查看余额、预算和调用入口。</p>
-          </div>
-          <div class="toolbar">
-            <select id="providerFilter">
-              <option value="">全部厂商</option>
-            </select>
-            <button id="searchBtn" type="button">搜索</button>
-          </div>
-        </div>
-        <div id="keys" class="key-list"></div>
+    <div class="module-body">
+      <section id="stats" class="stats-row"></section>
+
+      <div class="toolbar">
+        <input id="searchInput" type="text" placeholder="搜索名称或厂商" />
+        <select id="providerFilter"><option value="">全部厂商</option></select>
+        <select id="statusFilter">
+          <option value="">全部状态</option>
+          <option value="active">启用</option>
+          <option value="warning">关注</option>
+          <option value="disabled">停用</option>
+        </select>
+      </div>
+
+      <section class="keys-layout">
+        <div id="keys" class="key-table-wrap"></div>
+
+        <aside class="keys-aside">
+          <section class="panel">
+            <div class="panel-head"><h2>厂商</h2></div>
+            <div id="providerCards" class="provider-list"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>提醒</h2></div>
+            <div id="alerts" class="feed"></div>
+          </section>
+        </aside>
       </section>
-
-      <aside class="side-column">
-        <section class="card alert-card">
-          <div class="card-head">
-            <div>
-              <h2>余额与风险提醒</h2>
-              <p>低余额、停用和关注状态会在这里提示。</p>
-            </div>
-          </div>
-          <div id="alerts" class="alert-list"></div>
-        </section>
-      </aside>
-    </section>
-  </main>
+    </div>
+  </div>
 
   <div id="toast" class="toast"></div>
   <script src="./key.js"></script>

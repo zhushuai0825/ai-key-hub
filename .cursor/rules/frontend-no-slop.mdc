@@ -1,0 +1,27 @@
+---
+description: Prevent generic AI UI slop when editing frontend files
+globs: "**/*.{html,css,js}"
+alwaysApply: false
+---
+
+# No Slop UI
+
+When building or editing frontend UI in this project, follow `vendor/no-slop-ui/SKILL.md` and `DESIGN.md`.
+
+## Priority
+
+1. Use existing CSS variables from `theme.css` — never replace with generic purple/blue palettes
+2. Reuse existing component classes — do not invent parallel design systems
+3. Read `vendor/no-slop-ui/references/banned-patterns.md` before writing UI code
+
+## Hard bans
+
+- Glassmorphism, gradient decoration, AI purple aesthetic
+- Inter font, eyebrow labels, dashboard hero sections
+- Floating metric-card grids (use flat `.kpi-row` instead)
+- Pill buttons, dramatic shadows, hover transforms
+- Marketing copy in internal ops pages
+
+## Standard
+
+Think Linear / Stripe ops console: functional, bordered, restrained. Radius stays at 2px. Borders over shadows.
