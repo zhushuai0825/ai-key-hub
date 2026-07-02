@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 项目运行总览</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="page-header">
+    <div>
+      <p class="eyebrow">Operations Dashboard</p>
+      <h1>AI 项目运行总览</h1>
+      <p>管理模型 Key、调用量、费用、任务和知识库状态。</p>
+    </div>
+    <div class="header-meta">
+      <span id="clock">--</span>
+      <a href="/keys.html">模型 Key 管理</a>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="kpi-grid">
+      <article class="kpi-card"><span>AI 项目总数</span><strong data-count="128">0</strong><em>个</em></article>
+      <article class="kpi-card"><span>今日 API 调用</span><strong data-count="428596">0</strong><em>次</em></article>
+      <article class="kpi-card"><span>今日费用</span><strong data-count="8736">0</strong><em>元</em></article>
+      <article class="kpi-card"><span>费用预警</span><strong data-count="3">0</strong><em>项</em></article>
+    </section>
+
+    <section class="content-grid">
+      <section class="left-stack">
+        <section class="card feature-card">
+          <div class="card-head">
+            <div>
+              <h2>核心功能</h2>
+              <p>当前平台已接入和规划中的能力模块。</p>
+            </div>
+          </div>
+          <div class="feature-grid">
+            <a class="feature-item primary" href="/keys.html"><span>01</span><strong>模型 Key 管理</strong><em>余额、复制、费用预警</em></a>
+            <div class="feature-item"><span>02</span><strong>模型网关</strong><em>路由、限流、降级</em></div>
+            <div class="feature-item"><span>03</span><strong>Agent 任务</strong><em>任务队列和执行追踪</em></div>
+            <div class="feature-item"><span>04</span><strong>向量知识库</strong><em>文档切分和检索</em></div>
+          </div>
+        </section>
+
+        <section class="card chart-card">
+          <div class="card-head split-head">
+            <div>
+              <h2>近 7 日 API 调用</h2>
+              <p>按模型厂商统计调用趋势。</p>
+            </div>
+            <span class="plain-tag">calls / day</span>
+          </div>
+          <div id="callTrend" class="chart"></div>
+        </section>
+
+        <section class="card table-card">
+          <div class="card-head">
+            <div>
+              <h2>功能模块状态</h2>
+              <p>点击可进入已开放模块。</p>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead><tr><th>模块</th><th>类型</th><th>状态</th><th>入口</th></tr></thead>
+              <tbody id="moduleTable"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="center-stack">
+        <section class="card overview-card">
+          <div class="card-head">
+            <div>
+              <h2>资源结构</h2>
+              <p>平台资产占比。</p>
+            </div>
+          </div>
+          <div id="resourceChart" class="chart"></div>
+          <ul id="resourceLegend" class="legend-list"></ul>
+        </section>
+
+        <section class="card spend-card">
+          <div class="card-head split-head">
+            <div>
+              <h2>费用走势</h2>
+              <p>模型调用成本和预算消耗。</p>
+            </div>
+            <span class="plain-tag">CNY</span>
+          </div>
+          <div id="spendChart" class="chart"></div>
+        </section>
+      </section>
+
+      <aside class="right-stack">
+        <section class="card alert-card">
+          <div class="card-head">
+            <div>
+              <h2>API 调用与费用预警</h2>
+              <p>重点关注调用异常、余额不足和预算超限。</p>
+            </div>
+          </div>
+          <div id="alerts" class="alert-list"></div>
+        </section>
+
+        <section class="card task-card">
+          <div class="card-head">
+            <div>
+              <h2>今日任务</h2>
+              <p>运行中任务完成率。</p>
+            </div>
+          </div>
+          <div id="tasks" class="task-list"></div>
+        </section>
+      </aside>
+    </section>
+  </main>
+
+  <script src="./node_modules/echarts/dist/echarts.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
