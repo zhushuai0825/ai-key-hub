@@ -143,9 +143,9 @@ async function stats() {
   const [providers, keys, usage] = await Promise.all([
     pool.query('SELECT COUNT(*)::int count, COALESCE(SUM(balance),0)::float total_balance FROM providers'),
     pool.query("SELECT COUNT(*)::int count, COUNT(*) FILTER (WHERE status != 'active')::int abnormal FROM api_keys"),
-    pool.query("SELECT COUNT(*)::int calls, COALESCE(SUM(cost),0)::float cost, COALESCE(AVG(latency_ms),0)::int avg_latency FROM usage_logs WHERE created_at::date = now()::date"),
+    pool.query('SELECT COUNT(*)::int calls, COALESCE(SUM("cost"),0)::float today_cost, COALESCE(AVG(latency_ms),0)::int avg_latency FROM usage_logs WHERE created_at::date = now()::date'),
   ]);
-  return { ...providers.rows[0], key_count: keys.rows[0].count, abnormal_keys: keys.rows[0].abnormal, today_calls: usage.rows[0].calls, today_cost: usage.rows[0].cost, avg_latency: usage.rows[0].avg_latency };
+  return { ...providers.rows[0], key_count: keys.rows[0].count, abnormal_keys: keys.rows[0].abnormal, today_calls: usage.rows[0].calls, today_cost: usage.rows[0].today_cost, avg_latency: usage.rows[0].avg_latency };
 }
 
 async function handleApi(req, res, url) {
@@ -169,7 +169,7 @@ async function handleApi(req, res, url) {
     const result = await pool.query(`
       SELECT date_trunc('hour', created_at) bucket,
              COUNT(*)::int calls,
-             COALESCE(SUM(cost),0)::float cost,
+             COALESCE(SUM("cost"),0)::float usage_cost,
              COALESCE(AVG(latency_ms),0)::int avg_latency
       FROM usage_logs
       WHERE created_at >= now() - interval '24 hours'
