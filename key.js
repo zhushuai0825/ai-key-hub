@@ -30,6 +30,20 @@ function statusClass(s) {
   return { active: 'ok', warning: 'warn', disabled: 'bad' }[s] || '';
 }
 
+function actionText(action) {
+  return { alert: '仅提醒', disable_copy: '禁用复制', disable_key: '标记停用' }[action] || '仅提醒';
+}
+
+function budgetState(k) {
+  const used = Number(k.used_amount || 0);
+  const monthly = Number(k.monthly_quota || 0);
+  if (!monthly) return { text: '未设置', cls: '' };
+  const percent = Math.round((used / monthly) * 100);
+  if (percent >= 100) return { text: `${percent}%`, cls: 'bad' };
+  if (percent >= 80) return { text: `${percent}%`, cls: 'warn' };
+  return { text: `${percent}%`, cls: 'ok' };
+}
+
 function updateClock() {
   $('#clock').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
 }
@@ -144,6 +158,7 @@ function renderKeys() {
           const thr = Number(k.low_balance_threshold || 0);
           const balCls = bal < thr ? 'bad' : 'ok';
           const isRealBalance = balanceSync?.results?.some((item) => item.ok && Number(item.provider_id) === Number(k.provider_id));
+          const budget = budgetState(k);
           return `
             <tr>
               <td>
@@ -154,17 +169,19 @@ function renderKeys() {
               <td><code>${k.api_key}</code></td>
               <td><span class="num ${balCls}">${money(bal)}</span><div class="sub">${isRealBalance ? '真实余额' : '未同步'}</div></td>
               <td>
-                <span class="num">${money(k.monthly_quota)}</span>
-                <div class="sub">已用 ${money(k.used_amount)}</div>
+                <span class="num ${budget.cls}">${budget.text}</span>
+                <div class="sub">日 ${money(k.daily_quota)} · 月 ${money(k.monthly_quota)}</div>
+                <div class="sub">已用 ${money(k.used_amount)} · ${actionText(k.budget_action)}</div>
               </td>
               <td><span class="badge ${statusClass(k.status)}">${statusText(k.status)}</span></td>
               <td>
                 <div class="row-btns">
-                  <button type="button" data-copy="key:${k.id}">Key</button>
-                  <button type="button" data-copy="base_url:${k.id}">Base</button>
-                  <button type="button" data-copy="curl:${k.id}">curl</button>
-                  <button type="button" data-copy="env:${k.id}">env</button>
-                  <button type="button" class="danger" data-delete="${k.id}">删</button>
+                  <button type="button" class="copy" data-copy="key:${k.id}">复制 Key</button>
+                  <button type="button" class="copy" data-copy="base_url:${k.id}">复制地址</button>
+                  <button type="button" class="copy" data-copy="curl:${k.id}">复制 curl</button>
+                  <button type="button" class="copy" data-copy="env:${k.id}">复制环境变量</button>
+                  <button type="button" class="budget" data-budget="${k.id}">设置预算</button>
+                  <button type="button" class="danger" data-delete="${k.id}">删除</button>
                 </div>
               </td>
             </tr>`;
@@ -178,6 +195,7 @@ function renderKeys() {
       copyKey(id, mode);
     };
   });
+  document.querySelectorAll('[data-budget]').forEach((b) => { b.onclick = () => openBudgetModal(Number(b.dataset.budget)); });
   document.querySelectorAll('[data-delete]').forEach((b) => { b.onclick = () => deleteKey(Number(b.dataset.delete)); });
 }
 
@@ -210,9 +228,50 @@ async function deleteKey(id) {
   await loadAll();
 }
 
+function openBudgetModal(id) {
+  const key = keys.find((k) => Number(k.id) === Number(id));
+  if (!key) return;
+  const modal = $('#budgetModal');
+  const form = $('#budgetForm');
+  $('#budgetKeyName').textContent = `${key.provider_name} / ${key.name}`;
+  form.id.value = key.id;
+  form.daily_quota.value = Number(key.daily_quota || 0);
+  form.monthly_quota.value = Number(key.monthly_quota || 0);
+  form.used_amount.value = Number(key.used_amount || 0);
+  form.budget_action.value = key.budget_action || 'alert';
+  form.remark.value = key.remark || '';
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+}
+
+function closeBudgetModal() {
+  const modal = $('#budgetModal');
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+async function saveBudget(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const payload = Object.fromEntries(new FormData(form).entries());
+  const id = payload.id;
+  delete payload.id;
+  payload.daily_quota = Number(payload.daily_quota || 0);
+  payload.monthly_quota = Number(payload.monthly_quota || 0);
+  payload.used_amount = Number(payload.used_amount || 0);
+  await api(`/api/keys/${id}/budget`, { method: 'PUT', body: JSON.stringify(payload) });
+  closeBudgetModal();
+  toast('预算已保存');
+  await loadAll();
+}
+
 $('#providerFilter').onchange = () => { selectedProvider = $('#providerFilter').value; renderProviderCards(); renderKeys(); };
 $('#statusFilter').onchange = () => { selectedStatus = $('#statusFilter').value; renderKeys(); };
 $('#searchInput').oninput = (e) => { searchQuery = e.target.value.trim(); renderKeys(); };
 $('#refreshBtn').onclick = () => loadAll().then(() => toast('已刷新')).catch((e) => toast(e.message));
+$('#budgetForm').onsubmit = saveBudget;
+$('#budgetClose').onclick = closeBudgetModal;
+$('#budgetCancel').onclick = closeBudgetModal;
+$('#budgetModal').onclick = (event) => { if (event.target.id === 'budgetModal') closeBudgetModal(); };
 
 loadAll().catch((e) => toast(e.message));

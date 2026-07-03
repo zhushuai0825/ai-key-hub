@@ -55,6 +55,36 @@
     </div>
   </div>
 
+  <div id="budgetModal" class="modal" aria-hidden="true">
+    <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="budgetTitle">
+      <div class="modal-head">
+        <div>
+          <h2 id="budgetTitle">设置预算</h2>
+          <p id="budgetKeyName">--</p>
+        </div>
+        <button id="budgetClose" class="modal-close" type="button">×</button>
+      </div>
+      <form id="budgetForm" class="budget-form">
+        <input type="hidden" name="id" />
+        <label>日预算<input name="daily_quota" type="number" min="0" step="0.01" placeholder="0 表示不限制" /></label>
+        <label>月预算<input name="monthly_quota" type="number" min="0" step="0.01" placeholder="0 表示不限制" /></label>
+        <label>已用金额<input name="used_amount" type="number" min="0" step="0.01" placeholder="真实调用统计接入前可手动维护" /></label>
+        <label>超预算动作
+          <select name="budget_action">
+            <option value="alert">仅提醒</option>
+            <option value="disable_copy">禁用复制</option>
+            <option value="disable_key">标记停用</option>
+          </select>
+        </label>
+        <label class="wide">备注<input name="remark" placeholder="预算用途、项目归属、负责人" /></label>
+        <div class="modal-actions">
+          <button class="btn" type="button" id="budgetCancel">取消</button>
+          <button class="btn primary" type="submit">保存预算</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="toast" class="toast"></div>
   <script src="./key.js"></script>
 </body>

@@ -17,8 +17,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
   name TEXT NOT NULL,
   api_key TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'active',
+  daily_quota NUMERIC(12, 2) DEFAULT 0,
   monthly_quota NUMERIC(12, 2) DEFAULT 0,
   used_amount NUMERIC(12, 2) DEFAULT 0,
+  budget_action TEXT NOT NULL DEFAULT 'alert',
   remark TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()

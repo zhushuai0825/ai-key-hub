@@ -32,6 +32,8 @@ function maskKey(key = '') {
 async function initDb() {
   const sql = await readFile(path.join(__dirname, 'db/schema.sql'), 'utf8');
   await pool.query(sql);
+  await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS daily_quota NUMERIC(12, 2) DEFAULT 0');
+  await pool.query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS budget_action TEXT NOT NULL DEFAULT 'alert'");
   await pool.query("DELETE FROM api_keys WHERE api_key LIKE 'sk-demo-%' OR remark ILIKE '%演示%'");
 }
 
@@ -203,6 +205,22 @@ async function handleApi(req, res, url) {
       `UPDATE api_keys SET provider_id=$1,name=$2,api_key=$3,status=$4,monthly_quota=$5,used_amount=$6,remark=$7,updated_at=now()
        WHERE id=$8 RETURNING *`,
       [data.provider_id, data.name, data.api_key, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '', id]
+    );
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? publicKeyRow(result.rows[0]) : { error: 'not found' });
+  }
+  const budgetMatch = url.pathname.match(/^\/api\/keys\/(\d+)\/budget$/);
+  if (budgetMatch && req.method === 'PUT') {
+    const id = Number(budgetMatch[1]);
+    const data = await jsonBody(req);
+    const dailyQuota = Number(data.daily_quota || 0);
+    const monthlyQuota = Number(data.monthly_quota || 0);
+    const usedAmount = Number(data.used_amount || 0);
+    const budgetAction = ['alert', 'disable_copy', 'disable_key'].includes(data.budget_action) ? data.budget_action : 'alert';
+    const result = await pool.query(
+      `UPDATE api_keys
+       SET daily_quota=$1, monthly_quota=$2, used_amount=$3, budget_action=$4, remark=$5, updated_at=now()
+       WHERE id=$6 RETURNING *`,
+      [dailyQuota, monthlyQuota, usedAmount, budgetAction, data.remark || '', id]
     );
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? publicKeyRow(result.rows[0]) : { error: 'not found' });
   }
