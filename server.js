@@ -25,6 +25,10 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads', 'knowledge');
 const WECHAT_WORK_TOKEN = process.env.WECHAT_WORK_TOKEN || '';
 const WECHAT_WORK_ENCODING_AES_KEY = process.env.WECHAT_WORK_ENCODING_AES_KEY || '';
 const WECHAT_WORK_CORP_ID = process.env.WECHAT_WORK_CORP_ID || '';
+const WECHAT_DEFAULT_KB_ID = process.env.WECHAT_DEFAULT_KB_ID ? Number(process.env.WECHAT_DEFAULT_KB_ID) : null;
+const ASSISTANT_CACHE_TTL_WECHAT = Number(process.env.ASSISTANT_CACHE_TTL_WECHAT || 1800);
+const ASSISTANT_CACHE_TTL_WEB = Number(process.env.ASSISTANT_CACHE_TTL_WEB || 86400);
+const ASSISTANT_CACHE_TTL_PINNED = Number(process.env.ASSISTANT_CACHE_TTL_PINNED || 60 * 60 * 24 * 30);
 const pool = new Pool({ connectionString: DATABASE_URL });
 const chroma = new ChromaClient({ path: CHROMA_URL });
 
@@ -60,6 +64,16 @@ async function initDb() {
     INSERT INTO knowledge_categories (code, name) VALUES
       ('general', '通用'), ('fitness', '健身'), ('novel', '小说'), ('tech', '技术')
     ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name`);
+  await pool.query('ALTER TABLE assistant_answer_cache ADD COLUMN IF NOT EXISTS topic TEXT');
+  await pool.query(`
+    DELETE FROM assistant_answer_cache
+    WHERE topic IS NULL
+      OR topic = 'general'
+      OR question ~* '^(你好|您好|哈喽|在吗|在不在|谢谢|感谢|拜拜|再见|hi|hello|ok)[!?？。…~\\s]*$'`);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_cache_topic ON assistant_answer_cache(topic)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_cache_expires ON assistant_answer_cache(expires_at) WHERE pinned=false');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_finance_entries_user_time ON finance_entries(source_user, occurred_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_time ON fitness_entries(recorded_at DESC)');
 }
 
 function categoryCode(name = '') {
@@ -137,6 +151,395 @@ async function deepseekFitnessAdvice(entry) {
     advice: String(parsed.advice || '').slice(0, 1500) || '保持记录，观察趋势。',
     risk_level: ['normal', 'warn', 'bad'].includes(parsed.risk_level) ? parsed.risk_level : 'normal',
   };
+}
+
+function looksLikeQuery(text) {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (/[?？]$/.test(t)) return true;
+  if (/^(你|请问|帮我|能不能|可以|麻烦)/.test(t)) return true;
+  if (/多少|怎么|为什么|为何|咋|啥|哪|统计|汇总|查询|查一下|看看|分析|建议|趋势|对比|最近|上次|本月|这个月|上周|买了什么|花了多少|收入多少|体重多少|跑了多久|睡了多久/.test(t)) return true;
+  if (/吗$|呢$/.test(t) && !/(?:\d{2,3}(?:\.\d{1,2})?)\s*(?:kg|公斤|斤)|\d+(?:\.\d{1,2})?\s*(?:元|块)|\d{1,3}\s*(?:分钟|min)|睡了?\D*\d/.test(t)) return true;
+  return false;
+}
+
+function truncateWechatReply(text, maxLen = 600) {
+  const s = String(text || '').trim();
+  if (s.length <= maxLen) return s;
+  return `${s.slice(0, maxLen - 3)}...`;
+}
+
+function formatFitnessContextRow(row) {
+  const day = row.recorded_at ? new Date(row.recorded_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '';
+  if (row.entry_type === 'weight') return `${day} 体重 ${row.weight_kg}kg`;
+  if (row.entry_type === 'sleep') return `${day} 睡眠 ${row.sleep_hours}小时 (${row.sleep_quality || '一般'})`;
+  if (row.entry_type === 'workout') return `${day} ${row.workout_type || '运动'} ${row.duration_min || 0}分钟，约消耗${row.burned_calories || 0}千卡`;
+  if (row.entry_type === 'meal') return `${day} ${row.meal_type || '饮食'}：${row.food_text || row.note || ''}，约${row.calories || 0}千卡`;
+  return `${day} ${row.note || row.entry_type}`;
+}
+
+function formatFinanceContextRow(row) {
+  const day = row.occurred_at ? new Date(row.occurred_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) : '';
+  const label = row.direction === 'income' ? '收入' : '支出';
+  return `${day} ${label} ¥${Number(row.amount).toFixed(2)} ${row.title}（${row.category}）`;
+}
+
+async function buildWechatUserContext(fromUser, { light = false } = {}) {
+  const monthQuery = pool.query(`
+    SELECT
+      COALESCE(SUM(amount) FILTER (WHERE direction='expense'), 0)::float expense,
+      COALESCE(SUM(amount) FILTER (WHERE direction='income'), 0)::float income
+    FROM finance_entries
+    WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
+      AND ($1::text IS NULL OR source_user=$1 OR source_user IS NULL)`, [fromUser || null]);
+  const weightQuery = pool.query(`
+    SELECT weight_kg, recorded_at
+    FROM fitness_entries
+    WHERE entry_type='weight' AND weight_kg IS NOT NULL
+    ORDER BY recorded_at DESC
+    LIMIT 1`);
+  if (light) {
+    const [monthStats, latestWeight] = await Promise.all([monthQuery, weightQuery]);
+    const expense = Number(monthStats.rows[0]?.expense || 0);
+    const income = Number(monthStats.rows[0]?.income || 0);
+    const lines = [`本月收支：收入 ¥${income.toFixed(2)}，支出 ¥${expense.toFixed(2)}，结余 ¥${(income - expense).toFixed(2)}`];
+    if (latestWeight.rows[0]) {
+      const w = latestWeight.rows[0];
+      lines.unshift(`最新体重：${w.weight_kg}kg（${new Date(w.recorded_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}）`);
+    }
+    return lines.join('\n');
+  }
+  const [fitness, finance, monthStats, latestWeight] = await Promise.all([
+    pool.query(`
+      SELECT entry_type, recorded_at, weight_kg, meal_type, food_text, calories, workout_type,
+             duration_min, burned_calories, sleep_hours, sleep_quality, note
+      FROM fitness_entries
+      ORDER BY recorded_at DESC, id DESC
+      LIMIT 25`),
+    pool.query(`
+      SELECT direction, amount, category, title, occurred_at
+      FROM finance_entries
+      WHERE ($1::text IS NULL OR source_user=$1 OR source_user IS NULL)
+      ORDER BY occurred_at DESC, id DESC
+      LIMIT 25`, [fromUser || null]),
+    monthQuery,
+    weightQuery,
+  ]);
+  const lines = [];
+  if (latestWeight.rows[0]) {
+    const w = latestWeight.rows[0];
+    lines.push(`最新体重：${w.weight_kg}kg（${new Date(w.recorded_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}）`);
+  }
+  if (fitness.rows.length) {
+    lines.push('近期健康记录：');
+    fitness.rows.slice().reverse().forEach((row) => lines.push(`- ${formatFitnessContextRow(row)}`));
+  } else {
+    lines.push('近期健康记录：暂无');
+  }
+  const expense = Number(monthStats.rows[0]?.expense || 0);
+  const income = Number(monthStats.rows[0]?.income || 0);
+  lines.push(`本月收支：收入 ¥${income.toFixed(2)}，支出 ¥${expense.toFixed(2)}，结余 ¥${(income - expense).toFixed(2)}`);
+  if (finance.rows.length) {
+    lines.push('近期账本：');
+    finance.rows.slice().reverse().forEach((row) => lines.push(`- ${formatFinanceContextRow(row)}`));
+  } else {
+    lines.push('近期账本：暂无');
+  }
+  return lines.join('\n');
+}
+
+async function deepseekWechatAssistant(question, userContext, knowledgeSources) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) {
+    return userContext
+      ? `暂未配置 AI。根据你的记录：\n${truncateWechatReply(userContext, 500)}`
+      : '暂未配置 DeepSeek，无法进行智能回复。';
+  }
+  const kbContext = knowledgeSources.length
+    ? knowledgeSources.map((item, index) => `【资料${index + 1}】${item.content}`).join('\n\n')
+    : '（未检索到相关知识库资料）';
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        {
+          role: 'system',
+          content: '你是企业微信个人助手。根据用户健康/账本记录和知识库资料回答问题，也能正常闲聊。只能基于提供的数据回答，不要编造数字。回答简洁友好，适合手机阅读，控制在 300 字以内。若资料不足请直接说明。',
+        },
+        {
+          role: 'user',
+          content: `用户问题：${question}\n\n【用户个人记录】\n${userContext || '暂无'}\n\n【知识库资料】\n${kbContext}`,
+        },
+      ],
+      temperature: 0.4,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek chat failed: ${response.status}`);
+  return body?.choices?.[0]?.message?.content || '暂时没有想好怎么回答，你可以换个问法试试。';
+}
+
+function classifyUsefulTopic(question, sources = []) {
+  const t = String(question || '').trim();
+  if (!t || t.length < 3) return null;
+  if (/^(你好|您好|哈喽|在吗|在不在|谢谢|感谢|拜拜|再见|hi|hello|ok)[!?？。…~\s]*$/i.test(t)) return null;
+  if (sources.length > 0) return 'knowledge';
+  if (/体重|重量|称重|跑步|运动|健身|训练|游泳|骑行|hiit|睡眠|睡觉|睡了|饮食|吃了|餐|卡路里|消耗|bmi|跑了多久|睡了多久|体重多少|最近.*体重|体重.*趋势/.test(t)) return 'fitness';
+  if (/花|买|支出|收入|工资|赚|账|消费|结余|花了|买了|到账|报销|收入多少|花了多少|买了什么|本月|这个月|最近.*花/.test(t)) return 'finance';
+  return null;
+}
+
+function topicLabel(topic) {
+  return { fitness: '健康', finance: '账本', knowledge: '知识库' }[topic] || '其他';
+}
+
+let knowledgeChunkCountCache = { kbId: null, count: 0, at: 0 };
+
+async function getKnowledgeChunkCount(kbId) {
+  const key = kbId ?? null;
+  if (Date.now() - knowledgeChunkCountCache.at < 60000 && knowledgeChunkCountCache.kbId === key) {
+    return knowledgeChunkCountCache.count;
+  }
+  const result = await pool.query(
+    'SELECT COUNT(*)::int count FROM knowledge_chunks WHERE ($1::int IS NULL OR kb_id=$1)',
+    [key]
+  );
+  knowledgeChunkCountCache = { kbId: key, count: result.rows[0].count, at: Date.now() };
+  return knowledgeChunkCountCache.count;
+}
+
+function resetKnowledgeChunkCountCache() {
+  knowledgeChunkCountCache.at = 0;
+}
+
+async function shouldSearchKnowledge(question, previewTopic = null) {
+  const count = await getKnowledgeChunkCount(WECHAT_DEFAULT_KB_ID);
+  if (!count) return false;
+  const topic = previewTopic ?? classifyUsefulTopic(question, []);
+  if (topic === 'fitness' || topic === 'finance') return false;
+  if (/知识库|资料|文档|政策|手册|规定/.test(question)) return true;
+  return topic === 'knowledge' || topic === null;
+}
+
+async function handleWechatChat(content, fromUser) {
+  const previewTopic = classifyUsefulTopic(content, []);
+  if (previewTopic) {
+    const cached = await getAssistantCache({
+      question: content,
+      channel: 'wechat',
+      kbId: WECHAT_DEFAULT_KB_ID,
+      fromUser,
+    });
+    if (cached) {
+      touchAssistantCache(cached.id).catch(() => {});
+      return { answer: cached.answer, from_cache: true, cache_id: cached.id };
+    }
+  }
+  const lightContext = !previewTopic && !looksLikeQuery(content);
+  const searchKb = await shouldSearchKnowledge(content, previewTopic);
+  const [userContext, knowledgeSources] = await Promise.all([
+    buildWechatUserContext(fromUser, { light: lightContext }),
+    searchKb ? searchKnowledge(WECHAT_DEFAULT_KB_ID, content, 5) : Promise.resolve([]),
+  ]);
+  const topic = classifyUsefulTopic(content, knowledgeSources);
+  const answer = await deepseekWechatAssistant(content, userContext, knowledgeSources);
+  const reply = truncateWechatReply(answer);
+  if (topic) {
+    await saveAssistantCache({
+      question: content,
+      answer: reply,
+      channel: 'wechat',
+      kbId: WECHAT_DEFAULT_KB_ID,
+      fromUser,
+      topic,
+      sources: knowledgeSources.map((item) => ({
+        document_title: item.document_title,
+        filename: item.filename,
+        chunk_index: item.chunk_index,
+        content: String(item.content || '').slice(0, 240),
+      })),
+      contextSnapshot: crypto.createHash('sha256').update(userContext).digest('hex').slice(0, 16),
+    });
+  }
+  return { answer: reply, from_cache: false };
+}
+
+function normalizeQuestion(text) {
+  return String(text || '').trim().replace(/\s+/g, ' ').toLowerCase();
+}
+
+function assistantCacheKey({ question, channel, kbId, fromUser }) {
+  const raw = [normalizeQuestion(question), channel || 'wechat', String(kbId ?? ''), String(fromUser ?? '')].join('|');
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
+
+async function getAssistantCache({ question, channel, kbId, fromUser }) {
+  const cacheKey = assistantCacheKey({ question, channel, kbId, fromUser });
+  const result = await pool.query(`
+    SELECT * FROM assistant_answer_cache
+    WHERE cache_key=$1 AND (pinned=true OR expires_at IS NULL OR expires_at > now())`, [cacheKey]);
+  return result.rows[0] || null;
+}
+
+async function touchAssistantCache(id) {
+  await pool.query(`
+    UPDATE assistant_answer_cache
+    SET hit_count=hit_count+1, last_hit_at=now(), updated_at=now()
+    WHERE id=$1`, [id]);
+}
+
+async function saveAssistantCache({
+  question,
+  answer,
+  channel,
+  kbId,
+  fromUser,
+  sources,
+  contextSnapshot,
+  pinned = false,
+  topic = null,
+}) {
+  const cacheKey = assistantCacheKey({ question, channel, kbId, fromUser });
+  const ttl = pinned
+    ? ASSISTANT_CACHE_TTL_PINNED
+    : (channel === 'wechat' ? ASSISTANT_CACHE_TTL_WECHAT : ASSISTANT_CACHE_TTL_WEB);
+  const expiresAt = ttl > 0 ? new Date(Date.now() + ttl * 1000) : null;
+  const result = await pool.query(`
+    INSERT INTO assistant_answer_cache (
+      cache_key, channel, kb_id, from_user, question, answer, sources, context_snapshot, pinned, expires_at, topic
+    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+    ON CONFLICT (cache_key) DO UPDATE SET
+      answer=EXCLUDED.answer,
+      sources=EXCLUDED.sources,
+      context_snapshot=EXCLUDED.context_snapshot,
+      pinned=EXCLUDED.pinned,
+      expires_at=EXCLUDED.expires_at,
+      topic=EXCLUDED.topic,
+      updated_at=now()
+    RETURNING *`,
+    [
+      cacheKey,
+      channel,
+      kbId || null,
+      fromUser || null,
+      question,
+      answer,
+      JSON.stringify(sources || []),
+      contextSnapshot || '',
+      pinned,
+      expiresAt,
+      topic,
+    ]
+  );
+  return result.rows[0];
+}
+
+async function assistantMemoryBundle() {
+  const [fitness, finance, monthStats, usefulCache] = await Promise.all([
+    pool.query(`
+      SELECT e.*, r.summary ai_summary
+      FROM fitness_entries e
+      LEFT JOIN LATERAL (
+        SELECT summary FROM fitness_ai_reports r WHERE r.entry_id=e.id ORDER BY r.created_at DESC LIMIT 1
+      ) r ON true
+      ORDER BY e.recorded_at DESC, e.id DESC
+      LIMIT 40`),
+    pool.query('SELECT * FROM finance_entries ORDER BY occurred_at DESC, id DESC LIMIT 40'),
+    pool.query(`
+      SELECT
+        COALESCE(SUM(amount) FILTER (WHERE direction='expense'), 0)::float expense,
+        COALESCE(SUM(amount) FILTER (WHERE direction='income'), 0)::float income
+      FROM finance_entries
+      WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`),
+    pool.query(`
+      SELECT c.*, b.name kb_name
+      FROM assistant_answer_cache c
+      LEFT JOIN knowledge_bases b ON b.id=c.kb_id
+      WHERE c.topic IN ('fitness', 'finance', 'knowledge')
+      ORDER BY c.pinned DESC, c.hit_count DESC, c.updated_at DESC
+      LIMIT 50`),
+  ]);
+  const expense = Number(monthStats.rows[0]?.expense || 0);
+  const income = Number(monthStats.rows[0]?.income || 0);
+  return {
+    fitness: fitness.rows,
+    finance: finance.rows,
+    useful_cache: usefulCache.rows,
+    month_stats: { expense, income, balance: income - expense },
+    counts: {
+      fitness: fitness.rowCount,
+      finance: finance.rowCount,
+      useful_cache: usefulCache.rowCount,
+    },
+  };
+}
+
+async function assistantCacheSummary() {
+  const result = await pool.query(`
+    SELECT
+      COUNT(*) FILTER (WHERE topic IN ('fitness', 'finance', 'knowledge'))::int total,
+      COUNT(*) FILTER (WHERE pinned=true)::int pinned,
+      COUNT(*) FILTER (WHERE topic='fitness')::int fitness,
+      COUNT(*) FILTER (WHERE topic='finance')::int finance,
+      COUNT(*) FILTER (WHERE topic='knowledge')::int knowledge,
+      COALESCE(SUM(hit_count) FILTER (WHERE topic IN ('fitness', 'finance', 'knowledge')),0)::int total_hits,
+      COUNT(*) FILTER (WHERE expires_at IS NOT NULL AND expires_at <= now() AND pinned=false)::int expired
+    FROM assistant_answer_cache`);
+  const records = await pool.query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM fitness_entries) fitness_records,
+      (SELECT COUNT(*)::int FROM finance_entries) finance_records`);
+  return { ...result.rows[0], ...records.rows[0] };
+}
+
+async function dashboardMemoryBundle() {
+  const [cacheHits, lifestyle, finance, monthStats] = await Promise.all([
+    pool.query(`
+      SELECT id, question, answer, topic, hit_count, last_hit_at, channel, pinned
+      FROM assistant_answer_cache
+      WHERE topic IN ('fitness', 'finance', 'knowledge') AND hit_count > 0
+      ORDER BY last_hit_at DESC NULLS LAST, hit_count DESC, updated_at DESC
+      LIMIT 15`),
+    pool.query(`
+      SELECT entry_type, recorded_at, weight_kg, meal_type, food_text, calories, sleep_hours, sleep_quality, note
+      FROM fitness_entries
+      WHERE entry_type IN ('weight', 'meal', 'sleep')
+      ORDER BY recorded_at DESC, id DESC
+      LIMIT 15`),
+    pool.query(`
+      SELECT direction, amount, category, title, occurred_at, note
+      FROM finance_entries
+      ORDER BY occurred_at DESC, id DESC
+      LIMIT 15`),
+    pool.query(`
+      SELECT
+        COALESCE(SUM(amount) FILTER (WHERE direction='expense'), 0)::float expense,
+        COALESCE(SUM(amount) FILTER (WHERE direction='income'), 0)::float income
+      FROM finance_entries
+      WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`),
+  ]);
+  const expense = Number(monthStats.rows[0]?.expense || 0);
+  const income = Number(monthStats.rows[0]?.income || 0);
+  return {
+    cache_hits: cacheHits.rows,
+    lifestyle: lifestyle.rows,
+    finance: finance.rows,
+    month_stats: { expense, income, balance: income - expense },
+    counts: {
+      cache_hits: cacheHits.rowCount,
+      lifestyle: lifestyle.rowCount,
+      finance: finance.rowCount,
+    },
+  };
+}
+
+async function invalidateAssistantCacheForUser(fromUser) {
+  if (!fromUser) return;
+  await pool.query(`
+    DELETE FROM assistant_answer_cache
+    WHERE channel='wechat' AND from_user=$1 AND pinned=false AND topic IN ('fitness', 'finance')`, [fromUser]);
 }
 
 async function deepseekKnowledgeAnswer(question, sources) {
@@ -332,6 +735,7 @@ async function processKnowledgeDocument(docId) {
   }
   const chromaResult = await upsertChunksToChroma(inserted);
   await pool.query('UPDATE knowledge_documents SET status=$1,error_message=$2,updated_at=now() WHERE id=$3', [chromaResult.ok ? 'ready' : 'ready_pg_only', chromaResult.ok ? null : chromaResult.reason, docId]);
+  resetKnowledgeChunkCountCache();
   return { chunks: inserted.length, chroma: chromaResult };
 }
 
@@ -339,6 +743,7 @@ async function deleteKnowledgeDocument(docId) {
   const chunks = await pool.query('SELECT embedding_id FROM knowledge_chunks WHERE doc_id=$1', [docId]);
   await deleteChunksFromChroma(chunks.rows.map((row) => row.embedding_id));
   const result = await pool.query('DELETE FROM knowledge_documents WHERE id=$1', [docId]);
+  resetKnowledgeChunkCountCache();
   return result.rowCount > 0;
 }
 
@@ -566,19 +971,22 @@ async function createFitnessEntry(data) {
 async function saveWechatMessage({ from_user, to_user, msg_type = 'text', content = '', raw_payload = {} }) {
   const fitnessParsed = msg_type === 'text' ? parseFitnessMessage(content) : null;
   const financeParsed = msg_type === 'text' && !fitnessParsed ? parseFinanceMessage(content) : null;
+  const isQuery = msg_type === 'text' && looksLikeQuery(content);
+  const shouldRecord = !isQuery && (fitnessParsed || financeParsed);
   let financeEntry = null;
   let fitnessEntry = null;
   let intent = 'unknown';
   let status = 'ignored';
-  let reply = '我还没识别出要记录什么。你可以发：体重 72.5、买咖啡 18、跑步 30 分钟、睡了 7 小时。';
-  if (fitnessParsed) {
+  let reply = '你好，我是你的助手。可以记录体重/消费/运动/睡眠，也可以问我「这个月花了多少」「最近体重趋势」或知识库问题。';
+  if (shouldRecord && fitnessParsed) {
     const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content });
     fitnessEntry = created.entry;
     intent = `fitness.${fitnessParsed.entry_type}`;
     status = 'recorded';
     const labels = { weight: '体重', meal: '饮食', workout: '运动', sleep: '睡眠' };
     reply = `已记录${labels[fitnessParsed.entry_type] || '健康'}：${created.report.summary}`;
-  } else if (financeParsed) {
+    await invalidateAssistantCacheForUser(from_user);
+  } else if (shouldRecord && financeParsed) {
     const result = await pool.query(
       `INSERT INTO finance_entries (direction, amount, category, title, note, source_user, raw_message)
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
@@ -588,6 +996,18 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
     intent = `finance.${financeParsed.direction}`;
     status = 'recorded';
     reply = `已记录${financeParsed.direction === 'income' ? '收入' : '支出'}：${financeParsed.title} ¥${Number(financeParsed.amount).toFixed(2)}，分类：${financeParsed.category}`;
+    await invalidateAssistantCacheForUser(from_user);
+  } else if (msg_type === 'text' && content.trim()) {
+    try {
+      const chatResult = await handleWechatChat(content, from_user);
+      reply = chatResult.answer;
+      intent = chatResult.from_cache ? 'chat.cache' : 'chat.assistant';
+      status = 'replied';
+    } catch (error) {
+      reply = `回复失败：${error.message}`;
+      intent = 'chat.error';
+      status = 'failed';
+    }
   }
   const message = await pool.query(
     `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, intent, parse_status, reply_text)
@@ -814,20 +1234,20 @@ async function handleApi(req, res, url) {
     const result = await pool.query(`
       SELECT k.*, p.name provider_name, p.code provider_code, p.base_url,
              p.balance provider_balance, p.currency provider_currency, p.low_balance_threshold,
-             COALESCE(today_usage.cost,0)::float today_used_amount,
-             COALESCE(month_usage.cost,0)::float month_used_amount,
+             COALESCE(today_usage.usage_cost_sum,0)::float today_used_amount,
+             COALESCE(month_usage.usage_cost_sum,0)::float month_used_amount,
              k.api_key AS raw_key
       FROM api_keys k JOIN providers p ON p.id = k.provider_id
       LEFT JOIN (
-        SELECT api_key_id, SUM("cost") cost
-        FROM usage_logs
-        WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
+        SELECT api_key_id, SUM(ul."cost") AS usage_cost_sum
+        FROM usage_logs ul
+        WHERE ul.created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
         GROUP BY api_key_id
       ) today_usage ON today_usage.api_key_id = k.id
       LEFT JOIN (
-        SELECT api_key_id, SUM("cost") cost
-        FROM usage_logs
-        WHERE created_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
+        SELECT api_key_id, SUM(ul."cost") AS usage_cost_sum
+        FROM usage_logs ul
+        WHERE ul.created_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
         GROUP BY api_key_id
       ) month_usage ON month_usage.api_key_id = k.id
       ORDER BY k.id DESC`);
@@ -1057,15 +1477,115 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === '/api/knowledge/ask' && req.method === 'POST') {
     const data = await jsonBody(req);
-    const sources = await searchKnowledge(data.kb_id, data.question || '', Number(data.top_k || 6));
-    const answer = sources.length ? await deepseekKnowledgeAnswer(data.question || '', sources) : '知识库里没有检索到相关内容。';
-    const saved = await pool.query('INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *', [data.kb_id || null, data.question || '', answer, JSON.stringify(sources.slice(0, 6))]);
-    return sendJson(res, 200, { answer, sources, query: saved.rows[0] });
+    const question = data.question || '';
+    const sources = await searchKnowledge(data.kb_id, question, Number(data.top_k || 6));
+    const topic = classifyUsefulTopic(question, sources);
+    if (topic) {
+      const cached = await getAssistantCache({
+        question,
+        channel: 'web',
+        kbId: data.kb_id || null,
+        fromUser: null,
+      });
+      if (cached) {
+        await touchAssistantCache(cached.id);
+        const saved = await pool.query(
+          'INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *',
+          [data.kb_id || null, question, cached.answer, JSON.stringify(cached.sources || [])]
+        );
+        return sendJson(res, 200, {
+          answer: cached.answer,
+          sources: cached.sources || [],
+          from_cache: true,
+          cache_id: cached.id,
+          query: saved.rows[0],
+        });
+      }
+    }
+    const answer = sources.length ? await deepseekKnowledgeAnswer(question, sources) : '知识库里没有检索到相关内容。';
+    if (topic && sources.length) {
+      await saveAssistantCache({
+        question,
+        answer,
+        channel: 'web',
+        kbId: data.kb_id || null,
+        fromUser: null,
+        topic,
+        sources: sources.map((item) => ({
+          document_title: item.document_title,
+          filename: item.filename,
+          chunk_index: item.chunk_index,
+          content: String(item.content || '').slice(0, 240),
+        })),
+      });
+    }
+    const saved = await pool.query('INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *', [data.kb_id || null, question, answer, JSON.stringify(sources.slice(0, 6))]);
+    return sendJson(res, 200, { answer, sources, from_cache: false, query: saved.rows[0] });
   }
   const historyMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/queries$/);
   if (historyMatch && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM knowledge_queries WHERE kb_id=$1 ORDER BY created_at DESC LIMIT 30', [Number(historyMatch[1])]);
     return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/cache/summary' && req.method === 'GET') {
+    return sendJson(res, 200, await assistantCacheSummary());
+  }
+  if (url.pathname === '/api/assistant/memory' && req.method === 'GET') {
+    return sendJson(res, 200, await assistantMemoryBundle());
+  }
+  if (url.pathname === '/api/dashboard/memory' && req.method === 'GET') {
+    return sendJson(res, 200, await dashboardMemoryBundle());
+  }
+  if (url.pathname === '/api/assistant/cache' && req.method === 'GET') {
+    const channel = url.searchParams.get('channel');
+    const topic = url.searchParams.get('topic');
+    const q = url.searchParams.get('q');
+    const limit = Math.min(Number(url.searchParams.get('limit') || 100), 200);
+    const result = await pool.query(`
+      SELECT c.*, b.name kb_name
+      FROM assistant_answer_cache c
+      LEFT JOIN knowledge_bases b ON b.id=c.kb_id
+      WHERE c.topic IN ('fitness', 'finance', 'knowledge')
+        AND ($1::text IS NULL OR c.channel=$1)
+        AND ($2::text IS NULL OR c.topic=$2)
+        AND ($3::text IS NULL OR c.question ILIKE '%' || $3 || '%' OR c.answer ILIKE '%' || $3 || '%')
+      ORDER BY c.pinned DESC, c.hit_count DESC, c.updated_at DESC
+      LIMIT $4`, [channel || null, topic || null, q || null, limit]);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/cache/clear' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    if (data.expired_only) {
+      const result = await pool.query(`
+        DELETE FROM assistant_answer_cache
+        WHERE pinned=false AND expires_at IS NOT NULL AND expires_at <= now()`);
+      return sendJson(res, 200, { deleted: result.rowCount });
+    }
+    const result = await pool.query(`
+      DELETE FROM assistant_answer_cache
+      WHERE pinned=false AND topic IN ('fitness', 'finance', 'knowledge')`);
+    return sendJson(res, 200, { deleted: result.rowCount });
+  }
+  const cacheMatch = url.pathname.match(/^\/api\/assistant\/cache\/(\d+)$/);
+  if (cacheMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const pinned = Boolean(data.pinned);
+    const current = await pool.query('SELECT channel FROM assistant_answer_cache WHERE id=$1', [Number(cacheMatch[1])]);
+    if (!current.rowCount) return sendJson(res, 404, { error: 'not found' });
+    const ttl = pinned
+      ? ASSISTANT_CACHE_TTL_PINNED
+      : (current.rows[0].channel === 'wechat' ? ASSISTANT_CACHE_TTL_WECHAT : ASSISTANT_CACHE_TTL_WEB);
+    const expiresAt = ttl > 0 ? new Date(Date.now() + ttl * 1000) : null;
+    const result = await pool.query(`
+      UPDATE assistant_answer_cache
+      SET pinned=$1, expires_at=$2, updated_at=now()
+      WHERE id=$3
+      RETURNING *`, [pinned, expiresAt, Number(cacheMatch[1])]);
+    return sendJson(res, 200, result.rows[0]);
+  }
+  if (cacheMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM assistant_answer_cache WHERE id=$1', [Number(cacheMatch[1])]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   return sendJson(res, 404, { error: 'not found' });
 }

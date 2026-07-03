@@ -24,6 +24,7 @@ const MODULES = [
   { id: 'gateway', name: 'Gateway', desc: '统一模型路由、限流与故障切换', icon: 'gateway.svg', status: 'planned' },
   { id: 'agent', name: 'Agent Hub', desc: '多 Agent 编排与工具链调度', icon: 'agent.svg', status: 'planned' },
   { id: 'knowledge', name: 'Knowledge', desc: '选择知识库，检索上下文并进行 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
+  { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
   { id: 'tasks', name: 'Task Forge', desc: '定时任务、巡检与自动化流水线', icon: 'tasks.svg', status: 'planned' },
   { id: 'fitlog', name: 'FitLog', desc: '体重、饮食、运动记录与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
   { id: 'monitor', name: 'Monitor', desc: '延迟、错误率与链路追踪', icon: 'monitor.svg', status: 'planned', wide: true },
@@ -40,6 +41,87 @@ let pulseChart;
 let fitnessSummary = null;
 let fitnessChart;
 let knowledgeSummary = null;
+let dashboardMemory = null;
+
+function escapeHtml(value = '') {
+  return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
+}
+
+function formatDashTime(value) {
+  if (!value) return '--';
+  return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
+}
+
+function topicLabel(topic) {
+  return { fitness: '健康', finance: '账本', knowledge: '知识库' }[topic] || topic;
+}
+
+function lifestyleTitle(row) {
+  if (row.entry_type === 'weight') return `体重 ${row.weight_kg}kg`;
+  if (row.entry_type === 'sleep') return `睡眠 ${row.sleep_hours}小时`;
+  if (row.entry_type === 'meal') return `${row.meal_type || '饮食'} ${row.food_text || row.note || ''}`;
+  return row.note || row.entry_type;
+}
+
+function lifestyleDetail(row) {
+  if (row.entry_type === 'meal') return `约 ${row.calories || 0} 千卡`;
+  if (row.entry_type === 'sleep') return `质量 ${row.sleep_quality || '一般'}`;
+  return row.note || '';
+}
+
+function lifestyleTag(row) {
+  return { weight: '体重', meal: '饮食', sleep: '睡眠' }[row.entry_type] || row.entry_type;
+}
+
+function renderCacheHitFeed() {
+  const rows = dashboardMemory?.cache_hits || [];
+  const totalHits = rows.reduce((sum, row) => sum + Number(row.hit_count || 0), 0);
+  $('#cacheHitMeta').textContent = rows.length ? `${rows.length} 条 · 累计 ${totalHits} 次` : '0 次命中';
+  $('#cacheHitFeed').innerHTML = rows.length
+    ? rows.map((row) => `
+      <div class="dash-row">
+        <strong>${escapeHtml(row.question)}<span class="dash-tag hit">×${row.hit_count}</span><span class="dash-tag">${escapeHtml(topicLabel(row.topic))}</span></strong>
+        <p>${escapeHtml(row.answer)}</p>
+        <span class="dash-time">${formatDashTime(row.last_hit_at || row.updated_at)}</span>
+      </div>`).join('')
+    : '<div class="dash-row"><p>暂无命中缓存。重复问健康/账本/知识库问题后会出现在这里。</p></div>';
+}
+
+function renderLifestyleFeed() {
+  const rows = dashboardMemory?.lifestyle || [];
+  $('#lifestyleFeed').innerHTML = rows.length
+    ? rows.map((row) => `
+      <div class="dash-row">
+        <strong>${escapeHtml(lifestyleTitle(row))}<span class="dash-tag ${row.entry_type}">${lifestyleTag(row)}</span></strong>
+        <p>${escapeHtml(lifestyleDetail(row))}</p>
+        <span class="dash-time">${formatDashTime(row.recorded_at)}</span>
+      </div>`).join('')
+    : '<div class="dash-row"><p>暂无记录。企微发送：体重 72.5、吃了鸡胸肉、睡了 7 小时。</p></div>';
+}
+
+function renderFinanceFeed() {
+  const rows = dashboardMemory?.finance || [];
+  const month = dashboardMemory?.month_stats || {};
+  $('#financeMonthMeta').textContent = `本月 收 ¥${fmtNum(month.income || 0, 0)} / 支 ¥${fmtNum(month.expense || 0, 0)}`;
+  $('#financeFeed').innerHTML = rows.length
+    ? rows.map((row) => {
+      const label = row.direction === 'income' ? '收入' : '支出';
+      const tagClass = row.direction === 'income' ? 'income' : 'expense';
+      return `
+      <div class="dash-row">
+        <strong>${label} ¥${Number(row.amount).toFixed(2)} · ${escapeHtml(row.title)}<span class="dash-tag ${tagClass}">${escapeHtml(row.category || '未分类')}</span></strong>
+        <p>${escapeHtml(row.note || '')}</p>
+        <span class="dash-time">${formatDashTime(row.occurred_at)}</span>
+      </div>`;
+    }).join('')
+    : '<div class="dash-row"><p>暂无记账。企微发送：买咖啡 18、收入工资 5000。</p></div>';
+}
+
+function renderMemoryDashboard() {
+  renderCacheHitFeed();
+  renderLifestyleFeed();
+  renderFinanceFeed();
+}
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -216,7 +298,7 @@ function renderDataStream() {
 
 async function loadDashboard() {
   await api('/api/balances/refresh', { method: 'POST' }).catch(() => null);
-  [stats, providers, keys, models, usageSeries, fitnessSummary, knowledgeSummary] = await Promise.all([
+  [stats, providers, keys, models, usageSeries, fitnessSummary, knowledgeSummary, cacheSummary, dashboardMemory] = await Promise.all([
     api('/api/stats'),
     api('/api/providers'),
     api('/api/keys'),
@@ -224,12 +306,16 @@ async function loadDashboard() {
     api('/api/usage/hourly'),
     api('/api/fitness/summary'),
     api('/api/knowledge/summary'),
+    api('/api/assistant/cache/summary').catch(() => null),
+    api('/api/dashboard/memory').catch(() => null),
   ]);
   stats.knowledge_chunks = knowledgeSummary?.chunks || 0;
   stats.knowledge_queries = knowledgeSummary?.queries || 0;
+  stats.cache_hits = dashboardMemory?.counts?.cache_hits || cacheSummary?.total_hits || 0;
   renderTelemetry();
   renderModules();
   renderSignals();
+  renderMemoryDashboard();
   renderBudgetList();
   renderDataStream();
   renderPulseChart();

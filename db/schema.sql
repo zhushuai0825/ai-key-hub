@@ -164,3 +164,22 @@ CREATE TABLE IF NOT EXISTS wechat_messages (
   reply_text TEXT NOT NULL DEFAULT '',
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS assistant_answer_cache (
+  id SERIAL PRIMARY KEY,
+  cache_key TEXT UNIQUE NOT NULL,
+  channel TEXT NOT NULL DEFAULT 'wechat',
+  kb_id INTEGER REFERENCES knowledge_bases(id) ON DELETE SET NULL,
+  from_user TEXT,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+  context_snapshot TEXT NOT NULL DEFAULT '',
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  pinned BOOLEAN NOT NULL DEFAULT false,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_hit_at TIMESTAMPTZ,
+  topic TEXT
+);

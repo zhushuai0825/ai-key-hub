@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>我的数据 · 助手记忆</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page memory-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>我的数据</strong><span>体重 · 账本 · 运动 · 睡眠 · 有价值问答</span></div>
+    <a class="btn" href="/fitness.html">FitLog</a>
+  </header>
+
+  <main class="memory-shell">
+    <section class="kb-panel memory-summary-panel">
+      <div class="panel-head"><h2>数据概览</h2><span id="memoryUpdatedAt">--</span></div>
+      <div class="cache-stats" id="memoryStats"></div>
+      <p class="form-hint">这里只展示你真正记录和查询过的有用数据。闲聊（如「你好」）不会进入缓存。</p>
+      <div class="cache-actions">
+        <button class="btn btn-solid" id="refreshBtn" type="button">刷新</button>
+      </div>
+    </section>
+
+    <section class="kb-panel memory-records-panel">
+      <div class="panel-head"><h2>健康记录</h2><span id="fitnessCount">0 条</span></div>
+      <div id="fitnessList" class="history-list"></div>
+    </section>
+
+    <section class="kb-panel memory-records-panel">
+      <div class="panel-head"><h2>账本记录</h2><span id="financeCount">0 条</span></div>
+      <div id="financeList" class="history-list"></div>
+    </section>
+
+    <section class="kb-panel memory-cache-panel">
+      <div class="panel-head"><h2>有价值问答</h2><span id="cacheCount">0 条</span></div>
+      <form id="filterForm" class="search-form cache-filter-form">
+        <select name="topic">
+          <option value="">全部类型</option>
+          <option value="fitness">健康查询</option>
+          <option value="finance">账本查询</option>
+          <option value="knowledge">知识库</option>
+        </select>
+        <input name="q" placeholder="搜索问题" />
+        <button class="btn btn-solid" type="submit">筛选</button>
+      </form>
+      <div id="cacheList" class="history-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./assistant-cache.js"></script>
+</body>
+</html>

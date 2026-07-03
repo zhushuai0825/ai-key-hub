@@ -27,7 +27,38 @@
     </section>
 
     <main class="cockpit-body">
-      <section class="module-grid" id="moduleGrid" aria-label="功能模块"></section>
+      <div class="cockpit-main">
+        <section class="memory-dashboard" aria-label="助手数据大屏">
+          <article class="dash-panel dash-panel-cache">
+            <header class="dash-head">
+              <h2>缓存命中</h2>
+              <span class="dash-meta" id="cacheHitMeta">0 次命中</span>
+            </header>
+            <div id="cacheHitFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/assistant-cache.html">查看全部</a>
+          </article>
+
+          <article class="dash-panel dash-panel-lifestyle">
+            <header class="dash-head">
+              <h2>健康生活</h2>
+              <span class="dash-meta">体重 · 饮食 · 睡眠</span>
+            </header>
+            <div id="lifestyleFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/fitness.html">FitLog</a>
+          </article>
+
+          <article class="dash-panel dash-panel-finance">
+            <header class="dash-head">
+              <h2>记账</h2>
+              <span class="dash-meta" id="financeMonthMeta">本月 --</span>
+            </header>
+            <div id="financeFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/assistant-cache.html">查看全部</a>
+          </article>
+        </section>
+
+        <section class="module-grid" id="moduleGrid" aria-label="功能模块"></section>
+      </div>
 
       <aside class="cockpit-rail">
         <section class="rail-card">

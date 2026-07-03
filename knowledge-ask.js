@@ -74,6 +74,7 @@ function renderResults(rows) {
 function renderAnswer(data) {
   const sources = data.sources || [];
   $('#answerBox').innerHTML = `
+    ${data.from_cache ? '<div class="meta" style="margin-bottom:10px;color:var(--accent)">命中缓存，未重复调用 AI</div>' : ''}
     <div class="answer-text">${escapeHtml(data.answer || '').replace(/\n/g, '<br>')}</div>
     <div class="source-list">
       <strong>引用来源</strong>
