@@ -49,3 +49,118 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   latency_ms INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS fitness_entries (
+  id SERIAL PRIMARY KEY,
+  entry_type TEXT NOT NULL CHECK (entry_type IN ('weight', 'meal', 'workout', 'sleep')),
+  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  weight_kg NUMERIC(6, 2),
+  meal_type TEXT,
+  food_text TEXT,
+  calories NUMERIC(10, 2),
+  protein_g NUMERIC(10, 2),
+  carbs_g NUMERIC(10, 2),
+  fat_g NUMERIC(10, 2),
+  workout_type TEXT,
+  workout_text TEXT,
+  duration_min INTEGER,
+  intensity TEXT,
+  burned_calories NUMERIC(10, 2),
+  sleep_hours NUMERIC(5, 2),
+  sleep_quality TEXT,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS fitness_ai_reports (
+  id SERIAL PRIMARY KEY,
+  entry_id INTEGER NOT NULL REFERENCES fitness_entries(id) ON DELETE CASCADE,
+  summary TEXT NOT NULL,
+  advice TEXT NOT NULL,
+  risk_level TEXT NOT NULL DEFAULT 'normal',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_bases (
+  id SERIAL PRIMARY KEY,
+  name TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'general',
+  status TEXT NOT NULL DEFAULT 'active',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_categories (
+  id SERIAL PRIMARY KEY,
+  code TEXT UNIQUE NOT NULL,
+  name TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_documents (
+  id SERIAL PRIMARY KEY,
+  kb_id INTEGER NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'text',
+  filename TEXT,
+  file_path TEXT,
+  raw_text TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending',
+  error_message TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_chunks (
+  id SERIAL PRIMARY KEY,
+  kb_id INTEGER NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+  doc_id INTEGER NOT NULL REFERENCES knowledge_documents(id) ON DELETE CASCADE,
+  chunk_index INTEGER NOT NULL,
+  content TEXT NOT NULL,
+  char_count INTEGER NOT NULL DEFAULT 0,
+  embedding_id TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(doc_id, chunk_index)
+);
+
+CREATE TABLE IF NOT EXISTS knowledge_queries (
+  id SERIAL PRIMARY KEY,
+  kb_id INTEGER REFERENCES knowledge_bases(id) ON DELETE SET NULL,
+  question TEXT NOT NULL,
+  answer TEXT NOT NULL,
+  sources JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS finance_entries (
+  id SERIAL PRIMARY KEY,
+  direction TEXT NOT NULL CHECK (direction IN ('expense', 'income')),
+  amount NUMERIC(12, 2) NOT NULL,
+  currency TEXT NOT NULL DEFAULT 'CNY',
+  category TEXT NOT NULL DEFAULT '未分类',
+  title TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT 'wechat_message',
+  source_user TEXT,
+  occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  raw_message TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS wechat_messages (
+  id SERIAL PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'wechat',
+  from_user TEXT,
+  to_user TEXT,
+  msg_type TEXT NOT NULL DEFAULT 'text',
+  content TEXT NOT NULL DEFAULT '',
+  raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  finance_entry_id INTEGER REFERENCES finance_entries(id) ON DELETE SET NULL,
+  fitness_entry_id INTEGER REFERENCES fitness_entries(id) ON DELETE SET NULL,
+  intent TEXT NOT NULL DEFAULT 'unknown',
+  parse_status TEXT NOT NULL DEFAULT 'ignored',
+  reply_text TEXT NOT NULL DEFAULT '',
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

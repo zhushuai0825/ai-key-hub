@@ -613,3 +613,81 @@ body.cockpit {
     grid-column: span 1;
   }
 }
+
+/* H5 responsive cockpit */
+@media (max-width: 768px) {
+  body.cockpit { overflow-x: hidden; }
+  .cockpit-shell { min-height: 100svh; }
+  .cockpit-grid-bg { background-size: auto, 32px 32px, 32px 32px; opacity: 0.55; }
+  .cockpit-bar {
+    height: auto;
+    min-height: 58px;
+    padding: 12px 14px;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .cockpit-brand { min-width: 0; flex: 1; }
+  .cockpit-brand strong { font-size: 13px; letter-spacing: 0.08em; }
+  .cockpit-brand span { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 58vw; }
+  .cockpit-clock { font-size: 10px; padding-top: 2px; }
+  .telemetry-strip { padding: 12px 14px; }
+  .telemetry {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+  .tel-item { min-width: 0; padding: 12px; }
+  .tel-item strong { font-size: 18px; }
+  .cockpit-body {
+    display: block;
+    padding: 14px;
+  }
+  .module-grid {
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    gap: 10px;
+  }
+  .module-card,
+  .module-card.hero,
+  .module-card.wide {
+    grid-column: auto;
+    grid-row: auto;
+    min-height: 132px;
+    padding: 16px;
+  }
+  .module-card.locked { opacity: 0.42; }
+  .module-card.hero { min-height: 170px; }
+  .module-icon,
+  .module-card.hero .module-icon { width: 34px; height: 34px; margin-bottom: 12px; }
+  .module-name { font-size: 18px; }
+  .module-card.hero .module-name { font-size: 24px; }
+  .module-desc { font-size: 12px; max-width: 100%; }
+  .module-metric { position: static; margin-top: 16px; }
+  .module-enter { margin-top: 12px; }
+  .cockpit-side {
+    display: grid;
+    gap: 12px;
+    margin-top: 14px;
+  }
+  .side-panel { min-height: 0; }
+  .panel-head { min-height: 44px; padding: 12px 14px; }
+  .signal-feed,
+  .data-stream,
+  .budget-list { max-height: none; overflow: visible; }
+  .pulse-chart { height: 190px; }
+  .topology { display: none; }
+  .cockpit-foot {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 14px 18px;
+    font-size: 10px;
+  }
+}
+
+@media (max-width: 390px) {
+  .telemetry { grid-template-columns: 1fr; }
+  .cockpit-bar { flex-direction: column; }
+  .cockpit-clock { align-self: flex-end; }
+}

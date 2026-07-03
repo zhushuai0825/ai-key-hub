@@ -1,9 +1,16 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
+import { mkdir, writeFile, readFile as readLocalFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import Busboy from 'busboy';
+import { PDFParse } from 'pdf-parse';
+import mammoth from 'mammoth';
+import { parse as csvParseSync } from 'csv-parse/sync';
+import { ChromaClient } from 'chromadb';
 
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -11,7 +18,15 @@ const PORT = Number(process.env.PORT || 8899);
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://ai_admin:ai_admin_123@127.0.0.1:5432/ai_key_hub';
 const AUTH_USER = process.env.APP_AUTH_USER || '';
 const AUTH_PASSWORD = process.env.APP_AUTH_PASSWORD || '';
+const PROFILE_HEIGHT_CM = 177;
+const CHROMA_URL = process.env.CHROMA_URL || 'http://127.0.0.1:8000';
+const KNOWLEDGE_COLLECTION = process.env.KNOWLEDGE_COLLECTION || 'ai_key_hub_knowledge';
+const UPLOAD_DIR = path.join(__dirname, 'uploads', 'knowledge');
+const WECHAT_WORK_TOKEN = process.env.WECHAT_WORK_TOKEN || '';
+const WECHAT_WORK_ENCODING_AES_KEY = process.env.WECHAT_WORK_ENCODING_AES_KEY || '';
+const WECHAT_WORK_CORP_ID = process.env.WECHAT_WORK_CORP_ID || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
+const chroma = new ChromaClient({ path: CHROMA_URL });
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -34,7 +49,568 @@ async function initDb() {
   await pool.query(sql);
   await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS daily_quota NUMERIC(12, 2) DEFAULT 0');
   await pool.query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS budget_action TEXT NOT NULL DEFAULT 'alert'");
+  await pool.query('ALTER TABLE fitness_entries DROP CONSTRAINT IF EXISTS fitness_entries_entry_type_check');
+  await pool.query("ALTER TABLE fitness_entries ADD CONSTRAINT fitness_entries_entry_type_check CHECK (entry_type IN ('weight', 'meal', 'workout', 'sleep'))");
+  await pool.query('ALTER TABLE fitness_entries ADD COLUMN IF NOT EXISTS sleep_hours NUMERIC(5, 2)');
+  await pool.query('ALTER TABLE fitness_entries ADD COLUMN IF NOT EXISTS sleep_quality TEXT');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS fitness_entry_id INTEGER REFERENCES fitness_entries(id) ON DELETE SET NULL');
+  await pool.query("ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS intent TEXT NOT NULL DEFAULT 'unknown'");
   await pool.query("DELETE FROM api_keys WHERE api_key LIKE 'sk-demo-%' OR remark ILIKE '%演示%'");
+  await pool.query(`
+    INSERT INTO knowledge_categories (code, name) VALUES
+      ('general', '通用'), ('fitness', '健身'), ('novel', '小说'), ('tech', '技术')
+    ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name`);
+}
+
+function categoryCode(name = '') {
+  const base = String(name || '').trim().toLowerCase();
+  const code = base.replace(/[^a-z0-9\u4e00-\u9fa5]+/gu, '-').replace(/^-+|-+$/g, '');
+  return code || `cat-${Date.now()}`;
+}
+
+function numberOrNull(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function localFitnessAdvice(entry) {
+  const parts = [];
+  if (entry.entry_type === 'weight') {
+    parts.push(`本次记录体重 ${entry.weight_kg || '--'}kg。`);
+    parts.push('建议结合 7 天趋势看变化，不要只看单次波动。');
+  }
+  if (entry.entry_type === 'meal') {
+    parts.push(`本次饮食：${entry.food_text || '未填写具体食物'}。`);
+    parts.push('建议优先保证蛋白质和蔬菜，控制高油高糖食物频率。');
+  }
+  if (entry.entry_type === 'workout') {
+    parts.push(`本次运动：${entry.workout_text || entry.workout_type || '未填写具体运动'}。`);
+    parts.push('建议运动后补水，力量训练后注意恢复和睡眠。');
+  }
+  if (entry.entry_type === 'sleep') {
+    parts.push(`本次睡眠：${entry.sleep_hours || '--'} 小时，质量 ${entry.sleep_quality || '未填写'}。`);
+    parts.push('建议保持固定入睡时间，训练日尤其要保证恢复。');
+  }
+  return {
+    summary: parts[0] || '已记录。',
+    advice: parts.slice(1).join(' ') || '保持稳定记录，后续根据趋势调整。',
+    risk_level: 'normal',
+  };
+}
+
+async function deepseekApiKey() {
+  const result = await pool.query(`
+    SELECT k.api_key
+    FROM api_keys k JOIN providers p ON p.id=k.provider_id
+    WHERE p.code='deepseek' AND k.status='active'
+    ORDER BY k.updated_at DESC, k.id DESC
+    LIMIT 1`);
+  return result.rows[0]?.api_key || '';
+}
+
+function fitnessPrompt(entry) {
+  return `你是健身和饮食记录助手。请基于用户本次记录给出简洁建议，不做医疗诊断。输出 JSON，字段为 summary, advice, risk_level(normal|warn|bad)。记录如下：${JSON.stringify(entry)}`;
+}
+
+async function deepseekFitnessAdvice(entry) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) throw new Error('DeepSeek Key not configured');
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'system', content: '你只返回严格 JSON，不要 Markdown。' },
+        { role: 'user', content: fitnessPrompt(entry) },
+      ],
+      temperature: 0.3,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek analyze failed: ${response.status}`);
+  const content = body?.choices?.[0]?.message?.content || '';
+  const parsed = JSON.parse(content.replace(/^```json\s*|\s*```$/g, '').trim());
+  return {
+    summary: String(parsed.summary || '').slice(0, 500) || '已完成分析。',
+    advice: String(parsed.advice || '').slice(0, 1500) || '保持记录，观察趋势。',
+    risk_level: ['normal', 'warn', 'bad'].includes(parsed.risk_level) ? parsed.risk_level : 'normal',
+  };
+}
+
+async function deepseekKnowledgeAnswer(question, sources) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) throw new Error('DeepSeek Key not configured');
+  const context = sources.map((item, index) => `【资料${index + 1}】${item.content}`).join('\n\n');
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'system', content: '你是知识库问答助手。只能根据提供资料回答；资料不足时明确说明。回答要简洁，并列出引用资料编号。' },
+        { role: 'user', content: `问题：${question}\n\n资料：\n${context}` },
+      ],
+      temperature: 0.2,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek ask failed: ${response.status}`);
+  return body?.choices?.[0]?.message?.content || '没有生成答案。';
+}
+
+async function searchKnowledge(kbId, query, topK = 6) {
+  try {
+    const collection = await chromaCollection();
+    const result = await collection.query({
+      queryEmbeddings: [hashEmbedding(query)],
+      nResults: topK,
+      where: kbId ? { kb_id: Number(kbId) } : undefined,
+    });
+    const ids = result.metadatas?.[0]?.map((meta) => meta.chunk_id).filter(Boolean) || [];
+    if (ids.length) {
+      const rows = await pool.query(`
+        SELECT c.*, d.title document_title, d.filename
+        FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.doc_id
+        WHERE c.id = ANY($1::int[])`, [ids]);
+      const rowMap = new Map(rows.rows.map((row) => [row.id, row]));
+      return ids.map((id, index) => ({ ...rowMap.get(id), score: result.distances?.[0]?.[index] ?? null })).filter((item) => item.id);
+    }
+  } catch (_) {
+    // Fall back to PostgreSQL keyword search below.
+  }
+  const result = await pool.query(`
+    SELECT c.*, d.title document_title, d.filename,
+           ts_rank_cd(to_tsvector('simple', c.content), plainto_tsquery('simple', $2)) score
+    FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.doc_id
+    WHERE ($1::int IS NULL OR c.kb_id=$1)
+      AND (c.content ILIKE '%' || $2 || '%' OR to_tsvector('simple', c.content) @@ plainto_tsquery('simple', $2))
+    ORDER BY score DESC NULLS LAST, c.id DESC
+    LIMIT $3`, [kbId ? Number(kbId) : null, query, topK]);
+  return result.rows;
+}
+
+function estimateMealNutrition(foodText = '') {
+  const text = foodText.toLowerCase();
+  const rules = [
+    { pattern: /鸡胸|牛肉|鱼|虾|蛋|豆腐|protein|鸡蛋/, calories: 320, protein_g: 35, carbs_g: 8, fat_g: 12 },
+    { pattern: /米饭|面|粉|馒头|面包|粥|土豆|红薯/, calories: 420, protein_g: 12, carbs_g: 78, fat_g: 6 },
+    { pattern: /火锅|烧烤|炸|奶茶|蛋糕|披萨|汉堡/, calories: 850, protein_g: 28, carbs_g: 88, fat_g: 42 },
+    { pattern: /沙拉|青菜|蔬菜|水果|苹果|香蕉/, calories: 220, protein_g: 5, carbs_g: 42, fat_g: 4 },
+  ];
+  const matched = rules.filter((rule) => rule.pattern.test(text));
+  if (!matched.length) return { calories: 500, protein_g: 20, carbs_g: 55, fat_g: 18 };
+  const total = matched.reduce((acc, item) => ({
+    calories: acc.calories + item.calories,
+    protein_g: acc.protein_g + item.protein_g,
+    carbs_g: acc.carbs_g + item.carbs_g,
+    fat_g: acc.fat_g + item.fat_g,
+  }), { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 });
+  return Object.fromEntries(Object.entries(total).map(([key, value]) => [key, Math.round(value / matched.length)]));
+}
+
+function estimateWorkoutBurn(workoutType = '', durationMin = 0, intensity = '中') {
+  const base = { 力量: 6, 跑步: 10, 骑行: 8, HIIT: 12, 其他: 6 }[workoutType] || 6;
+  const factor = { 低: 0.75, 中: 1, 高: 1.25 }[intensity] || 1;
+  return Math.round(Number(durationMin || 0) * base * factor);
+}
+
+function chunkText(text, size = 900, overlap = 120) {
+  const clean = String(text || '').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (!clean) return [];
+  const chunks = [];
+  let start = 0;
+  while (start < clean.length) {
+    const end = Math.min(clean.length, start + size);
+    let slice = clean.slice(start, end);
+    if (end < clean.length) {
+      const breakAt = Math.max(slice.lastIndexOf('\n'), slice.lastIndexOf('。'), slice.lastIndexOf('.'));
+      if (breakAt > size * 0.55) slice = slice.slice(0, breakAt + 1);
+    }
+    chunks.push(slice.trim());
+    if (end >= clean.length) break;
+    const nextStart = start + Math.max(1, slice.length - overlap);
+    start = nextStart > start ? nextStart : end;
+  }
+  return chunks.filter(Boolean);
+}
+
+function hashEmbedding(text, dimensions = 384) {
+  const vector = Array(dimensions).fill(0);
+  const tokens = String(text || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
+  tokens.forEach((token) => {
+    let hash = 2166136261;
+    for (let i = 0; i < token.length; i += 1) {
+      hash ^= token.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    const index = Math.abs(hash) % dimensions;
+    vector[index] += 1;
+  });
+  const norm = Math.hypot(...vector) || 1;
+  return vector.map((value) => value / norm);
+}
+
+const localEmbeddingFunction = {
+  name: 'local-hash-embedding',
+  async generate(texts) {
+    return texts.map((text) => hashEmbedding(text));
+  },
+  async generateForQueries(texts) {
+    return texts.map((text) => hashEmbedding(text));
+  },
+};
+
+async function chromaCollection() {
+  return chroma.getOrCreateCollection({ name: KNOWLEDGE_COLLECTION, embeddingFunction: localEmbeddingFunction });
+}
+
+async function upsertChunksToChroma(chunks) {
+  if (!chunks.length) return { ok: false, reason: 'empty chunks' };
+  try {
+    const collection = await chromaCollection();
+    await collection.upsert({
+      ids: chunks.map((chunk) => chunk.embedding_id),
+      embeddings: chunks.map((chunk) => hashEmbedding(chunk.content)),
+      documents: chunks.map((chunk) => chunk.content),
+      metadatas: chunks.map((chunk) => ({ kb_id: chunk.kb_id, doc_id: chunk.doc_id, chunk_id: chunk.id, chunk_index: chunk.chunk_index })),
+    });
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: error.message };
+  }
+}
+
+async function deleteChunksFromChroma(embeddingIds) {
+  const ids = embeddingIds.filter(Boolean);
+  if (!ids.length) return;
+  try {
+    const collection = await chromaCollection();
+    await collection.delete({ ids });
+  } catch (_) {
+    // PostgreSQL remains the source of truth if Chroma is temporarily unavailable.
+  }
+}
+
+async function parseDocumentBuffer(buffer, filename = '', sourceType = 'upload') {
+  const ext = path.extname(filename).toLowerCase();
+  if (sourceType === 'text' || ['.txt', '.md', '.json'].includes(ext)) return buffer.toString('utf8');
+  if (ext === '.pdf') {
+    const parser = new PDFParse({ data: buffer });
+    try {
+      const parsed = await parser.getText();
+      return parsed.text || '';
+    } finally {
+      await parser.destroy();
+    }
+  }
+  if (ext === '.docx') return (await mammoth.extractRawText({ buffer })).value;
+  if (ext === '.csv') {
+    const rows = csvParseSync(buffer.toString('utf8'), { relax_column_count: true });
+    return rows.map((row) => row.join(' | ')).join('\n');
+  }
+  return buffer.toString('utf8');
+}
+
+async function processKnowledgeDocument(docId) {
+  const docResult = await pool.query('SELECT * FROM knowledge_documents WHERE id=$1', [docId]);
+  if (!docResult.rowCount) throw new Error('document not found');
+  const doc = docResult.rows[0];
+  const oldChunks = await pool.query('SELECT embedding_id FROM knowledge_chunks WHERE doc_id=$1', [docId]);
+  await deleteChunksFromChroma(oldChunks.rows.map((row) => row.embedding_id));
+  await pool.query('DELETE FROM knowledge_chunks WHERE doc_id=$1', [docId]);
+  const pieces = chunkText(doc.raw_text);
+  const inserted = [];
+  for (let index = 0; index < pieces.length; index += 1) {
+    const result = await pool.query(
+      `INSERT INTO knowledge_chunks (kb_id, doc_id, chunk_index, content, char_count, embedding_id)
+       VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [doc.kb_id, doc.id, index, pieces[index], pieces[index].length, `kb${doc.kb_id}_doc${doc.id}_chunk${index}`]
+    );
+    inserted.push(result.rows[0]);
+  }
+  const chromaResult = await upsertChunksToChroma(inserted);
+  await pool.query('UPDATE knowledge_documents SET status=$1,error_message=$2,updated_at=now() WHERE id=$3', [chromaResult.ok ? 'ready' : 'ready_pg_only', chromaResult.ok ? null : chromaResult.reason, docId]);
+  return { chunks: inserted.length, chroma: chromaResult };
+}
+
+async function deleteKnowledgeDocument(docId) {
+  const chunks = await pool.query('SELECT embedding_id FROM knowledge_chunks WHERE doc_id=$1', [docId]);
+  await deleteChunksFromChroma(chunks.rows.map((row) => row.embedding_id));
+  const result = await pool.query('DELETE FROM knowledge_documents WHERE id=$1', [docId]);
+  return result.rowCount > 0;
+}
+
+async function deleteKnowledgeBase(kbId) {
+  const chunks = await pool.query('SELECT embedding_id FROM knowledge_chunks WHERE kb_id=$1', [kbId]);
+  await deleteChunksFromChroma(chunks.rows.map((row) => row.embedding_id));
+  await pool.query('DELETE FROM knowledge_queries WHERE kb_id=$1', [kbId]);
+  const result = await pool.query('DELETE FROM knowledge_bases WHERE id=$1', [kbId]);
+  return result.rowCount > 0;
+}
+
+async function parseMultipart(req) {
+  await mkdir(UPLOAD_DIR, { recursive: true });
+  return new Promise((resolve, reject) => {
+    const fields = {};
+    const files = [];
+    const busboy = Busboy({ headers: req.headers });
+    busboy.on('field', (name, value) => { fields[name] = value; });
+    busboy.on('file', (name, file, info) => {
+      const chunks = [];
+      file.on('data', (data) => chunks.push(data));
+      file.on('end', () => files.push({ name, filename: info.filename, mimeType: info.mimeType, buffer: Buffer.concat(chunks) }));
+    });
+    busboy.on('error', reject);
+    busboy.on('finish', () => resolve({ fields, files }));
+    req.pipe(busboy);
+  });
+}
+
+function readTextBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', (chunk) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
+
+function verifyWechatSignature(url) {
+  const token = process.env.WECHAT_BOT_TOKEN || '';
+  if (!token) return true;
+  const signature = url.searchParams.get('signature') || '';
+  const timestamp = url.searchParams.get('timestamp') || '';
+  const nonce = url.searchParams.get('nonce') || '';
+  const text = [token, timestamp, nonce].sort().join('');
+  const digest = crypto.createHash('sha1').update(text).digest('hex');
+  return digest === signature;
+}
+
+function wechatSha1(...items) {
+  return crypto.createHash('sha1').update(items.map((item) => String(item || '')).sort().join('')).digest('hex');
+}
+
+function verifyWechatWorkSignature(url, encrypted) {
+  if (!WECHAT_WORK_TOKEN) return true;
+  const signature = url.searchParams.get('msg_signature') || '';
+  const timestamp = url.searchParams.get('timestamp') || '';
+  const nonce = url.searchParams.get('nonce') || '';
+  return wechatSha1(WECHAT_WORK_TOKEN, timestamp, nonce, encrypted) === signature;
+}
+
+function wechatWorkAesKey() {
+  if (!WECHAT_WORK_ENCODING_AES_KEY) throw new Error('WECHAT_WORK_ENCODING_AES_KEY not configured');
+  return Buffer.from(`${WECHAT_WORK_ENCODING_AES_KEY}=`, 'base64');
+}
+
+function pkcs7Unpad(buffer) {
+  const pad = buffer[buffer.length - 1];
+  if (pad < 1 || pad > 32) return buffer;
+  return buffer.subarray(0, buffer.length - pad);
+}
+
+function pkcs7Pad(buffer) {
+  const blockSize = 32;
+  const pad = blockSize - (buffer.length % blockSize || blockSize);
+  return Buffer.concat([buffer, Buffer.alloc(pad, pad)]);
+}
+
+function decryptWechatWork(encrypted) {
+  const aesKey = wechatWorkAesKey();
+  const decipher = crypto.createDecipheriv('aes-256-cbc', aesKey, aesKey.subarray(0, 16));
+  decipher.setAutoPadding(false);
+  const decrypted = pkcs7Unpad(Buffer.concat([decipher.update(encrypted, 'base64'), decipher.final()]));
+  const xmlLength = decrypted.readUInt32BE(16);
+  const xml = decrypted.subarray(20, 20 + xmlLength).toString('utf8');
+  const receiveId = decrypted.subarray(20 + xmlLength).toString('utf8');
+  if (WECHAT_WORK_CORP_ID && receiveId && receiveId !== WECHAT_WORK_CORP_ID) throw new Error('invalid receive id');
+  return { xml, receiveId };
+}
+
+function encryptWechatWork(xml) {
+  const aesKey = wechatWorkAesKey();
+  const random = crypto.randomBytes(16);
+  const xmlBuffer = Buffer.from(xml, 'utf8');
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(xmlBuffer.length, 0);
+  const receiveId = Buffer.from(WECHAT_WORK_CORP_ID || '', 'utf8');
+  const plain = pkcs7Pad(Buffer.concat([random, length, xmlBuffer, receiveId]));
+  const cipher = crypto.createCipheriv('aes-256-cbc', aesKey, aesKey.subarray(0, 16));
+  cipher.setAutoPadding(false);
+  return Buffer.concat([cipher.update(plain), cipher.final()]).toString('base64');
+}
+
+function wechatWorkReply(toUser, fromUser, content, url) {
+  const xml = wechatTextReply(toUser, fromUser, content);
+  if (!WECHAT_WORK_ENCODING_AES_KEY) return xml;
+  const nonce = url.searchParams.get('nonce') || String(Date.now());
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const encrypt = encryptWechatWork(xml);
+  const signature = wechatSha1(WECHAT_WORK_TOKEN, timestamp, nonce, encrypt);
+  return `<xml><Encrypt><![CDATA[${encrypt}]]></Encrypt><MsgSignature><![CDATA[${signature}]]></MsgSignature><TimeStamp>${timestamp}</TimeStamp><Nonce><![CDATA[${nonce}]]></Nonce></xml>`;
+}
+
+function xmlValue(xml, tag) {
+  const match = String(xml || '').match(new RegExp(`<${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>|<${tag}>([\\s\\S]*?)<\\/${tag}>`));
+  return match ? (match[1] ?? match[2] ?? '').trim() : '';
+}
+
+function parseWechatXml(xml) {
+  return {
+    to_user: xmlValue(xml, 'ToUserName'),
+    from_user: xmlValue(xml, 'FromUserName'),
+    msg_type: xmlValue(xml, 'MsgType') || 'text',
+    content: xmlValue(xml, 'Content'),
+    agent_id: xmlValue(xml, 'AgentID'),
+    msg_id: xmlValue(xml, 'MsgId'),
+  };
+}
+
+function wechatTextReply(toUser, fromUser, content) {
+  return `<xml><ToUserName><![CDATA[${fromUser || ''}]]></ToUserName><FromUserName><![CDATA[${toUser || ''}]]></FromUserName><CreateTime>${Math.floor(Date.now() / 1000)}</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[${content}]]></Content></xml>`;
+}
+
+function classifyFinanceCategory(text) {
+  const rules = [
+    [/咖啡|奶茶|饭|餐|面|米粉|外卖|早餐|午餐|晚餐|吃|水果|超市/, '餐饮'],
+    [/打车|地铁|公交|高铁|机票|油费|停车|通勤/, '交通'],
+    [/模型|api|服务器|云|域名|会员|软件|订阅/, '项目/工具'],
+    [/健身|运动|蛋白粉|游泳|私教/, '健身'],
+    [/工资|奖金|报销|收款|收入|到账|转账/, '收入'],
+  ];
+  return rules.find(([pattern]) => pattern.test(text))?.[1] || '未分类';
+}
+
+function parseFinanceMessage(content) {
+  const text = String(content || '').trim();
+  if (!text) return null;
+  const amountMatch = text.match(/(?:¥|￥|rmb|RMB)?\s*(-?\d+(?:\.\d{1,2})?)\s*(?:元|块|rmb|RMB)?/);
+  if (!amountMatch) return null;
+  const amount = Math.abs(Number(amountMatch[1]));
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const isIncome = /收入|收款|到账|工资|奖金|报销|赚|入账|转入/.test(text) && !/买|花|支出|消费|付|付款/.test(text);
+  const direction = isIncome ? 'income' : 'expense';
+  const title = text
+    .replace(/(?:我)?(?:今天|刚刚|刚才|昨天|前天)?/g, '')
+    .replace(/(买了|买|花了|花|支出|消费|付款|付了|收入|收款|到账|工资|奖金|报销|元|块|¥|￥|rmb|RMB)/g, ' ')
+    .replace(/-?\d+(?:\.\d{1,2})?/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || (direction === 'income' ? '收入' : '支出');
+  return {
+    direction,
+    amount,
+    category: classifyFinanceCategory(text),
+    title,
+    note: text,
+    raw_message: text,
+  };
+}
+
+function parseFitnessMessage(content) {
+  const text = String(content || '').trim();
+  if (!text) return null;
+  const weight = text.match(/(?:体重|重量|称重)\D*(\d{2,3}(?:\.\d{1,2})?)\s*(?:kg|公斤|斤)?/i) || text.match(/(\d{2,3}(?:\.\d{1,2})?)\s*(?:kg|公斤)/i);
+  if (weight) return { entry_type: 'weight', weight_kg: Number(weight[1]), note: text };
+  const sleep = text.match(/(?:睡了|睡眠|睡觉)\D*(\d{1,2}(?:\.\d{1,2})?)\s*(?:小时|h)?/i);
+  if (sleep) return { entry_type: 'sleep', sleep_hours: Number(sleep[1]), sleep_quality: /好|不错|良好/.test(text) ? '良好' : (/差|不好|失眠/.test(text) ? '较差' : '一般'), note: text };
+  const workout = text.match(/(跑步|力量|骑行|游泳|HIIT|训练|健身|运动).*?(\d{1,3})\s*(?:分钟|min)/i) || text.match(/(\d{1,3})\s*(?:分钟|min).*?(跑步|力量|骑行|游泳|HIIT|训练|健身|运动)/i);
+  if (workout) {
+    const firstIsDuration = /^\d/.test(workout[1]);
+    const duration = Number(firstIsDuration ? workout[1] : workout[2]);
+    const type = firstIsDuration ? workout[2] : workout[1];
+    return { entry_type: 'workout', workout_type: type === '训练' || type === '运动' || type === '健身' ? '其他' : type, workout_text: text, duration_min: duration, intensity: /高强度|很累|冲刺/.test(text) ? '高' : (/低强度|轻松/.test(text) ? '低' : '中'), note: text };
+  }
+  if (/吃了|吃|早餐|午餐|晚餐|加餐|喝了|饮食/.test(text) && !/花|元|块|¥|￥/.test(text)) {
+    return { entry_type: 'meal', meal_type: /早餐/.test(text) ? '早餐' : (/午餐/.test(text) ? '午餐' : (/晚餐/.test(text) ? '晚餐' : '加餐')), food_text: text.replace(/^(我)?(今天|刚刚|刚才)?(吃了|吃|喝了)/, ''), note: text };
+  }
+  return null;
+}
+
+async function createFitnessEntry(data) {
+  const mealEstimate = data.entry_type === 'meal' ? estimateMealNutrition(data.food_text || '') : {};
+  const burnedCalories = data.entry_type === 'workout'
+    ? estimateWorkoutBurn(data.workout_type, numberOrNull(data.duration_min), data.intensity)
+    : null;
+  const result = await pool.query(
+    `INSERT INTO fitness_entries (
+      entry_type, recorded_at, weight_kg, meal_type, food_text, calories, protein_g, carbs_g, fat_g,
+      workout_type, workout_text, duration_min, intensity, burned_calories, sleep_hours, sleep_quality, note
+    ) VALUES ($1,COALESCE($2::timestamp AT TIME ZONE 'Asia/Shanghai', now()),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+    RETURNING *`,
+    [
+      data.entry_type,
+      data.recorded_at || null,
+      numberOrNull(data.weight_kg),
+      data.meal_type || null,
+      data.food_text || null,
+      mealEstimate.calories ?? null,
+      mealEstimate.protein_g ?? null,
+      mealEstimate.carbs_g ?? null,
+      mealEstimate.fat_g ?? null,
+      data.workout_type || null,
+      data.workout_text || null,
+      numberOrNull(data.duration_min),
+      data.intensity || null,
+      burnedCalories,
+      numberOrNull(data.sleep_hours),
+      data.sleep_quality || null,
+      data.note || '',
+    ]
+  );
+  const report = await createFitnessReport(result.rows[0]);
+  return { entry: result.rows[0], report };
+}
+
+async function saveWechatMessage({ from_user, to_user, msg_type = 'text', content = '', raw_payload = {} }) {
+  const fitnessParsed = msg_type === 'text' ? parseFitnessMessage(content) : null;
+  const financeParsed = msg_type === 'text' && !fitnessParsed ? parseFinanceMessage(content) : null;
+  let financeEntry = null;
+  let fitnessEntry = null;
+  let intent = 'unknown';
+  let status = 'ignored';
+  let reply = '我还没识别出要记录什么。你可以发：体重 72.5、买咖啡 18、跑步 30 分钟、睡了 7 小时。';
+  if (fitnessParsed) {
+    const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content });
+    fitnessEntry = created.entry;
+    intent = `fitness.${fitnessParsed.entry_type}`;
+    status = 'recorded';
+    const labels = { weight: '体重', meal: '饮食', workout: '运动', sleep: '睡眠' };
+    reply = `已记录${labels[fitnessParsed.entry_type] || '健康'}：${created.report.summary}`;
+  } else if (financeParsed) {
+    const result = await pool.query(
+      `INSERT INTO finance_entries (direction, amount, category, title, note, source_user, raw_message)
+       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [financeParsed.direction, financeParsed.amount, financeParsed.category, financeParsed.title, financeParsed.note, from_user || null, financeParsed.raw_message]
+    );
+    financeEntry = result.rows[0];
+    intent = `finance.${financeParsed.direction}`;
+    status = 'recorded';
+    reply = `已记录${financeParsed.direction === 'income' ? '收入' : '支出'}：${financeParsed.title} ¥${Number(financeParsed.amount).toFixed(2)}，分类：${financeParsed.category}`;
+  }
+  const message = await pool.query(
+    `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, intent, parse_status, reply_text)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [from_user || null, to_user || null, msg_type || 'text', content || '', JSON.stringify(raw_payload), financeEntry?.id || null, fitnessEntry?.id || null, intent, status, reply]
+  );
+  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, reply };
+}
+
+async function createFitnessReport(entry) {
+  let report;
+  try {
+    report = await deepseekFitnessAdvice(entry);
+  } catch (error) {
+    report = localFitnessAdvice(entry);
+    report.advice = `${report.advice}（DeepSeek 分析暂不可用：${error.message}）`;
+  }
+  const result = await pool.query(
+    `INSERT INTO fitness_ai_reports (entry_id, summary, advice, risk_level)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [entry.id, report.summary, report.advice, report.risk_level]
+  );
+  return result.rows[0];
 }
 
 async function jsonBody(req) {
@@ -145,13 +721,68 @@ async function stats() {
   const [providers, keys, usage] = await Promise.all([
     pool.query('SELECT COUNT(*)::int count, COALESCE(SUM(balance),0)::float total_balance FROM providers'),
     pool.query("SELECT COUNT(*)::int count, COUNT(*) FILTER (WHERE status != 'active')::int abnormal FROM api_keys"),
-    pool.query('SELECT COUNT(*)::int calls, COALESCE(SUM("cost"),0)::float today_cost, COALESCE(AVG(latency_ms),0)::int avg_latency FROM usage_logs WHERE created_at::date = now()::date'),
+    pool.query("SELECT COUNT(*)::int calls, COALESCE(SUM(\"cost\"),0)::float today_cost, COALESCE(AVG(latency_ms),0)::int avg_latency FROM usage_logs WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"),
   ]);
   return { ...providers.rows[0], key_count: keys.rows[0].count, abnormal_keys: keys.rows[0].abnormal, today_calls: usage.rows[0].calls, today_cost: usage.rows[0].today_cost, avg_latency: usage.rows[0].avg_latency };
 }
 
 async function handleApi(req, res, url) {
   if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true });
+  if (url.pathname === '/api/wechat/webhook' && req.method === 'GET') {
+    if (!verifyWechatSignature(url)) return sendJson(res, 403, { error: 'invalid signature' });
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end(url.searchParams.get('echostr') || 'ok');
+  }
+  if (url.pathname === '/api/wechat/work-webhook' && req.method === 'GET') {
+    const echo = url.searchParams.get('echostr') || '';
+    if (!verifyWechatWorkSignature(url, echo)) return sendJson(res, 403, { error: 'invalid signature' });
+    const plainEcho = WECHAT_WORK_ENCODING_AES_KEY ? decryptWechatWork(echo).xml : echo;
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end(plainEcho);
+  }
+  if (url.pathname === '/api/wechat/work-webhook' && req.method === 'POST') {
+    const body = await readTextBody(req);
+    const encrypted = xmlValue(body, 'Encrypt');
+    if (!verifyWechatWorkSignature(url, encrypted || body)) return sendJson(res, 403, { error: 'invalid signature' });
+    const xml = encrypted && WECHAT_WORK_ENCODING_AES_KEY ? decryptWechatWork(encrypted).xml : body;
+    const payload = parseWechatXml(xml);
+    const saved = await saveWechatMessage({ ...payload, raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), xml, ...payload } });
+    res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
+    return res.end(wechatWorkReply(payload.to_user, payload.from_user, saved.reply, url));
+  }
+  if (url.pathname === '/api/wechat/webhook' && req.method === 'POST') {
+    if (!verifyWechatSignature(url)) return sendJson(res, 403, { error: 'invalid signature' });
+    const xml = await readTextBody(req);
+    const payload = parseWechatXml(xml);
+    const saved = await saveWechatMessage({ ...payload, raw_payload: { xml, ...payload } });
+    res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
+    return res.end(wechatTextReply(payload.to_user, payload.from_user, saved.reply));
+  }
+  if (url.pathname === '/api/wechat/test-message' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const saved = await saveWechatMessage({
+      from_user: data.from_user || 'local-test-user',
+      to_user: data.to_user || 'ai-key-hub',
+      msg_type: 'text',
+      content: data.content || '',
+      raw_payload: data,
+    });
+    return sendJson(res, 201, saved);
+  }
+  if (url.pathname === '/api/finance/entries' && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM finance_entries ORDER BY occurred_at DESC, id DESC LIMIT 100');
+    return sendJson(res, 200, result.rows);
+  }
+  const financeEntryMatch = url.pathname.match(/^\/api\/finance\/entries\/(\d+)$/);
+  if (financeEntryMatch && req.method === 'DELETE') {
+    await pool.query('UPDATE wechat_messages SET finance_entry_id=NULL WHERE finance_entry_id=$1', [Number(financeEntryMatch[1])]);
+    const result = await pool.query('DELETE FROM finance_entries WHERE id=$1', [Number(financeEntryMatch[1])]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/wechat/messages' && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM wechat_messages ORDER BY received_at DESC, id DESC LIMIT 100');
+    return sendJson(res, 200, result.rows);
+  }
   if (url.pathname === '/api/stats') return sendJson(res, 200, await stats());
   if (url.pathname === '/api/balances/refresh' && req.method === 'POST') {
     return sendJson(res, 200, { updated_at: new Date().toISOString(), results: await refreshProviderBalances() });
@@ -183,8 +814,22 @@ async function handleApi(req, res, url) {
     const result = await pool.query(`
       SELECT k.*, p.name provider_name, p.code provider_code, p.base_url,
              p.balance provider_balance, p.currency provider_currency, p.low_balance_threshold,
+             COALESCE(today_usage.cost,0)::float today_used_amount,
+             COALESCE(month_usage.cost,0)::float month_used_amount,
              k.api_key AS raw_key
       FROM api_keys k JOIN providers p ON p.id = k.provider_id
+      LEFT JOIN (
+        SELECT api_key_id, SUM("cost") cost
+        FROM usage_logs
+        WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
+        GROUP BY api_key_id
+      ) today_usage ON today_usage.api_key_id = k.id
+      LEFT JOIN (
+        SELECT api_key_id, SUM("cost") cost
+        FROM usage_logs
+        WHERE created_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'
+        GROUP BY api_key_id
+      ) month_usage ON month_usage.api_key_id = k.id
       ORDER BY k.id DESC`);
     return sendJson(res, 200, result.rows.map(publicKeyRow));
   }
@@ -214,13 +859,12 @@ async function handleApi(req, res, url) {
     const data = await jsonBody(req);
     const dailyQuota = Number(data.daily_quota || 0);
     const monthlyQuota = Number(data.monthly_quota || 0);
-    const usedAmount = Number(data.used_amount || 0);
     const budgetAction = ['alert', 'disable_copy', 'disable_key'].includes(data.budget_action) ? data.budget_action : 'alert';
     const result = await pool.query(
       `UPDATE api_keys
-       SET daily_quota=$1, monthly_quota=$2, used_amount=$3, budget_action=$4, remark=$5, updated_at=now()
-       WHERE id=$6 RETURNING *`,
-      [dailyQuota, monthlyQuota, usedAmount, budgetAction, data.remark || '', id]
+       SET daily_quota=$1, monthly_quota=$2, budget_action=$3, remark=$4, updated_at=now()
+       WHERE id=$5 RETURNING *`,
+      [dailyQuota, monthlyQuota, budgetAction, data.remark || '', id]
     );
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? publicKeyRow(result.rows[0]) : { error: 'not found' });
   }
@@ -241,6 +885,188 @@ async function handleApi(req, res, url) {
     const result = await pool.query('SELECT m.*, p.name provider_name, p.code provider_code FROM models m JOIN providers p ON p.id=m.provider_id ORDER BY p.id,m.name');
     return sendJson(res, 200, result.rows);
   }
+  if (url.pathname === '/api/fitness/summary' && req.method === 'GET') {
+    const [latestWeight, weightTrend, todayMeals, todayWorkout, recentAdvice, dailyRecords] = await Promise.all([
+      pool.query("SELECT weight_kg, recorded_at FROM fitness_entries WHERE entry_type='weight' AND weight_kg IS NOT NULL ORDER BY recorded_at DESC LIMIT 1"),
+      pool.query("SELECT recorded_at, weight_kg FROM fitness_entries WHERE entry_type='weight' AND weight_kg IS NOT NULL AND recorded_at >= now() - interval '30 days' ORDER BY recorded_at ASC"),
+      pool.query("SELECT COUNT(*)::int count, COALESCE(SUM(calories),0)::float calories FROM fitness_entries WHERE entry_type='meal' AND recorded_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"),
+      pool.query("SELECT COUNT(*)::int count, COALESCE(SUM(duration_min),0)::int duration_min, COALESCE(SUM(burned_calories),0)::float burned_calories FROM fitness_entries WHERE entry_type='workout' AND recorded_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"),
+      pool.query('SELECT r.* FROM fitness_ai_reports r JOIN fitness_entries e ON e.id=r.entry_id ORDER BY r.created_at DESC LIMIT 1'),
+      pool.query(`
+        SELECT (recorded_at AT TIME ZONE 'Asia/Shanghai')::date record_day,
+               COUNT(*) FILTER (WHERE entry_type='meal')::int meal_count,
+               COALESCE(SUM(calories) FILTER (WHERE entry_type='meal'),0)::float calories,
+               COALESCE(SUM(duration_min) FILTER (WHERE entry_type='workout'),0)::int workout_min,
+               COALESCE(SUM(burned_calories) FILTER (WHERE entry_type='workout'),0)::float burned_calories,
+               COALESCE(AVG(sleep_hours) FILTER (WHERE entry_type='sleep'),0)::float sleep_hours
+        FROM fitness_entries
+        WHERE recorded_at >= now() - interval '30 days'
+        GROUP BY record_day
+        ORDER BY record_day ASC`),
+    ]);
+    const weight = latestWeight.rows[0]?.weight_kg ? Number(latestWeight.rows[0].weight_kg) : null;
+    const heightM = PROFILE_HEIGHT_CM / 100;
+    const bmi = weight ? Number((weight / (heightM * heightM)).toFixed(1)) : null;
+    return sendJson(res, 200, {
+      profile: { height_cm: PROFILE_HEIGHT_CM, bmi },
+      latest_weight: latestWeight.rows[0] || null,
+      weight_trend: weightTrend.rows,
+      daily_records: dailyRecords.rows,
+      today_meals: todayMeals.rows[0],
+      today_workout: todayWorkout.rows[0],
+      latest_advice: recentAdvice.rows[0] || null,
+    });
+  }
+  if (url.pathname === '/api/fitness/entries' && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT e.*, r.summary ai_summary, r.advice ai_advice, r.risk_level ai_risk_level
+      FROM fitness_entries e
+      LEFT JOIN LATERAL (
+        SELECT * FROM fitness_ai_reports r WHERE r.entry_id=e.id ORDER BY r.created_at DESC LIMIT 1
+      ) r ON true
+      ORDER BY e.recorded_at DESC, e.id DESC
+      LIMIT 100`);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/fitness/entries' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const created = await createFitnessEntry(data);
+    return sendJson(res, 201, created);
+  }
+  const fitnessEntryMatch = url.pathname.match(/^\/api\/fitness\/entries\/(\d+)$/);
+  if (fitnessEntryMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM fitness_entries WHERE id=$1', [Number(fitnessEntryMatch[1])]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/knowledge/summary' && req.method === 'GET') {
+    const [bases, docs, chunks, queries] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int count FROM knowledge_bases'),
+      pool.query('SELECT COUNT(*)::int count FROM knowledge_documents'),
+      pool.query('SELECT COUNT(*)::int count FROM knowledge_chunks'),
+      pool.query('SELECT COUNT(*)::int count FROM knowledge_queries'),
+    ]);
+    return sendJson(res, 200, { bases: bases.rows[0].count, documents: docs.rows[0].count, chunks: chunks.rows[0].count, queries: queries.rows[0].count });
+  }
+  if (url.pathname === '/api/knowledge/bases' && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT b.*, COUNT(DISTINCT d.id)::int document_count, COUNT(DISTINCT c.id)::int chunk_count
+      FROM knowledge_bases b
+      LEFT JOIN knowledge_documents d ON d.kb_id=b.id
+      LEFT JOIN knowledge_chunks c ON c.kb_id=b.id
+      GROUP BY b.id
+      ORDER BY b.updated_at DESC, b.id DESC`);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/knowledge/categories' && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT c.*, COUNT(b.id)::int base_count
+      FROM knowledge_categories c
+      LEFT JOIN knowledge_bases b ON b.category=c.code
+      GROUP BY c.id
+      ORDER BY c.id`);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/knowledge/categories' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const name = String(data.name || '').trim();
+    if (!name) return sendJson(res, 400, { error: 'name required' });
+    const code = categoryCode(data.code || name);
+    const result = await pool.query(
+      `INSERT INTO knowledge_categories (code, name) VALUES ($1,$2) RETURNING *`,
+      [code, name]
+    );
+    return sendJson(res, 201, result.rows[0]);
+  }
+  const categoryMatch = url.pathname.match(/^\/api\/knowledge\/categories\/(\d+)$/);
+  if (categoryMatch && req.method === 'PUT') {
+    const data = await jsonBody(req);
+    const name = String(data.name || '').trim();
+    if (!name) return sendJson(res, 400, { error: 'name required' });
+    const result = await pool.query(
+      `UPDATE knowledge_categories SET name=$1, updated_at=now() WHERE id=$2 RETURNING *`,
+      [name, Number(categoryMatch[1])]
+    );
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
+  if (categoryMatch && req.method === 'DELETE') {
+    const category = await pool.query('SELECT * FROM knowledge_categories WHERE id=$1', [Number(categoryMatch[1])]);
+    if (!category.rowCount) return sendJson(res, 404, { error: 'not found' });
+    if (category.rows[0].code === 'general') return sendJson(res, 400, { error: '通用分类不能删除' });
+    await pool.query('UPDATE knowledge_bases SET category=$1, updated_at=now() WHERE category=$2', ['general', category.rows[0].code]);
+    const result = await pool.query('DELETE FROM knowledge_categories WHERE id=$1', [Number(categoryMatch[1])]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/knowledge/bases' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const result = await pool.query(
+      `INSERT INTO knowledge_bases (name, description, category, status) VALUES ($1,$2,$3,'active') RETURNING *`,
+      [data.name, data.description || '', data.category || 'general']
+    );
+    return sendJson(res, 201, result.rows[0]);
+  }
+  const kbMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)$/);
+  if (kbMatch && req.method === 'DELETE') {
+    const deleted = await deleteKnowledgeBase(Number(kbMatch[1]));
+    return sendJson(res, 200, { deleted });
+  }
+  const kbDocsMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/documents$/);
+  if (kbDocsMatch && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT d.*, COUNT(c.id)::int chunk_count
+      FROM knowledge_documents d LEFT JOIN knowledge_chunks c ON c.doc_id=d.id
+      WHERE d.kb_id=$1
+      GROUP BY d.id
+      ORDER BY d.created_at DESC`, [Number(kbDocsMatch[1])]);
+    return sendJson(res, 200, result.rows);
+  }
+  const textDocMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/documents\/text$/);
+  if (textDocMatch && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const doc = await pool.query(
+      `INSERT INTO knowledge_documents (kb_id,title,source_type,raw_text,status) VALUES ($1,$2,'text',$3,'processing') RETURNING *`,
+      [Number(textDocMatch[1]), data.title || '未命名文本', data.text || '']
+    );
+    const processed = await processKnowledgeDocument(doc.rows[0].id);
+    return sendJson(res, 201, { document: doc.rows[0], processed });
+  }
+  const uploadDocMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/documents\/upload$/);
+  if (uploadDocMatch && req.method === 'POST') {
+    const { fields, files } = await parseMultipart(req);
+    const file = files[0];
+    if (!file) return sendJson(res, 400, { error: 'file required' });
+    const safeName = `${Date.now()}_${file.filename || 'upload'}`.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const filePath = path.join(UPLOAD_DIR, safeName);
+    await writeFile(filePath, file.buffer);
+    const rawText = await parseDocumentBuffer(file.buffer, file.filename, 'upload');
+    const doc = await pool.query(
+      `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,raw_text,status) VALUES ($1,$2,'upload',$3,$4,$5,'processing') RETURNING *`,
+      [Number(uploadDocMatch[1]), fields.title || file.filename || '上传文档', file.filename || safeName, filePath, rawText]
+    );
+    const processed = await processKnowledgeDocument(doc.rows[0].id);
+    return sendJson(res, 201, { document: doc.rows[0], processed });
+  }
+  const docMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)$/);
+  if (docMatch && req.method === 'DELETE') {
+    const deleted = await deleteKnowledgeDocument(Number(docMatch[1]));
+    return sendJson(res, 200, { deleted });
+  }
+  if (url.pathname === '/api/knowledge/search' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const rows = await searchKnowledge(data.kb_id, data.query || '', Number(data.top_k || 6));
+    return sendJson(res, 200, rows);
+  }
+  if (url.pathname === '/api/knowledge/ask' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const sources = await searchKnowledge(data.kb_id, data.question || '', Number(data.top_k || 6));
+    const answer = sources.length ? await deepseekKnowledgeAnswer(data.question || '', sources) : '知识库里没有检索到相关内容。';
+    const saved = await pool.query('INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *', [data.kb_id || null, data.question || '', answer, JSON.stringify(sources.slice(0, 6))]);
+    return sendJson(res, 200, { answer, sources, query: saved.rows[0] });
+  }
+  const historyMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/queries$/);
+  if (historyMatch && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM knowledge_queries WHERE kb_id=$1 ORDER BY created_at DESC LIMIT 30', [Number(historyMatch[1])]);
+    return sendJson(res, 200, result.rows);
+  }
   return sendJson(res, 404, { error: 'not found' });
 }
 
@@ -259,7 +1085,8 @@ await initDb();
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
-    if (url.pathname !== '/api/health' && !authorized(req)) return sendUnauthorized(res);
+    const publicApi = ['/api/health', '/api/wechat/webhook', '/api/wechat/work-webhook'].includes(url.pathname);
+    if (!publicApi && !authorized(req)) return sendUnauthorized(res);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (error) {

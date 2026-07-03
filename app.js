@@ -23,8 +23,9 @@ const MODULES = [
   },
   { id: 'gateway', name: 'Gateway', desc: '统一模型路由、限流与故障切换', icon: 'gateway.svg', status: 'planned' },
   { id: 'agent', name: 'Agent Hub', desc: '多 Agent 编排与工具链调度', icon: 'agent.svg', status: 'planned' },
-  { id: 'knowledge', name: 'Knowledge', desc: 'RAG 知识库索引与检索', icon: 'knowledge.svg', status: 'planned' },
+  { id: 'knowledge', name: 'Knowledge', desc: '选择知识库，检索上下文并进行 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
   { id: 'tasks', name: 'Task Forge', desc: '定时任务、巡检与自动化流水线', icon: 'tasks.svg', status: 'planned' },
+  { id: 'fitlog', name: 'FitLog', desc: '体重、饮食、运动记录与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
   { id: 'monitor', name: 'Monitor', desc: '延迟、错误率与链路追踪', icon: 'monitor.svg', status: 'planned', wide: true },
   { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },
   { id: 'audit', name: 'Audit Log', desc: '操作审计与合规留痕', icon: 'audit.svg', status: 'planned' },
@@ -36,6 +37,9 @@ let keys = [];
 let models = [];
 let usageSeries = [];
 let pulseChart;
+let fitnessSummary = null;
+let fitnessChart;
+let knowledgeSummary = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
@@ -46,7 +50,7 @@ async function api(path, options = {}) {
 function updateClock() {
   const el = $('#clock');
   if (!el) return;
-  el.textContent = new Date().toLocaleString('zh-CN', { hour12: false });
+  el.textContent = new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 setInterval(updateClock, 1000);
 updateClock();
@@ -134,6 +138,13 @@ function initPulseChart() {
   renderPulseChart();
 }
 
+function initFitnessChart() {
+  const el = document.getElementById('fitnessChart');
+  if (!el || typeof echarts === 'undefined') return;
+  fitnessChart = echarts.init(el);
+  renderFitnessChart();
+}
+
 function renderPulseChart() {
   if (!pulseChart) return;
   const series = buildUsageSeries(usageSeries);
@@ -146,14 +157,46 @@ function renderPulseChart() {
   });
 }
 
+function renderFitnessChart() {
+  if (!fitnessChart) return;
+  const weightRows = fitnessSummary?.weight_trend || [];
+  const dailyRows = fitnessSummary?.daily_records || [];
+  const labels = Array.from(new Set([
+    ...weightRows.map((row) => new Date(row.recorded_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5)),
+    ...dailyRows.map((row) => new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5)),
+  ]));
+  const weightMap = new Map(weightRows.map((row) => [new Date(row.recorded_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.weight_kg)]));
+  const calorieMap = new Map(dailyRows.map((row) => [new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.calories || 0)]));
+  const workoutMap = new Map(dailyRows.map((row) => [new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.workout_min || 0)]));
+  const sleepMap = new Map(dailyRows.map((row) => [new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.sleep_hours || 0)]));
+  fitnessChart.setOption({
+    tooltip,
+    legend: { top: 0, right: 0, textStyle: axisStyle },
+    grid: { top: 38, right: 10, bottom: 24, left: 32 },
+    xAxis: { type: 'category', data: labels, axisLabel: axisStyle, axisLine: { lineStyle: gridLine }, axisTick: { show: false } },
+    yAxis: [
+      { type: 'value', scale: true, axisLabel: axisStyle, splitLine: { lineStyle: gridLine } },
+      { type: 'value', axisLabel: axisStyle, splitLine: { show: false } },
+    ],
+    series: [
+      { name: '体重kg', type: 'line', smooth: true, symbolSize: 5, data: labels.map((label) => weightMap.get(label) ?? null), lineStyle: { color: '#d4924a', width: 2 }, itemStyle: { color: '#d4924a' } },
+      { name: '摄入kcal', type: 'bar', yAxisIndex: 1, data: labels.map((label) => calorieMap.get(label) || 0), itemStyle: { color: 'rgba(212,146,74,.28)' } },
+      { name: '运动min', type: 'bar', yAxisIndex: 1, data: labels.map((label) => workoutMap.get(label) || 0), itemStyle: { color: 'rgba(61,154,106,.32)' } },
+      { name: '睡眠h', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 4, data: labels.map((label) => sleepMap.get(label) || 0), lineStyle: { color: '#a8b0bc', width: 1.5 }, itemStyle: { color: '#a8b0bc' } },
+    ],
+  });
+}
+
 function renderBudgetList() {
+  const target = $('#budgetList');
+  if (!target) return;
   const rows = providers.map((p) => {
     const balance = Number(p.balance || 0);
     const threshold = Number(p.low_balance_threshold || 0);
     const pct = threshold > 0 ? Math.min(100, Math.round((balance / threshold) * 100)) : 0;
     return { name: p.name, balance, threshold, pct, low: threshold > 0 && balance < threshold };
   });
-  $('#budgetList').innerHTML = rows.length
+  target.innerHTML = rows.length
     ? rows.map((r) => `
       <div class="budget-row">
         <div><strong>${r.name}</strong><span>${money(r.balance)} / 阈值 ${money(r.threshold)}</span></div>
@@ -163,32 +206,40 @@ function renderBudgetList() {
 }
 
 function renderDataStream() {
+  const target = $('#dataStream');
+  if (!target) return;
   const rows = usageSeries.slice(0, 6);
-  $('#dataStream').innerHTML = rows.length
-    ? rows.map((row) => `<div class="stream-row"><span>${new Date(row.bucket).toLocaleTimeString('zh-CN', { hour12: false })}</span><strong>${row.calls} calls</strong><em>${money(row.cost)}</em></div>`).join('')
+  target.innerHTML = rows.length
+    ? rows.map((row) => `<div class="stream-row"><span>${new Date(row.bucket).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })}</span><strong>${row.calls} calls</strong><em>${money(row.cost)}</em></div>`).join('')
     : '<div class="empty-state">暂无真实调用日志</div>';
 }
 
 async function loadDashboard() {
   await api('/api/balances/refresh', { method: 'POST' }).catch(() => null);
-  [stats, providers, keys, models, usageSeries] = await Promise.all([
+  [stats, providers, keys, models, usageSeries, fitnessSummary, knowledgeSummary] = await Promise.all([
     api('/api/stats'),
     api('/api/providers'),
     api('/api/keys'),
     api('/api/models'),
     api('/api/usage/hourly'),
+    api('/api/fitness/summary'),
+    api('/api/knowledge/summary'),
   ]);
+  stats.knowledge_chunks = knowledgeSummary?.chunks || 0;
+  stats.knowledge_queries = knowledgeSummary?.queries || 0;
   renderTelemetry();
   renderModules();
   renderSignals();
   renderBudgetList();
   renderDataStream();
   renderPulseChart();
+  renderFitnessChart();
 }
 
 initPulseChart();
+initFitnessChart();
 loadDashboard().catch((error) => {
   console.error(error);
   $('#signalFeed').innerHTML = `<div class="empty-state">加载真实数据失败：${error.message}</div>`;
 });
-window.addEventListener('resize', () => pulseChart?.resize());
+window.addEventListener('resize', () => { pulseChart?.resize(); fitnessChart?.resize(); });

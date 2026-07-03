@@ -11,5 +11,14 @@ services:
     volumes:
       - ai_key_hub_pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: ai-key-hub-chroma
+    ports:
+      - "8000:8000"
+    volumes:
+      - ai_key_hub_chroma:/chroma/chroma
+    restart: unless-stopped
 volumes:
   ai_key_hub_pgdata:
+  ai_key_hub_chroma:

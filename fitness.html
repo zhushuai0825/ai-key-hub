@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>FitLog · 健身记录</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./fitness.css" />
+</head>
+<body class="module fitlog">
+  <div class="fit-shell">
+    <header class="module-bar fit-bar">
+      <a class="module-back" href="/"><span>返回指挥台</span></a>
+      <div class="module-title"><strong>FitLog</strong><span>体重 · 饮食 · 运动 · AI 建议</span></div>
+      <div class="module-actions"><time id="clock" class="cockpit-clock">--</time><button class="btn" id="refreshBtn" type="button">刷新</button></div>
+    </header>
+
+    <main class="fit-body">
+      <section class="fit-summary" id="fitSummary"></section>
+
+      <section class="fit-grid">
+        <section class="fit-panel entry-panel">
+          <div class="panel-head"><h2>快速记录</h2><p>提交后自动生成建议</p></div>
+          <div class="type-tabs" role="tablist">
+            <button class="active" data-type="weight" type="button">体重</button>
+            <button data-type="meal" type="button">饮食</button>
+            <button data-type="workout" type="button">运动</button>
+            <button data-type="sleep" type="button">睡眠</button>
+          </div>
+          <form id="entryForm" class="entry-form">
+            <input type="hidden" name="entry_type" value="weight" />
+            <label>记录时间<input name="recorded_at" type="datetime-local" /></label>
+
+            <div class="fields fields-weight">
+              <label>体重 kg<input name="weight_kg" type="number" step="0.1" placeholder="例如 72.5" /></label>
+            </div>
+
+            <div class="fields fields-meal hidden">
+              <label>餐次<select name="meal_type"><option value="早餐">早餐</option><option value="午餐">午餐</option><option value="晚餐">晚餐</option><option value="加餐">加餐</option></select></label>
+              <label class="wide">吃了什么<input name="food_text" placeholder="例如 鸡胸肉、米饭、青菜" /></label>
+              <div class="ai-note wide">热量、蛋白质、碳水、脂肪由 AI 根据食物内容估算。</div>
+            </div>
+
+            <div class="fields fields-workout hidden">
+              <label>运动类型<select name="workout_type"><option value="力量">力量</option><option value="跑步">跑步</option><option value="骑行">骑行</option><option value="HIIT">HIIT</option><option value="其他">其他</option></select></label>
+              <label>强度<select name="intensity"><option value="低">低</option><option value="中">中</option><option value="高">高</option></select></label>
+              <label class="wide">运动内容<input name="workout_text" placeholder="例如 深蹲 5 组 + 跑步 30 分钟" /></label>
+              <label>时长 min<input name="duration_min" type="number" step="1" /></label>
+              <div class="ai-note wide">运动消耗由 AI 根据运动类型、内容、时长和强度估算。</div>
+            </div>
+
+            <div class="fields fields-sleep hidden">
+              <label>睡眠时长 h<input name="sleep_hours" type="number" step="0.1" placeholder="例如 7.5" /></label>
+              <label>睡眠质量<select name="sleep_quality"><option value="好">好</option><option value="一般">一般</option><option value="差">差</option></select></label>
+            </div>
+
+            <label class="wide">备注<input name="note" placeholder="身体状态、睡眠、训练感受" /></label>
+            <button class="btn btn-solid wide" type="submit">保存并分析</button>
+          </form>
+        </section>
+
+        <section class="fit-panel chart-panel">
+          <div class="panel-head"><h2>体重趋势</h2><p>最近 30 天</p></div>
+          <div id="weightChart" class="weight-chart"></div>
+        </section>
+
+        <section class="fit-panel advice-panel">
+          <div class="panel-head"><h2>最新 AI 建议</h2></div>
+          <div id="latestAdvice" class="advice-box"></div>
+        </section>
+
+        <section class="fit-panel history-panel">
+          <div class="panel-head"><h2>记录历史</h2><p>最近 100 条</p></div>
+          <div id="entryList" class="entry-list"></div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="./node_modules/echarts/dist/echarts.min.js"></script>
+  <script src="./fitness.js"></script>
+</body>
+</html>

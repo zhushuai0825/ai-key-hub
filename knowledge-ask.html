@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Knowledge Ask · 知识库问答</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page ask-only-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>Knowledge Ask</strong><span>选择知识库 · 检索上下文 · AI 回答</span></div>
+    <a class="btn" href="/knowledge.html">管理知识库</a>
+  </header>
+
+  <main class="kb-ask-shell">
+    <aside class="kb-panel ask-base-panel">
+      <div class="panel-head"><h2>选择知识库</h2><span id="kbSummary">--</span></div>
+      <div id="baseList" class="base-list"></div>
+    </aside>
+
+    <section class="kb-panel ask-main-panel">
+      <div class="panel-head"><h2>提问</h2><span id="askKbName">请选择知识库</span></div>
+      <form id="askForm" class="ask-form ask-large-form">
+        <textarea name="question" placeholder="输入你的问题，系统会先检索当前知识库，再调用 DeepSeek 回答"></textarea>
+        <button class="btn btn-solid" type="submit">开始提问</button>
+      </form>
+      <div id="answerBox" class="answer-box answer-large-box"></div>
+    </section>
+
+    <section class="kb-panel search-panel">
+      <div class="panel-head"><h2>检索测试</h2><span id="searchKbName">请选择知识库</span></div>
+      <form id="searchForm" class="search-form"><input name="query" placeholder="先检索知识库内容" /><button class="btn btn-solid" type="submit">搜索</button></form>
+      <div id="searchResults" class="result-list"></div>
+    </section>
+
+    <section class="kb-panel history-panel">
+      <div class="panel-head"><h2>问答历史</h2><span>最近 30 条</span></div>
+      <div id="queryHistory" class="history-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./knowledge-ask.js"></script>
+</body>
+</html>

@@ -35,7 +35,7 @@ function actionText(action) {
 }
 
 function budgetState(k) {
-  const used = Number(k.used_amount || 0);
+  const used = Number(k.month_used_amount || 0);
   const monthly = Number(k.monthly_quota || 0);
   if (!monthly) return { text: '未设置', cls: '' };
   const percent = Math.round((used / monthly) * 100);
@@ -45,7 +45,7 @@ function budgetState(k) {
 }
 
 function updateClock() {
-  $('#clock').textContent = new Date().toLocaleString('zh-CN', { hour12: false });
+  $('#clock').textContent = new Date().toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 setInterval(updateClock, 1000);
 updateClock();
@@ -147,7 +147,7 @@ function renderKeys() {
           <th>名称</th>
           <th>Key</th>
           <th>余额</th>
-          <th>预算 / 已用</th>
+          <th>预算使用</th>
           <th>状态</th>
           <th></th>
         </tr>
@@ -170,8 +170,9 @@ function renderKeys() {
               <td><span class="num ${balCls}">${money(bal)}</span><div class="sub">${isRealBalance ? '真实余额' : '未同步'}</div></td>
               <td>
                 <span class="num ${budget.cls}">${budget.text}</span>
-                <div class="sub">日 ${money(k.daily_quota)} · 月 ${money(k.monthly_quota)}</div>
-                <div class="sub">已用 ${money(k.used_amount)} · ${actionText(k.budget_action)}</div>
+                <div class="sub">今日 ${money(k.today_used_amount)} / ${money(k.daily_quota)}</div>
+                <div class="sub">本月 ${money(k.month_used_amount)} / ${money(k.monthly_quota)}</div>
+                <div class="sub">月预算从每月 1 日计算 · ${actionText(k.budget_action)}</div>
               </td>
               <td><span class="badge ${statusClass(k.status)}">${statusText(k.status)}</span></td>
               <td>
@@ -237,7 +238,6 @@ function openBudgetModal(id) {
   form.id.value = key.id;
   form.daily_quota.value = Number(key.daily_quota || 0);
   form.monthly_quota.value = Number(key.monthly_quota || 0);
-  form.used_amount.value = Number(key.used_amount || 0);
   form.budget_action.value = key.budget_action || 'alert';
   form.remark.value = key.remark || '';
   modal.classList.add('show');
@@ -258,7 +258,6 @@ async function saveBudget(event) {
   delete payload.id;
   payload.daily_quota = Number(payload.daily_quota || 0);
   payload.monthly_quota = Number(payload.monthly_quota || 0);
-  payload.used_amount = Number(payload.used_amount || 0);
   await api(`/api/keys/${id}/budget`, { method: 'PUT', body: JSON.stringify(payload) });
   closeBudgetModal();
   toast('预算已保存');
