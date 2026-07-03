@@ -9,6 +9,8 @@ const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8899);
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://ai_admin:ai_admin_123@127.0.0.1:5432/ai_key_hub';
+const AUTH_USER = process.env.APP_AUTH_USER || '';
+const AUTH_PASSWORD = process.env.APP_AUTH_PASSWORD || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
 
 const mime = {
@@ -45,6 +47,25 @@ function sendJson(res, status, payload) {
   res.end(body);
 }
 
+function authorized(req) {
+  if (!AUTH_USER || !AUTH_PASSWORD) return true;
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Basic ')) return false;
+  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+  const index = decoded.indexOf(':');
+  const user = decoded.slice(0, index);
+  const password = decoded.slice(index + 1);
+  return user === AUTH_USER && password === AUTH_PASSWORD;
+}
+
+function sendUnauthorized(res) {
+  res.writeHead(401, {
+    'WWW-Authenticate': 'Basic realm="AI Key Hub"',
+    'Content-Type': 'text/plain; charset=utf-8',
+  });
+  res.end('authentication required');
+}
+
 function copyPayload(provider, key, mode, model = '') {
   const apiKey = key.api_key;
   const baseUrl = provider.base_url;
@@ -55,6 +76,66 @@ function copyPayload(provider, key, mode, model = '') {
     return `curl ${baseUrl}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${modelName}","messages":[{"role":"user","content":"你好"}]}'`;
   }
   return apiKey;
+}
+
+function publicKeyRow(row) {
+  const { raw_key, api_key, ...rest } = row;
+  return { ...rest, api_key: maskKey(api_key || raw_key || '') };
+}
+
+function deepseekBalancePayload(payload) {
+  const balances = Array.isArray(payload?.balance_infos) ? payload.balance_infos : [];
+  const preferred = balances.find(item => item.currency === 'CNY') || balances[0];
+  return {
+    is_available: Boolean(payload?.is_available),
+    currency: preferred?.currency || 'CNY',
+    total_balance: Number(preferred?.total_balance || 0),
+    granted_balance: Number(preferred?.granted_balance || 0),
+    topped_up_balance: Number(preferred?.topped_up_balance || 0),
+    balance_infos: balances,
+  };
+}
+
+async function fetchDeepSeekBalance(apiKey) {
+  const response = await fetch('https://api.deepseek.com/user/balance', {
+    headers: {
+      Accept: 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.error?.message || body?.message || `DeepSeek balance request failed: ${response.status}`);
+  }
+  return deepseekBalancePayload(body);
+}
+
+async function refreshProviderBalances() {
+  const rows = await pool.query(`
+    SELECT DISTINCT ON (p.id) p.id provider_id, p.code, p.name, k.id key_id, k.api_key
+    FROM providers p
+    JOIN api_keys k ON k.provider_id = p.id
+    WHERE k.status = 'active'
+    ORDER BY p.id, k.updated_at DESC, k.id DESC`);
+
+  const results = [];
+  for (const row of rows.rows) {
+    if (row.code !== 'deepseek') {
+      results.push({ provider_id: row.provider_id, provider: row.name, skipped: true, reason: 'provider balance API not configured' });
+      continue;
+    }
+    try {
+      const balance = await fetchDeepSeekBalance(row.api_key);
+      await pool.query(
+        'UPDATE providers SET balance=$1,currency=$2,status=$3,updated_at=now() WHERE id=$4',
+        [balance.total_balance, balance.currency, balance.is_available ? 'active' : 'warning', row.provider_id]
+      );
+      results.push({ provider_id: row.provider_id, provider: row.name, key_id: row.key_id, ok: true, ...balance });
+    } catch (error) {
+      results.push({ provider_id: row.provider_id, provider: row.name, key_id: row.key_id, ok: false, error: error.message });
+    }
+  }
+  return results;
 }
 
 async function stats() {
@@ -69,10 +150,13 @@ async function stats() {
 async function handleApi(req, res, url) {
   if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true });
   if (url.pathname === '/api/stats') return sendJson(res, 200, await stats());
+  if (url.pathname === '/api/balances/refresh' && req.method === 'POST') {
+    return sendJson(res, 200, { updated_at: new Date().toISOString(), results: await refreshProviderBalances() });
+  }
   if (url.pathname === '/api/providers' && req.method === 'GET') {
     const result = await pool.query(`
-      SELECT p.*, COUNT(k.id)::int key_count, COUNT(m.id)::int model_count,
-             COALESCE(SUM(k.used_amount),0)::float used_amount
+      SELECT p.*, COUNT(DISTINCT k.id)::int key_count, COUNT(DISTINCT m.id)::int model_count,
+             COALESCE(SUM(DISTINCT k.used_amount),0)::float used_amount
       FROM providers p
       LEFT JOIN api_keys k ON k.provider_id = p.id
       LEFT JOIN models m ON m.provider_id = p.id
@@ -83,10 +167,11 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/keys' && req.method === 'GET') {
     const result = await pool.query(`
       SELECT k.*, p.name provider_name, p.code provider_code, p.base_url,
+             p.balance provider_balance, p.currency provider_currency, p.low_balance_threshold,
              k.api_key AS raw_key
       FROM api_keys k JOIN providers p ON p.id = k.provider_id
       ORDER BY k.id DESC`);
-    return sendJson(res, 200, result.rows.map(row => ({ ...row, api_key: maskKey(row.api_key) })));
+    return sendJson(res, 200, result.rows.map(publicKeyRow));
   }
   if (url.pathname === '/api/keys' && req.method === 'POST') {
     const data = await jsonBody(req);
@@ -95,7 +180,7 @@ async function handleApi(req, res, url) {
        VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
       [data.provider_id, data.name, data.api_key, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '']
     );
-    return sendJson(res, 201, { ...result.rows[0], api_key: maskKey(result.rows[0].api_key) });
+    return sendJson(res, 201, publicKeyRow(result.rows[0]));
   }
   const keyMatch = url.pathname.match(/^\/api\/keys\/(\d+)$/);
   if (keyMatch && req.method === 'PUT') {
@@ -106,7 +191,7 @@ async function handleApi(req, res, url) {
        WHERE id=$8 RETURNING *`,
       [data.provider_id, data.name, data.api_key, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '', id]
     );
-    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? { ...result.rows[0], api_key: maskKey(result.rows[0].api_key) } : { error: 'not found' });
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? publicKeyRow(result.rows[0]) : { error: 'not found' });
   }
   if (keyMatch && req.method === 'DELETE') {
     const result = await pool.query('DELETE FROM api_keys WHERE id=$1', [Number(keyMatch[1])]);
@@ -143,6 +228,7 @@ await initDb();
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
+    if (url.pathname !== '/api/health' && !authorized(req)) return sendUnauthorized(res);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (error) {
