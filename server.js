@@ -32,6 +32,7 @@ function maskKey(key = '') {
 async function initDb() {
   const sql = await readFile(path.join(__dirname, 'db/schema.sql'), 'utf8');
   await pool.query(sql);
+  await pool.query("DELETE FROM api_keys WHERE api_key LIKE 'sk-demo-%' OR remark ILIKE '%演示%'");
 }
 
 async function jsonBody(req) {
@@ -162,6 +163,18 @@ async function handleApi(req, res, url) {
       LEFT JOIN models m ON m.provider_id = p.id
       GROUP BY p.id
       ORDER BY p.id`);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/usage/hourly' && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT date_trunc('hour', created_at) bucket,
+             COUNT(*)::int calls,
+             COALESCE(SUM(cost),0)::float cost,
+             COALESCE(AVG(latency_ms),0)::int avg_latency
+      FROM usage_logs
+      WHERE created_at >= now() - interval '24 hours'
+      GROUP BY bucket
+      ORDER BY bucket DESC`);
     return sendJson(res, 200, result.rows);
   }
   if (url.pathname === '/api/keys' && req.method === 'GET') {

@@ -47,33 +47,3 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   latency_ms INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-
-INSERT INTO providers (code, name, base_url, balance, currency, status, low_balance_threshold)
-VALUES
-  ('deepseek', 'DeepSeek', 'https://api.deepseek.com', 126.80, 'CNY', 'active', 50),
-  ('qwen', '通义千问', 'https://dashscope.aliyuncs.com/compatible-mode/v1', 302.45, 'CNY', 'active', 80),
-  ('doubao', '豆包', 'https://ark.cn-beijing.volces.com/api/v3', 74.20, 'CNY', 'warning', 100),
-  ('zhipu', '智谱', 'https://open.bigmodel.cn/api/paas/v4', 218.60, 'CNY', 'active', 60)
-ON CONFLICT (code) DO NOTHING;
-
-INSERT INTO models (provider_id, name, context_length, input_price, output_price, enabled)
-SELECT p.id, m.name, m.context_length, m.input_price, m.output_price, true
-FROM providers p
-JOIN (VALUES
-  ('deepseek', 'deepseek-chat', 64000, 0.001000, 0.002000),
-  ('deepseek', 'deepseek-reasoner', 64000, 0.004000, 0.016000),
-  ('qwen', 'qwen-turbo', 1000000, 0.000300, 0.000600),
-  ('qwen', 'qwen-plus', 131072, 0.000800, 0.002000),
-  ('qwen', 'qwen-max', 32768, 0.020000, 0.060000),
-  ('doubao', 'doubao-seed-1.6', 256000, 0.000800, 0.002000),
-  ('doubao', 'doubao-pro-32k', 32768, 0.000800, 0.002000),
-  ('zhipu', 'glm-4-flash', 128000, 0.000000, 0.000000),
-  ('zhipu', 'glm-4-plus', 128000, 0.050000, 0.050000)
-) AS m(code, name, context_length, input_price, output_price)
-ON p.code = m.code
-ON CONFLICT (provider_id, name) DO NOTHING;
-
-INSERT INTO api_keys (provider_id, name, api_key, status, monthly_quota, used_amount, remark)
-SELECT p.id, p.name || ' 主 Key', 'sk-demo-' || p.code || '-replace-me', p.status, 500, CASE p.code WHEN 'doubao' THEN 425 ELSE 120 END, '演示数据，请替换为真实 Key'
-FROM providers p
-WHERE NOT EXISTS (SELECT 1 FROM api_keys k WHERE k.provider_id = p.id);
