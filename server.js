@@ -26,7 +26,8 @@ const WECHAT_WORK_TOKEN = process.env.WECHAT_WORK_TOKEN || '';
 const WECHAT_WORK_ENCODING_AES_KEY = process.env.WECHAT_WORK_ENCODING_AES_KEY || '';
 const WECHAT_WORK_CORP_ID = process.env.WECHAT_WORK_CORP_ID || '';
 const WECHAT_WORK_SECRET = process.env.WECHAT_WORK_SECRET || '';
-const WECHAT_DEFAULT_KB_ID = process.env.WECHAT_DEFAULT_KB_ID ? Number(process.env.WECHAT_DEFAULT_KB_ID) : null;
+const WECHAT_WORK_AGENT_ID = process.env.WECHAT_WORK_AGENT_ID ? Number(process.env.WECHAT_WORK_AGENT_ID) : null;
+const ASSISTANT_TASK_POLL_MS = Number(process.env.ASSISTANT_TASK_POLL_MS || 60000);
 const ASSISTANT_CACHE_TTL_WECHAT = Number(process.env.ASSISTANT_CACHE_TTL_WECHAT || 1800);
 const ASSISTANT_CACHE_TTL_WEB = Number(process.env.ASSISTANT_CACHE_TTL_WEB || 86400);
 const ASSISTANT_CACHE_TTL_PINNED = Number(process.env.ASSISTANT_CACHE_TTL_PINNED || 60 * 60 * 24 * 30);
@@ -82,7 +83,9 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_memories_user ON assistant_memories(from_user, updated_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_memories_category ON assistant_memories(category)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_finance_entries_user_time ON finance_entries(source_user, occurred_at DESC)');
-  await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_time ON fitness_entries(recorded_at DESC)');
+  await pool.query('ALTER TABLE fitness_entries ADD COLUMN IF NOT EXISTS source_user TEXT');
+  await pool.query('ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_user_time ON fitness_entries(source_user, recorded_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_tasks_user_status ON assistant_tasks(from_user, status, remind_at)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_reports_user_type ON assistant_reports(from_user, report_type, created_at DESC)');
 }
@@ -207,8 +210,9 @@ async function buildWechatUserContext(fromUser, { light = false } = {}) {
     SELECT weight_kg, recorded_at
     FROM fitness_entries
     WHERE entry_type='weight' AND weight_kg IS NOT NULL
+      AND ($1::text IS NULL OR source_user=$1 OR source_user IS NULL)
     ORDER BY recorded_at DESC
-    LIMIT 1`);
+    LIMIT 1`, [fromUser || null]);
   if (light) {
     const [monthStats, latestWeight] = await Promise.all([monthQuery, weightQuery]);
     const expense = Number(monthStats.rows[0]?.expense || 0);
@@ -225,8 +229,9 @@ async function buildWechatUserContext(fromUser, { light = false } = {}) {
       SELECT entry_type, recorded_at, weight_kg, meal_type, food_text, calories, workout_type,
              duration_min, burned_calories, sleep_hours, sleep_quality, note
       FROM fitness_entries
+      WHERE ($1::text IS NULL OR source_user=$1 OR source_user IS NULL)
       ORDER BY recorded_at DESC, id DESC
-      LIMIT 25`),
+      LIMIT 25`, [fromUser || null]),
     pool.query(`
       SELECT direction, amount, category, title, occurred_at
       FROM finance_entries
@@ -616,7 +621,7 @@ async function assistantCacheSummary() {
 }
 
 async function dashboardMemoryBundle() {
-  const [cacheHits, lifestyle, finance, monthStats] = await Promise.all([
+  const [cacheHits, lifestyle, finance, monthStats, tasks] = await Promise.all([
     pool.query(`
       SELECT id, question, answer, topic, hit_count, last_hit_at, channel, pinned
       FROM assistant_answer_cache
@@ -640,6 +645,12 @@ async function dashboardMemoryBundle() {
         COALESCE(SUM(amount) FILTER (WHERE direction='income'), 0)::float income
       FROM finance_entries
       WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`),
+    pool.query(`
+      SELECT *
+      FROM assistant_tasks
+      WHERE status='pending'
+      ORDER BY remind_at NULLS LAST, created_at DESC
+      LIMIT 20`),
   ]);
   const expense = Number(monthStats.rows[0]?.expense || 0);
   const income = Number(monthStats.rows[0]?.income || 0);
@@ -647,11 +658,14 @@ async function dashboardMemoryBundle() {
     cache_hits: cacheHits.rows,
     lifestyle: lifestyle.rows,
     finance: finance.rows,
+    tasks: tasks.rows,
     month_stats: { expense, income, balance: income - expense },
     counts: {
       cache_hits: cacheHits.rowCount,
       lifestyle: lifestyle.rowCount,
       finance: finance.rowCount,
+      tasks: tasks.rowCount,
+      tasks_due: tasks.rows.filter((row) => row.remind_at && new Date(row.remind_at).getTime() <= Date.now()).length,
     },
   };
 }
@@ -873,6 +887,73 @@ async function getWechatWorkAccessToken() {
   if (!response.ok || body.errcode) throw new Error(body.errmsg || `企业微信 access_token 获取失败：${response.status}`);
   wechatWorkTokenCache = { token: body.access_token, expiresAt: Date.now() + Number(body.expires_in || 7200) * 1000 };
   return wechatWorkTokenCache.token;
+}
+
+async function sendWechatWorkTextMessage(toUser, content) {
+  if (!WECHAT_WORK_AGENT_ID) throw new Error('未配置 WECHAT_WORK_AGENT_ID');
+  if (!toUser) throw new Error('缺少接收用户');
+  const token = await getWechatWorkAccessToken();
+  const response = await fetch(`https://qyapi.weixin.qq.com/cgi-bin/message/send?access_token=${token}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      touser: toUser,
+      msgtype: 'text',
+      agentid: WECHAT_WORK_AGENT_ID,
+      text: { content: String(content || '').slice(0, 2000) },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.errcode) throw new Error(body.errmsg || `企业微信发消息失败：${response.status}`);
+  return body;
+}
+
+function computeNextRemindAt(current, recurrence) {
+  const base = new Date(current);
+  if (Number.isNaN(base.getTime())) return null;
+  if (recurrence === 'daily') base.setDate(base.getDate() + 1);
+  else if (recurrence === 'weekly') base.setDate(base.getDate() + 7);
+  else if (recurrence === 'monthly') base.setMonth(base.getMonth() + 1);
+  else return null;
+  return base;
+}
+
+async function processDueAssistantTasks() {
+  if (!WECHAT_WORK_AGENT_ID || !WECHAT_WORK_SECRET) {
+    return { skipped: true, reason: 'wechat agent not configured', processed: 0, results: [] };
+  }
+  const due = await pool.query(`
+    SELECT * FROM assistant_tasks
+    WHERE status='pending'
+      AND remind_at IS NOT NULL
+      AND remind_at <= now()
+      AND (last_notified_at IS NULL OR last_notified_at < remind_at)
+    ORDER BY remind_at ASC
+    LIMIT 20`);
+  const results = [];
+  for (const task of due.rows) {
+    try {
+      const text = `⏰ 提醒：${task.title}${task.note ? `\n${task.note}` : ''}`;
+      if (task.from_user) await sendWechatWorkTextMessage(task.from_user, text);
+      if (!task.recurrence || task.recurrence === 'none') {
+        await pool.query(`
+          UPDATE assistant_tasks
+          SET status='done', completed_at=now(), last_notified_at=now(), updated_at=now()
+          WHERE id=$1`, [task.id]);
+      } else {
+        const next = computeNextRemindAt(task.remind_at, task.recurrence);
+        await pool.query(`
+          UPDATE assistant_tasks
+          SET remind_at=COALESCE($1, remind_at), last_notified_at=now(), updated_at=now()
+          WHERE id=$2`, [next, task.id]);
+      }
+      results.push({ id: task.id, ok: true, user: task.from_user || null });
+    } catch (error) {
+      results.push({ id: task.id, ok: false, error: error.message });
+    }
+  }
+  if (results.length) console.log(`[tasks] processed ${results.length} due reminders`);
+  return { skipped: false, processed: results.length, results };
 }
 
 async function downloadWechatWorkMedia(mediaId) {
@@ -1134,8 +1215,8 @@ async function createFitnessEntry(data) {
   const result = await pool.query(
     `INSERT INTO fitness_entries (
       entry_type, recorded_at, weight_kg, meal_type, food_text, calories, protein_g, carbs_g, fat_g,
-      workout_type, workout_text, duration_min, intensity, burned_calories, sleep_hours, sleep_quality, note
-    ) VALUES ($1,COALESCE($2::timestamp AT TIME ZONE 'Asia/Shanghai', now()),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+      workout_type, workout_text, duration_min, intensity, burned_calories, sleep_hours, sleep_quality, note, source_user
+    ) VALUES ($1,COALESCE($2::timestamp AT TIME ZONE 'Asia/Shanghai', now()),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
     RETURNING *`,
     [
       data.entry_type,
@@ -1155,6 +1236,7 @@ async function createFitnessEntry(data) {
       numberOrNull(data.sleep_hours),
       data.sleep_quality || null,
       data.note || '',
+      data.source_user || null,
     ]
   );
   const report = await createFitnessReport(result.rows[0]);
@@ -1254,7 +1336,7 @@ async function applyDeleteAction(action, fromUser) {
 async function buildReportText(reportType, fromUser) {
   const days = reportType === 'monthly' ? 31 : (reportType === 'weekly' ? 7 : 1);
   const [fitness, finance] = await Promise.all([
-    pool.query(`SELECT * FROM fitness_entries WHERE recorded_at >= now() - ($1 || ' days')::interval ORDER BY recorded_at ASC`, [days]),
+    pool.query(`SELECT * FROM fitness_entries WHERE recorded_at >= now() - ($1 || ' days')::interval AND ($2::text IS NULL OR source_user=$2 OR source_user IS NULL) ORDER BY recorded_at ASC`, [days, fromUser || null]),
     pool.query(`SELECT * FROM finance_entries WHERE occurred_at >= now() - ($1 || ' days')::interval AND ($2::text IS NULL OR source_user=$2 OR source_user IS NULL) ORDER BY occurred_at ASC`, [days, fromUser || null]),
   ]);
   const income = finance.rows.filter((row) => row.direction === 'income').reduce((sum, row) => sum + Number(row.amount), 0);
@@ -1287,7 +1369,7 @@ async function executeAssistantActions(actions, content, fromUser) {
   const result = { financeEntry: null, fitnessEntry: null, memories: [], tasks: [], reports: [], corrections: [], deletions: [], intents: [] };
   for (const action of Array.isArray(actions) ? actions : []) {
     if (action?.type === 'fitness' && action.entry_type) {
-      const created = await createFitnessEntry({ ...action, note: action.note || content });
+      const created = await createFitnessEntry({ ...action, note: action.note || content, source_user: fromUser });
       result.fitnessEntry ||= created.entry;
       result.intents.push(`fitness.${action.entry_type}`);
       continue;
@@ -1396,7 +1478,7 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
       const fitnessParsed = parseFitnessMessage(content);
       const financeParsed = !fitnessParsed ? parseFinanceMessage(content) : null;
       if (fitnessParsed) {
-        const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content });
+        const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content, source_user: from_user });
         fitnessEntry = created.entry;
         intent = `fitness.${fitnessParsed.entry_type}`;
         status = 'recorded';
@@ -2005,6 +2087,9 @@ async function handleApi(req, res, url) {
     const data = await jsonBody(req);
     return sendJson(res, 201, await createAssistantTask(data, data.from_user || null));
   }
+  if (url.pathname === '/api/assistant/tasks/run-due' && req.method === 'POST') {
+    return sendJson(res, 200, await processDueAssistantTasks());
+  }
   const taskMatch = url.pathname.match(/^\/api\/assistant\/tasks\/(\d+)$/);
   if (taskMatch && req.method === 'PATCH') {
     const data = await jsonBody(req);
@@ -2099,4 +2184,12 @@ http.createServer(async (req, res) => {
     console.error(error);
     return sendJson(res, 500, { error: error.message });
   }
-}).listen(PORT, () => console.log(`AI Key Hub running at http://127.0.0.1:${PORT}`));
+}).listen(PORT, () => {
+  console.log(`AI Key Hub running at http://127.0.0.1:${PORT}`);
+  setTimeout(() => {
+    processDueAssistantTasks().catch((error) => console.error('[tasks] startup', error.message));
+  }, 5000);
+  setInterval(() => {
+    processDueAssistantTasks().catch((error) => console.error('[tasks] poll', error.message));
+  }, ASSISTANT_TASK_POLL_MS);
+});

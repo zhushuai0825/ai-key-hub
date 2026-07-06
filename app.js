@@ -25,7 +25,7 @@ const MODULES = [
   { id: 'agent', name: 'Agent Hub', desc: '多 Agent 编排与工具链调度', icon: 'agent.svg', status: 'planned' },
   { id: 'knowledge', name: 'Knowledge', desc: '选择知识库，检索上下文并进行 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
   { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
-  { id: 'tasks', name: 'Task Forge', desc: '定时任务、巡检与自动化流水线', icon: 'tasks.svg', status: 'planned' },
+  { id: 'tasks', name: 'Task Forge', desc: '企微提醒任务与定时推送', icon: 'tasks.svg', status: 'online', metricKey: 'pending_tasks', metricLabel: 'tasks' },
   { id: 'fitlog', name: 'FitLog', desc: '体重、饮食、运动记录与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
   { id: 'monitor', name: 'Monitor', desc: '延迟、错误率与链路追踪', icon: 'monitor.svg', status: 'planned', wide: true },
   { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },
@@ -117,8 +117,28 @@ function renderFinanceFeed() {
     : '<div class="dash-row"><p>暂无记账。企微发送：买咖啡 18、收入工资 5000。</p></div>';
 }
 
+function isTaskDue(row) {
+  if (!row.remind_at) return false;
+  return new Date(row.remind_at).getTime() <= Date.now();
+}
+
+function renderTasksFeed() {
+  const rows = dashboardMemory?.tasks || [];
+  const dueCount = dashboardMemory?.counts?.tasks_due || rows.filter(isTaskDue).length;
+  $('#tasksMeta').textContent = rows.length ? `${dueCount} 项到期 / 共 ${rows.length} 项` : '0 项';
+  $('#tasksFeed').innerHTML = rows.length
+    ? rows.map((row) => `
+      <div class="dash-row">
+        <strong>${escapeHtml(row.title)}${isTaskDue(row) ? '<span class="dash-tag hit">到期</span>' : ''}${row.recurrence && row.recurrence !== 'none' ? `<span class="dash-tag">${escapeHtml(row.recurrence)}</span>` : ''}</strong>
+        <p>${escapeHtml(row.note || '无备注')}</p>
+        <span class="dash-time">${row.remind_at ? formatDashTime(row.remind_at) : '无提醒时间'}</span>
+      </div>`).join('')
+    : '<div class="dash-row"><p>暂无待办。企微说：明天早上9点提醒我开会。</p></div>';
+}
+
 function renderMemoryDashboard() {
   renderCacheHitFeed();
+  renderTasksFeed();
   renderLifestyleFeed();
   renderFinanceFeed();
 }
@@ -312,6 +332,7 @@ async function loadDashboard() {
   stats.knowledge_chunks = knowledgeSummary?.chunks || 0;
   stats.knowledge_queries = knowledgeSummary?.queries || 0;
   stats.cache_hits = dashboardMemory?.counts?.cache_hits || cacheSummary?.total_hits || 0;
+  stats.pending_tasks = dashboardMemory?.counts?.tasks || 0;
   renderTelemetry();
   renderModules();
   renderSignals();

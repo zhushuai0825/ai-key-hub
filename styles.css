@@ -183,7 +183,7 @@ body.cockpit {
 
 .memory-dashboard {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -197,6 +197,7 @@ body.cockpit {
 }
 
 .dash-panel-cache::before,
+.dash-panel-tasks::before,
 .dash-panel-lifestyle::before,
 .dash-panel-finance::before {
   content: '';
@@ -205,6 +206,7 @@ body.cockpit {
 }
 
 .dash-panel-cache::before { background: var(--accent); }
+.dash-panel-tasks::before { background: var(--warn); }
 .dash-panel-lifestyle::before { background: var(--ok); }
 .dash-panel-finance::before { background: #6b8cce; }
 
@@ -675,7 +677,7 @@ body.cockpit {
   }
 
   .memory-dashboard {
-    grid-template-columns: 1fr;
+    grid-template-columns: 1fr 1fr;
   }
 
   .cockpit-rail {

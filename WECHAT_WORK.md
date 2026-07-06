@@ -21,9 +21,12 @@ export WECHAT_WORK_CORP_ID="你的 CorpID"
 export WECHAT_WORK_TOKEN="你的回调 Token"
 export WECHAT_WORK_ENCODING_AES_KEY="你的 EncodingAESKey"
 export WECHAT_WORK_SECRET="你的自建应用 Secret"
+export WECHAT_WORK_AGENT_ID="你的自建应用 AgentId"
 ```
 
-`Secret` 用于下载企业微信文件素材。若不配置，文本消息仍可用，但企业微信上传文件无法自动进入知识库。
+`Secret` 用于下载企业微信文件素材、获取 access_token 并**主动推送提醒消息**。`AgentId` 是应用详情页上的 AgentId 数字。
+
+若不配置 `WECHAT_WORK_AGENT_ID`，提醒任务仍会创建，但不会主动推送到企微。
 
 ## 3. 企业微信回调 URL
 
@@ -68,6 +71,25 @@ export WECHAT_DEFAULT_KB_ID=1
 - `你好`、`帮我分析一下睡眠`
 
 带「多少」「吗」「查」「统计」等问句，会优先走聊天而不是记录。
+
+### 提醒任务（主动推送）
+
+对企业微信说：
+
+- `明天早上9点提醒我开会`
+- `每周一提醒我看体重`
+- `每天晚上10点提醒睡觉`
+
+服务会每分钟检查到期任务，并通过企业微信**主动发消息**提醒你。
+
+重复规则支持：`none`（一次）、`daily`、`weekly`、`monthly`。
+
+需要配置：
+
+```bash
+export WECHAT_WORK_SECRET="你的自建应用 Secret"
+export WECHAT_WORK_AGENT_ID="你的 AgentId"
+```
 
 ### 文件上传到知识库
 

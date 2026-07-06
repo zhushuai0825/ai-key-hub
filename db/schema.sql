@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS fitness_entries (
   sleep_hours NUMERIC(5, 2),
   sleep_quality TEXT,
   note TEXT NOT NULL DEFAULT '',
+  source_user TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -209,7 +210,8 @@ CREATE TABLE IF NOT EXISTS assistant_tasks (
   source_message_id INTEGER REFERENCES wechat_messages(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  completed_at TIMESTAMPTZ
+  completed_at TIMESTAMPTZ,
+  last_notified_at TIMESTAMPTZ
 );
 
 CREATE TABLE IF NOT EXISTS assistant_reports (
