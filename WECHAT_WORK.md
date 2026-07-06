@@ -20,9 +20,10 @@
 export WECHAT_WORK_CORP_ID="你的 CorpID"
 export WECHAT_WORK_TOKEN="你的回调 Token"
 export WECHAT_WORK_ENCODING_AES_KEY="你的 EncodingAESKey"
+export WECHAT_WORK_SECRET="你的自建应用 Secret"
 ```
 
-`AgentId` 和 `Secret` 后续用于主动发消息、菜单、通讯录等能力；当前消息接收和自动记录暂时不需要。
+`Secret` 用于下载企业微信文件素材。若不配置，文本消息仍可用，但企业微信上传文件无法自动进入知识库。
 
 ## 3. 企业微信回调 URL
 
@@ -67,6 +68,26 @@ export WECHAT_DEFAULT_KB_ID=1
 - `你好`、`帮我分析一下睡眠`
 
 带「多少」「吗」「查」「统计」等问句，会优先走聊天而不是记录。
+
+### 文件上传到知识库
+
+在企业微信里给 `AI助手` 发送文件，系统会自动下载并写入默认知识库。
+
+支持格式：
+
+- TXT / MD
+- PDF
+- DOCX
+- JSON
+- CSV
+
+需要配置：
+
+```bash
+export WECHAT_WORK_SECRET="你的自建应用 Secret"
+```
+
+如果配置了 `WECHAT_DEFAULT_KB_ID`，文件会进入指定知识库；否则会自动创建/使用 `微信上传资料` 知识库。
 
 ## 6. 本地测试
 

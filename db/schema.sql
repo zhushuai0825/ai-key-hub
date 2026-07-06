@@ -183,3 +183,42 @@ CREATE TABLE IF NOT EXISTS assistant_answer_cache (
   last_hit_at TIMESTAMPTZ,
   topic TEXT
 );
+
+CREATE TABLE IF NOT EXISTS assistant_memories (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT,
+  category TEXT NOT NULL DEFAULT 'general',
+  content TEXT NOT NULL,
+  importance INTEGER NOT NULL DEFAULT 3,
+  source TEXT NOT NULL DEFAULT 'wechat',
+  source_message_id INTEGER REFERENCES wechat_messages(id) ON DELETE SET NULL,
+  pinned BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS assistant_tasks (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT,
+  title TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  remind_at TIMESTAMPTZ,
+  recurrence TEXT NOT NULL DEFAULT 'none',
+  status TEXT NOT NULL DEFAULT 'pending',
+  source_message_id INTEGER REFERENCES wechat_messages(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS assistant_reports (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT,
+  report_type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  period_start TIMESTAMPTZ,
+  period_end TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

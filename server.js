@@ -25,6 +25,7 @@ const UPLOAD_DIR = path.join(__dirname, 'uploads', 'knowledge');
 const WECHAT_WORK_TOKEN = process.env.WECHAT_WORK_TOKEN || '';
 const WECHAT_WORK_ENCODING_AES_KEY = process.env.WECHAT_WORK_ENCODING_AES_KEY || '';
 const WECHAT_WORK_CORP_ID = process.env.WECHAT_WORK_CORP_ID || '';
+const WECHAT_WORK_SECRET = process.env.WECHAT_WORK_SECRET || '';
 const WECHAT_DEFAULT_KB_ID = process.env.WECHAT_DEFAULT_KB_ID ? Number(process.env.WECHAT_DEFAULT_KB_ID) : null;
 const ASSISTANT_CACHE_TTL_WECHAT = Number(process.env.ASSISTANT_CACHE_TTL_WECHAT || 1800);
 const ASSISTANT_CACHE_TTL_WEB = Number(process.env.ASSISTANT_CACHE_TTL_WEB || 86400);
@@ -65,6 +66,12 @@ async function initDb() {
       ('general', '通用'), ('fitness', '健身'), ('novel', '小说'), ('tech', '技术')
     ON CONFLICT (code) DO UPDATE SET name=EXCLUDED.name`);
   await pool.query('ALTER TABLE assistant_answer_cache ADD COLUMN IF NOT EXISTS topic TEXT');
+  await pool.query('ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS source_message_id INTEGER REFERENCES wechat_messages(id) ON DELETE SET NULL');
+  await pool.query('ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false');
+  await pool.query('ALTER TABLE assistant_memories ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ');
+  await pool.query("ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS recurrence TEXT NOT NULL DEFAULT 'none'");
+  await pool.query("ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
+  await pool.query('ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ');
   await pool.query(`
     DELETE FROM assistant_answer_cache
     WHERE topic IS NULL
@@ -72,8 +79,12 @@ async function initDb() {
       OR question ~* '^(你好|您好|哈喽|在吗|在不在|谢谢|感谢|拜拜|再见|hi|hello|ok)[!?？。…~\\s]*$'`);
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_cache_topic ON assistant_answer_cache(topic)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_cache_expires ON assistant_answer_cache(expires_at) WHERE pinned=false');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_memories_user ON assistant_memories(from_user, updated_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_memories_category ON assistant_memories(category)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_finance_entries_user_time ON finance_entries(source_user, occurred_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_time ON fitness_entries(recorded_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_tasks_user_status ON assistant_tasks(from_user, status, remind_at)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_reports_user_type ON assistant_reports(from_user, report_type, created_at DESC)');
 }
 
 function categoryCode(name = '') {
@@ -246,6 +257,104 @@ async function buildWechatUserContext(fromUser, { light = false } = {}) {
     lines.push('近期账本：暂无');
   }
   return lines.join('\n');
+}
+
+async function buildAssistantMemoryContext(fromUser, limit = 30) {
+  const result = await pool.query(`
+    SELECT id, category, content, importance, pinned, updated_at
+    FROM assistant_memories
+    WHERE ($1::text IS NULL OR from_user=$1 OR from_user IS NULL)
+    ORDER BY pinned DESC, importance DESC, updated_at DESC
+    LIMIT $2`, [fromUser || null, limit]);
+  if (!result.rows.length) return '暂无长期记忆';
+  return result.rows.map((row) => `- [${row.category}/重要度${row.importance}] ${row.content}`).join('\n');
+}
+
+async function buildRecentWechatContext(fromUser, limit = 8) {
+  const result = await pool.query(`
+    SELECT id, content, intent, parse_status, reply_text, finance_entry_id, fitness_entry_id, received_at
+    FROM wechat_messages
+    WHERE ($1::text IS NULL OR from_user=$1)
+    ORDER BY received_at DESC, id DESC
+    LIMIT $2`, [fromUser || null, limit]);
+  if (!result.rows.length) return '暂无最近对话';
+  return result.rows.reverse().map((row) => `- #${row.id} 用户：${row.content || '[非文本]'}；处理：${row.intent}/${row.parse_status}；回复：${String(row.reply_text || '').slice(0, 80)}`).join('\n');
+}
+
+function safeJsonFromAi(content) {
+  const text = String(content || '').replace(/^```json\s*|\s*```$/g, '').trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start < 0 || end < start) throw new Error('AI did not return JSON');
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+async function deepseekUnderstandWechatMessage(message, userContext, memoryContext, knowledgeSources, recentContext = '') {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) return null;
+  const kbContext = knowledgeSources.length
+    ? knowledgeSources.map((item, index) => `【资料${index + 1}】${item.content}`).join('\n\n')
+    : '暂无相关资料';
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        {
+          role: 'system',
+          content: `你是一个企业微信里的个人 AI 助手，不是单一记账机器人。你要听懂用户任何自然语言，并决定是否要记录到系统。
+
+能力：
+1. 用户表达体重、饮食、训练、睡眠时，记录到 fitness。
+2. 用户表达消费、收入、报销、转账、付款时，记录到 finance。
+3. 用户表达偏好、身份信息、长期目标、重要事实、承诺、计划、习惯、项目背景、AI 说过值得以后复用的话时，写入 memory。
+4. 用户只是提问、闲聊、要求总结时，直接回答；必要时结合个人记录、长期记忆和知识库。
+5. 你可以同时执行多个动作，例如“我今天72kg，记住我想减到68kg”要同时记录 fitness 和 memory。
+6. 用户要求“提醒我/明天/每周/每月/到点叫我”时，创建 task。
+7. 用户说“刚才那条错了/删除上一条/不是18是28/分类改成项目成本”时，根据最近对话输出 correction 或 delete。
+8. 用户要日报/周报/月报/总结时，输出 report。
+
+必须只返回 JSON，不要返回 Markdown。格式：
+{
+  "reply": "给用户的简短回复，适合微信阅读，300字以内",
+  "actions": [
+    {"type":"fitness","entry_type":"weight|meal|workout|sleep","weight_kg":72.5,"food_text":"...","meal_type":"早餐|午餐|晚餐|加餐","workout_type":"跑步|力量|骑行|HIIT|其他","workout_text":"...","duration_min":30,"intensity":"低|中|高","sleep_hours":7,"sleep_quality":"良好|一般|较差","note":"原话或摘要"},
+    {"type":"finance","direction":"expense|income","amount":18,"category":"餐饮|交通|项目/工具|健身|收入|未分类","title":"咖啡","note":"原话或摘要"},
+    {"type":"memory","category":"preference|profile|goal|project|health|finance|knowledge|general","content":"值得长期记住的一句话","importance":1-5},
+    {"type":"task","title":"提醒事项","note":"补充说明","remind_at":"2026-07-07 09:00","recurrence":"none|daily|weekly|monthly"},
+    {"type":"correction","target":"last|fitness|finance|memory|task","field":"amount|category|title|note|weight_kg|content|status","value":"新值"},
+    {"type":"delete","target":"last|fitness|finance|memory|task"},
+    {"type":"report","report_type":"daily|weekly|monthly","title":"报告标题"},
+    {"type":"answer","topic":"general|fitness|finance|knowledge|memory"}
+  ]
+}
+如果没有需要记录的内容，actions 可以只包含 answer。纠错/删除必须优先参考最近对话。不要编造金额、体重、时间等数字；资料不足就说明。所有 remind_at 使用东八区时间，格式 YYYY-MM-DD HH:mm。`,
+        },
+        {
+          role: 'user',
+          content: `用户消息：${message}
+
+【个人记录摘要】
+${userContext || '暂无'}
+
+【长期记忆】
+${memoryContext || '暂无'}
+
+【最近对话】
+${recentContext || '暂无'}
+
+【知识库资料】
+${kbContext}`,
+        },
+      ],
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek understand failed: ${response.status}`);
+  return safeJsonFromAi(body?.choices?.[0]?.message?.content || '{}');
 }
 
 async function deepseekWechatAssistant(question, userContext, knowledgeSources) {
@@ -437,7 +546,7 @@ async function saveAssistantCache({
 }
 
 async function assistantMemoryBundle() {
-  const [fitness, finance, monthStats, usefulCache] = await Promise.all([
+  const [fitness, finance, monthStats, usefulCache, memories, tasks, reports] = await Promise.all([
     pool.query(`
       SELECT e.*, r.summary ai_summary
       FROM fitness_entries e
@@ -457,20 +566,32 @@ async function assistantMemoryBundle() {
       SELECT c.*, b.name kb_name
       FROM assistant_answer_cache c
       LEFT JOIN knowledge_bases b ON b.id=c.kb_id
-      WHERE c.topic IN ('fitness', 'finance', 'knowledge')
+      WHERE c.topic IN ('fitness', 'finance', 'knowledge', 'memory')
       ORDER BY c.pinned DESC, c.hit_count DESC, c.updated_at DESC
       LIMIT 50`),
+    pool.query(`
+      SELECT * FROM assistant_memories
+      ORDER BY pinned DESC, importance DESC, updated_at DESC
+      LIMIT 80`),
+    pool.query("SELECT * FROM assistant_tasks WHERE status='pending' ORDER BY remind_at NULLS LAST, created_at DESC LIMIT 50"),
+    pool.query('SELECT * FROM assistant_reports ORDER BY created_at DESC LIMIT 30'),
   ]);
   const expense = Number(monthStats.rows[0]?.expense || 0);
   const income = Number(monthStats.rows[0]?.income || 0);
   return {
     fitness: fitness.rows,
     finance: finance.rows,
+    memories: memories.rows,
+    tasks: tasks.rows,
+    reports: reports.rows,
     useful_cache: usefulCache.rows,
     month_stats: { expense, income, balance: income - expense },
     counts: {
       fitness: fitness.rowCount,
       finance: finance.rowCount,
+      memories: memories.rowCount,
+      tasks: tasks.rowCount,
+      reports: reports.rowCount,
       useful_cache: usefulCache.rowCount,
     },
   };
@@ -739,6 +860,76 @@ async function processKnowledgeDocument(docId) {
   return { chunks: inserted.length, chroma: chromaResult };
 }
 
+let wechatWorkTokenCache = { token: '', expiresAt: 0 };
+
+async function getWechatWorkAccessToken() {
+  if (!WECHAT_WORK_CORP_ID || !WECHAT_WORK_SECRET) throw new Error('未配置企业微信 CorpID 或 Secret');
+  if (wechatWorkTokenCache.token && wechatWorkTokenCache.expiresAt > Date.now() + 60000) return wechatWorkTokenCache.token;
+  const api = new URL('https://qyapi.weixin.qq.com/cgi-bin/gettoken');
+  api.searchParams.set('corpid', WECHAT_WORK_CORP_ID);
+  api.searchParams.set('corpsecret', WECHAT_WORK_SECRET);
+  const response = await fetch(api);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body.errcode) throw new Error(body.errmsg || `企业微信 access_token 获取失败：${response.status}`);
+  wechatWorkTokenCache = { token: body.access_token, expiresAt: Date.now() + Number(body.expires_in || 7200) * 1000 };
+  return wechatWorkTokenCache.token;
+}
+
+async function downloadWechatWorkMedia(mediaId) {
+  if (!mediaId) throw new Error('缺少 MediaId');
+  const token = await getWechatWorkAccessToken();
+  const api = new URL('https://qyapi.weixin.qq.com/cgi-bin/media/get');
+  api.searchParams.set('access_token', token);
+  api.searchParams.set('media_id', mediaId);
+  const response = await fetch(api);
+  const contentType = response.headers.get('content-type') || '';
+  if (contentType.includes('application/json')) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.errmsg || `企业微信素材下载失败：${response.status}`);
+  }
+  if (!response.ok) throw new Error(`企业微信素材下载失败：${response.status}`);
+  const disposition = response.headers.get('content-disposition') || '';
+  const filenameMatch = disposition.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i);
+  return {
+    buffer: Buffer.from(await response.arrayBuffer()),
+    filename: filenameMatch ? decodeURIComponent(filenameMatch[1]) : `${mediaId}.dat`,
+    contentType,
+  };
+}
+
+async function ensureWechatDefaultKnowledgeBase() {
+  if (WECHAT_DEFAULT_KB_ID) {
+    const current = await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [WECHAT_DEFAULT_KB_ID]);
+    if (current.rowCount) return current.rows[0];
+  }
+  const existing = await pool.query("SELECT * FROM knowledge_bases WHERE name='微信上传资料' ORDER BY id LIMIT 1");
+  if (existing.rowCount) return existing.rows[0];
+  const created = await pool.query(
+    `INSERT INTO knowledge_bases (name, description, category, status)
+     VALUES ('微信上传资料','企业微信上传的文档会自动进入这里','general','active') RETURNING *`
+  );
+  return created.rows[0];
+}
+
+async function importWechatWorkMediaToKnowledge(payload) {
+  const kb = await ensureWechatDefaultKnowledgeBase();
+  const media = await downloadWechatWorkMedia(payload.media_id);
+  const filename = payload.file_name || media.filename || `${payload.media_id}.dat`;
+  await mkdir(UPLOAD_DIR, { recursive: true });
+  const safeName = `${Date.now()}_${filename}`.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_');
+  const filePath = path.join(UPLOAD_DIR, safeName);
+  await writeFile(filePath, media.buffer);
+  const rawText = await parseDocumentBuffer(media.buffer, filename, 'upload');
+  if (!rawText.trim()) throw new Error('文件没有解析出文本内容');
+  const doc = await pool.query(
+    `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,raw_text,status)
+     VALUES ($1,$2,'wechat_upload',$3,$4,$5,'processing') RETURNING *`,
+    [kb.id, path.basename(filename), filename, filePath, rawText]
+  );
+  const processed = await processKnowledgeDocument(doc.rows[0].id);
+  return { kb, document: doc.rows[0], processed };
+}
+
 async function deleteKnowledgeDocument(docId) {
   const chunks = await pool.query('SELECT embedding_id FROM knowledge_chunks WHERE doc_id=$1', [docId]);
   await deleteChunksFromChroma(chunks.rows.map((row) => row.embedding_id));
@@ -868,6 +1059,8 @@ function parseWechatXml(xml) {
     from_user: xmlValue(xml, 'FromUserName'),
     msg_type: xmlValue(xml, 'MsgType') || 'text',
     content: xmlValue(xml, 'Content'),
+    media_id: xmlValue(xml, 'MediaId'),
+    file_name: xmlValue(xml, 'FileName'),
     agent_id: xmlValue(xml, 'AgentID'),
     msg_id: xmlValue(xml, 'MsgId'),
   };
@@ -968,45 +1161,256 @@ async function createFitnessEntry(data) {
   return { entry: result.rows[0], report };
 }
 
+async function createFinanceEntry(data, fromUser, rawMessage) {
+  const amount = numberOrNull(data.amount);
+  if (!amount || amount <= 0) throw new Error('finance amount required');
+  const direction = data.direction === 'income' ? 'income' : 'expense';
+  const result = await pool.query(
+    `INSERT INTO finance_entries (direction, amount, category, title, note, source_user, raw_message)
+     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+    [direction, amount, data.category || '未分类', data.title || (direction === 'income' ? '收入' : '支出'), data.note || rawMessage || '', fromUser || null, rawMessage || '']
+  );
+  return result.rows[0];
+}
+
+async function saveAssistantMemory({ fromUser, category = 'general', content, importance = 3, source = 'wechat' }) {
+  const clean = String(content || '').trim();
+  if (!clean) return null;
+  const result = await pool.query(
+    `INSERT INTO assistant_memories (from_user, category, content, importance, source)
+     VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+    [fromUser || null, category || 'general', clean.slice(0, 1000), Math.max(1, Math.min(5, Number(importance || 3))), source]
+  );
+  return result.rows[0];
+}
+
+function shanghaiTimestampOrNull(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return text.replace('T', ' ');
+}
+
+async function createAssistantTask(data, fromUser) {
+  const result = await pool.query(
+    `INSERT INTO assistant_tasks (from_user, title, note, remind_at, recurrence, status)
+     VALUES ($1,$2,$3,CASE WHEN $4::text IS NULL THEN NULL ELSE $4::timestamp AT TIME ZONE 'Asia/Shanghai' END,$5,'pending') RETURNING *`,
+    [fromUser || null, data.title || '提醒事项', data.note || '', shanghaiTimestampOrNull(data.remind_at), data.recurrence || 'none']
+  );
+  return result.rows[0];
+}
+
+async function latestLinkedMessage(fromUser, target = 'last') {
+  const clauses = ["from_user=$1"];
+  if (target === 'fitness') clauses.push('fitness_entry_id IS NOT NULL');
+  if (target === 'finance') clauses.push('finance_entry_id IS NOT NULL');
+  if (target === 'last') clauses.push('(finance_entry_id IS NOT NULL OR fitness_entry_id IS NOT NULL)');
+  const result = await pool.query(`
+    SELECT * FROM wechat_messages
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY received_at DESC, id DESC
+    LIMIT 1`, [fromUser || null]);
+  return result.rows[0] || null;
+}
+
+async function applyCorrection(action, fromUser) {
+  const target = action.target || 'last';
+  const message = await latestLinkedMessage(fromUser, target);
+  if (!message) return null;
+  if (message.finance_entry_id) {
+    const allowed = new Set(['amount', 'category', 'title', 'note']);
+    if (!allowed.has(action.field)) return null;
+    const value = action.field === 'amount' ? numberOrNull(action.value) : String(action.value || '');
+    const result = await pool.query(`UPDATE finance_entries SET ${action.field}=$1 WHERE id=$2 RETURNING *`, [value, message.finance_entry_id]);
+    return { type: 'finance', row: result.rows[0] };
+  }
+  if (message.fitness_entry_id) {
+    const allowed = new Set(['weight_kg', 'food_text', 'workout_text', 'duration_min', 'sleep_hours', 'sleep_quality', 'note']);
+    if (!allowed.has(action.field)) return null;
+    const numeric = new Set(['weight_kg', 'duration_min', 'sleep_hours']);
+    const value = numeric.has(action.field) ? numberOrNull(action.value) : String(action.value || '');
+    const result = await pool.query(`UPDATE fitness_entries SET ${action.field}=$1 WHERE id=$2 RETURNING *`, [value, message.fitness_entry_id]);
+    return { type: 'fitness', row: result.rows[0] };
+  }
+  return null;
+}
+
+async function applyDeleteAction(action, fromUser) {
+  const target = action.target || 'last';
+  const message = await latestLinkedMessage(fromUser, target);
+  if (!message) return null;
+  if (message.finance_entry_id) {
+    await pool.query('UPDATE wechat_messages SET finance_entry_id=NULL WHERE finance_entry_id=$1', [message.finance_entry_id]);
+    const result = await pool.query('DELETE FROM finance_entries WHERE id=$1 RETURNING *', [message.finance_entry_id]);
+    return { type: 'finance', row: result.rows[0] };
+  }
+  if (message.fitness_entry_id) {
+    await pool.query('UPDATE wechat_messages SET fitness_entry_id=NULL WHERE fitness_entry_id=$1', [message.fitness_entry_id]);
+    const result = await pool.query('DELETE FROM fitness_entries WHERE id=$1 RETURNING *', [message.fitness_entry_id]);
+    return { type: 'fitness', row: result.rows[0] };
+  }
+  return null;
+}
+
+async function buildReportText(reportType, fromUser) {
+  const days = reportType === 'monthly' ? 31 : (reportType === 'weekly' ? 7 : 1);
+  const [fitness, finance] = await Promise.all([
+    pool.query(`SELECT * FROM fitness_entries WHERE recorded_at >= now() - ($1 || ' days')::interval ORDER BY recorded_at ASC`, [days]),
+    pool.query(`SELECT * FROM finance_entries WHERE occurred_at >= now() - ($1 || ' days')::interval AND ($2::text IS NULL OR source_user=$2 OR source_user IS NULL) ORDER BY occurred_at ASC`, [days, fromUser || null]),
+  ]);
+  const income = finance.rows.filter((row) => row.direction === 'income').reduce((sum, row) => sum + Number(row.amount), 0);
+  const expense = finance.rows.filter((row) => row.direction === 'expense').reduce((sum, row) => sum + Number(row.amount), 0);
+  const workouts = fitness.rows.filter((row) => row.entry_type === 'workout').reduce((sum, row) => sum + Number(row.duration_min || 0), 0);
+  const weights = fitness.rows.filter((row) => row.entry_type === 'weight' && row.weight_kg);
+  const title = { daily: '日报', weekly: '周报', monthly: '月报' }[reportType] || '报告';
+  const lines = [
+    `${title}：最近 ${days} 天`,
+    `账本：收入 ¥${income.toFixed(2)}，支出 ¥${expense.toFixed(2)}，结余 ¥${(income - expense).toFixed(2)}。`,
+    `健康：记录 ${fitness.rowCount} 条，运动 ${workouts} 分钟。`,
+  ];
+  if (weights.length) lines.push(`体重：${weights[0].weight_kg}kg → ${weights[weights.length - 1].weight_kg}kg。`);
+  return lines.join('\n');
+}
+
+async function createAssistantReport(action, fromUser) {
+  const reportType = ['daily', 'weekly', 'monthly'].includes(action.report_type) ? action.report_type : 'daily';
+  const content = await buildReportText(reportType, fromUser);
+  const title = action.title || ({ daily: '日报', weekly: '周报', monthly: '月报' }[reportType] || '报告');
+  const result = await pool.query(
+    `INSERT INTO assistant_reports (from_user, report_type, title, content)
+     VALUES ($1,$2,$3,$4) RETURNING *`,
+    [fromUser || null, reportType, title, content]
+  );
+  return result.rows[0];
+}
+
+async function executeAssistantActions(actions, content, fromUser) {
+  const result = { financeEntry: null, fitnessEntry: null, memories: [], tasks: [], reports: [], corrections: [], deletions: [], intents: [] };
+  for (const action of Array.isArray(actions) ? actions : []) {
+    if (action?.type === 'fitness' && action.entry_type) {
+      const created = await createFitnessEntry({ ...action, note: action.note || content });
+      result.fitnessEntry ||= created.entry;
+      result.intents.push(`fitness.${action.entry_type}`);
+      continue;
+    }
+    if (action?.type === 'finance') {
+      const created = await createFinanceEntry(action, fromUser, content);
+      result.financeEntry ||= created;
+      result.intents.push(`finance.${created.direction}`);
+      continue;
+    }
+    if (action?.type === 'memory') {
+      const memory = await saveAssistantMemory({ fromUser, category: action.category, content: action.content, importance: action.importance });
+      if (memory) {
+        result.memories.push(memory);
+        result.intents.push('memory.saved');
+      }
+      continue;
+    }
+    if (action?.type === 'task') {
+      const task = await createAssistantTask(action, fromUser);
+      result.tasks.push(task);
+      result.intents.push('task.created');
+      continue;
+    }
+    if (action?.type === 'correction') {
+      const corrected = await applyCorrection(action, fromUser);
+      if (corrected) {
+        result.corrections.push(corrected);
+        if (corrected.type === 'finance') result.financeEntry ||= corrected.row;
+        if (corrected.type === 'fitness') result.fitnessEntry ||= corrected.row;
+        result.intents.push(`${corrected.type}.corrected`);
+      }
+      continue;
+    }
+    if (action?.type === 'delete') {
+      const deleted = await applyDeleteAction(action, fromUser);
+      if (deleted) {
+        result.deletions.push(deleted);
+        result.intents.push(`${deleted.type}.deleted`);
+      }
+      continue;
+    }
+    if (action?.type === 'report') {
+      const report = await createAssistantReport(action, fromUser);
+      result.reports.push(report);
+      result.intents.push(`report.${report.report_type}`);
+    }
+  }
+  return result;
+}
+
+function actionReplySuffix(executed) {
+  const parts = [];
+  if (executed.fitnessEntry) parts.push('健康记录已保存');
+  if (executed.financeEntry) parts.push(`${executed.financeEntry.direction === 'income' ? '收入' : '支出'}已保存`);
+  if (executed.memories.length) parts.push(`已记住 ${executed.memories.length} 条长期记忆`);
+  if (executed.tasks.length) parts.push(`已创建 ${executed.tasks.length} 个提醒`);
+  if (executed.corrections.length) parts.push('已按你的话修改');
+  if (executed.deletions.length) parts.push('已删除对应记录');
+  if (executed.reports.length) parts.push('报告已生成');
+  return parts.length ? `\n\n${parts.join('，')}。` : '';
+}
+
 async function saveWechatMessage({ from_user, to_user, msg_type = 'text', content = '', raw_payload = {} }) {
-  const fitnessParsed = msg_type === 'text' ? parseFitnessMessage(content) : null;
-  const financeParsed = msg_type === 'text' && !fitnessParsed ? parseFinanceMessage(content) : null;
-  const isQuery = msg_type === 'text' && looksLikeQuery(content);
-  const shouldRecord = !isQuery && (fitnessParsed || financeParsed);
   let financeEntry = null;
   let fitnessEntry = null;
   let intent = 'unknown';
   let status = 'ignored';
   let reply = '你好，我是你的助手。可以记录体重/消费/运动/睡眠，也可以问我「这个月花了多少」「最近体重趋势」或知识库问题。';
-  if (shouldRecord && fitnessParsed) {
-    const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content });
-    fitnessEntry = created.entry;
-    intent = `fitness.${fitnessParsed.entry_type}`;
-    status = 'recorded';
-    const labels = { weight: '体重', meal: '饮食', workout: '运动', sleep: '睡眠' };
-    reply = `已记录${labels[fitnessParsed.entry_type] || '健康'}：${created.report.summary}`;
-    await invalidateAssistantCacheForUser(from_user);
-  } else if (shouldRecord && financeParsed) {
-    const result = await pool.query(
-      `INSERT INTO finance_entries (direction, amount, category, title, note, source_user, raw_message)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [financeParsed.direction, financeParsed.amount, financeParsed.category, financeParsed.title, financeParsed.note, from_user || null, financeParsed.raw_message]
-    );
-    financeEntry = result.rows[0];
-    intent = `finance.${financeParsed.direction}`;
-    status = 'recorded';
-    reply = `已记录${financeParsed.direction === 'income' ? '收入' : '支出'}：${financeParsed.title} ¥${Number(financeParsed.amount).toFixed(2)}，分类：${financeParsed.category}`;
-    await invalidateAssistantCacheForUser(from_user);
+  if (['file', 'image'].includes(msg_type) && raw_payload.media_id) {
+    try {
+      const imported = await importWechatWorkMediaToKnowledge(raw_payload);
+      intent = 'knowledge.upload';
+      status = 'recorded';
+      reply = `已上传到知识库「${imported.kb.name}」：${imported.document.title}，切分 ${imported.processed.chunks} 段。之后可以直接问我这份资料里的内容。`;
+    } catch (error) {
+      intent = 'knowledge.upload_failed';
+      status = 'failed';
+      reply = `文件入库失败：${error.message}。请确认已配置企业微信 Secret，且文件是 TXT、MD、PDF、DOCX、JSON 或 CSV。`;
+    }
   } else if (msg_type === 'text' && content.trim()) {
     try {
-      const chatResult = await handleWechatChat(content, from_user);
-      reply = chatResult.answer;
-      intent = chatResult.from_cache ? 'chat.cache' : 'chat.assistant';
-      status = 'replied';
+      const searchKb = await shouldSearchKnowledge(content, classifyUsefulTopic(content, []));
+      const [userContext, memoryContext, knowledgeSources] = await Promise.all([
+        buildWechatUserContext(from_user, { light: false }),
+        buildAssistantMemoryContext(from_user),
+        searchKb ? searchKnowledge(WECHAT_DEFAULT_KB_ID, content, 5) : Promise.resolve([]),
+      ]);
+      const recentContext = await buildRecentWechatContext(from_user);
+      const understood = await deepseekUnderstandWechatMessage(content, userContext, memoryContext, knowledgeSources, recentContext);
+      if (understood?.actions?.length) {
+        const executed = await executeAssistantActions(understood.actions, content, from_user);
+        financeEntry = executed.financeEntry;
+        fitnessEntry = executed.fitnessEntry;
+        intent = executed.intents[0] || 'chat.assistant';
+        status = executed.intents.length ? 'recorded' : 'replied';
+        reply = truncateWechatReply(`${understood.reply || '已处理。'}${actionReplySuffix(executed)}`);
+        if (executed.intents.length) await invalidateAssistantCacheForUser(from_user);
+      } else {
+        const chatResult = await handleWechatChat(content, from_user);
+        reply = chatResult.answer;
+        intent = chatResult.from_cache ? 'chat.cache' : 'chat.assistant';
+        status = 'replied';
+      }
     } catch (error) {
-      reply = `回复失败：${error.message}`;
-      intent = 'chat.error';
-      status = 'failed';
+      const fitnessParsed = parseFitnessMessage(content);
+      const financeParsed = !fitnessParsed ? parseFinanceMessage(content) : null;
+      if (fitnessParsed) {
+        const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content });
+        fitnessEntry = created.entry;
+        intent = `fitness.${fitnessParsed.entry_type}`;
+        status = 'recorded';
+        reply = `已记录：${created.report.summary}`;
+      } else if (financeParsed) {
+        financeEntry = await createFinanceEntry(financeParsed, from_user, content);
+        intent = `finance.${financeEntry.direction}`;
+        status = 'recorded';
+        reply = `已记录${financeEntry.direction === 'income' ? '收入' : '支出'}：${financeEntry.title} ¥${Number(financeEntry.amount).toFixed(2)}，分类：${financeEntry.category}`;
+      } else {
+        reply = `回复失败：${error.message}`;
+        intent = 'chat.error';
+        status = 'failed';
+      }
     }
   }
   const message = await pool.query(
@@ -1189,6 +1593,24 @@ async function handleApi(req, res, url) {
     });
     return sendJson(res, 201, saved);
   }
+  if (url.pathname === '/api/wechat/test-file' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const kb = await ensureWechatDefaultKnowledgeBase();
+    const filename = data.filename || 'wechat-test.txt';
+    const buffer = Buffer.from(data.content || '', 'utf8');
+    await mkdir(UPLOAD_DIR, { recursive: true });
+    const safeName = `${Date.now()}_${filename}`.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_');
+    const filePath = path.join(UPLOAD_DIR, safeName);
+    await writeFile(filePath, buffer);
+    const rawText = await parseDocumentBuffer(buffer, filename, 'upload');
+    const doc = await pool.query(
+      `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,raw_text,status)
+       VALUES ($1,$2,'wechat_upload_test',$3,$4,$5,'processing') RETURNING *`,
+      [kb.id, path.basename(filename), filename, filePath, rawText]
+    );
+    const processed = await processKnowledgeDocument(doc.rows[0].id);
+    return sendJson(res, 201, { kb, document: doc.rows[0], processed });
+  }
   if (url.pathname === '/api/finance/entries' && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM finance_entries ORDER BY occurred_at DESC, id DESC LIMIT 100');
     return sendJson(res, 200, result.rows);
@@ -1355,6 +1777,7 @@ async function handleApi(req, res, url) {
   }
   const fitnessEntryMatch = url.pathname.match(/^\/api\/fitness\/entries\/(\d+)$/);
   if (fitnessEntryMatch && req.method === 'DELETE') {
+    await pool.query('UPDATE wechat_messages SET fitness_entry_id=NULL WHERE fitness_entry_id=$1', [Number(fitnessEntryMatch[1])]);
     const result = await pool.query('DELETE FROM fitness_entries WHERE id=$1', [Number(fitnessEntryMatch[1])]);
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
@@ -1552,6 +1975,69 @@ async function handleApi(req, res, url) {
       ORDER BY c.pinned DESC, c.hit_count DESC, c.updated_at DESC
       LIMIT $4`, [channel || null, topic || null, q || null, limit]);
     return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/memories' && req.method === 'GET') {
+    const category = url.searchParams.get('category');
+    const q = url.searchParams.get('q');
+    const result = await pool.query(`
+      SELECT * FROM assistant_memories
+      WHERE ($1::text IS NULL OR category=$1)
+        AND ($2::text IS NULL OR content ILIKE '%' || $2 || '%')
+      ORDER BY pinned DESC, importance DESC, updated_at DESC
+      LIMIT 200`, [category || null, q || null]);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/memories' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const memory = await saveAssistantMemory({ fromUser: data.from_user || null, category: data.category, content: data.content, importance: data.importance, source: 'manual' });
+    return sendJson(res, 201, memory);
+  }
+  if (url.pathname === '/api/assistant/tasks' && req.method === 'GET') {
+    const status = url.searchParams.get('status');
+    const result = await pool.query(`
+      SELECT * FROM assistant_tasks
+      WHERE ($1::text IS NULL OR status=$1)
+      ORDER BY status, remind_at NULLS LAST, created_at DESC
+      LIMIT 200`, [status || null]);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/tasks' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    return sendJson(res, 201, await createAssistantTask(data, data.from_user || null));
+  }
+  const taskMatch = url.pathname.match(/^\/api\/assistant\/tasks\/(\d+)$/);
+  if (taskMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(`
+      UPDATE assistant_tasks
+      SET status=COALESCE($1,status), completed_at=CASE WHEN $1='done' THEN now() ELSE completed_at END, updated_at=now()
+      WHERE id=$2 RETURNING *`, [data.status || null, Number(taskMatch[1])]);
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
+  if (taskMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM assistant_tasks WHERE id=$1', [Number(taskMatch[1])]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/assistant/reports' && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM assistant_reports ORDER BY created_at DESC LIMIT 100');
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/reports' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    return sendJson(res, 201, await createAssistantReport(data, data.from_user || null));
+  }
+  const memoryMatch = url.pathname.match(/^\/api\/assistant\/memories\/(\d+)$/);
+  if (memoryMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(`
+      UPDATE assistant_memories
+      SET pinned=COALESCE($1, pinned), importance=COALESCE($2, importance), updated_at=now()
+      WHERE id=$3 RETURNING *`, [data.pinned === undefined ? null : Boolean(data.pinned), data.importance === undefined ? null : Number(data.importance), Number(memoryMatch[1])]);
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
+  if (memoryMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM assistant_memories WHERE id=$1', [Number(memoryMatch[1])]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   if (url.pathname === '/api/assistant/cache/clear' && req.method === 'POST') {
     const data = await jsonBody(req);

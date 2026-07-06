@@ -25,7 +25,7 @@ function formatTime(value) {
 }
 
 function topicLabel(topic) {
-  return { fitness: '健康', finance: '账本', knowledge: '知识库' }[topic] || topic;
+  return { fitness: '健康', finance: '账本', knowledge: '知识库', memory: '长期记忆' }[topic] || topic;
 }
 
 function fitnessTitle(row) {
@@ -56,8 +56,62 @@ function renderSummary() {
     <div class="cache-stat-card"><strong>${s.finance || 0}</strong><span>账本记录</span></div>
     <div class="cache-stat-card"><strong>¥${Number(month.expense || 0).toFixed(0)}</strong><span>本月支出</span></div>
     <div class="cache-stat-card"><strong>¥${Number(month.income || 0).toFixed(0)}</strong><span>本月收入</span></div>
+    <div class="cache-stat-card"><strong>${s.memories || 0}</strong><span>长期记忆</span></div>
+    <div class="cache-stat-card"><strong>${s.tasks || 0}</strong><span>待办提醒</span></div>
+    <div class="cache-stat-card"><strong>${s.reports || 0}</strong><span>AI报告</span></div>
     <div class="cache-stat-card"><strong>${s.useful_cache || 0}</strong><span>有价值问答</span></div>`;
   $('#memoryUpdatedAt').textContent = `更新于 ${formatTime(new Date().toISOString())}`;
+}
+
+function memoryCategoryLabel(category) {
+  return {
+    preference: '偏好', profile: '个人资料', goal: '目标', project: '项目',
+    health: '健康', finance: '财务', knowledge: '知识', general: '通用',
+  }[category] || category || '通用';
+}
+
+function renderLongMemories() {
+  const rows = memory?.memories || [];
+  $('#longMemoryCount').textContent = `${rows.length} 条`;
+  $('#longMemoryList').innerHTML = rows.length ? rows.map((row) => `
+    <article class="history-card cache-card ${row.pinned ? 'pinned' : ''}">
+      <div class="cache-card-head">
+        <strong>${escapeHtml(row.content)}</strong>
+        <div class="cache-badges">
+          <span class="status-pill ok">${escapeHtml(memoryCategoryLabel(row.category))}</span>
+          <span class="status-pill">重要度 ${row.importance}</span>
+          ${row.pinned ? '<span class="status-pill ok">已固定</span>' : ''}
+        </div>
+      </div>
+      <div class="meta">更新 ${formatTime(row.updated_at)}</div>
+      <div class="row-actions">
+        <button type="button" data-memory-pin="${row.id}" data-pinned="${row.pinned ? '1' : '0'}">${row.pinned ? '取消固定' : '固定记忆'}</button>
+        <button class="danger-btn" type="button" data-memory-delete="${row.id}">删除</button>
+      </div>
+    </article>`).join('') : '<div class="empty-state">还没有长期记忆。你可以在企业微信里说：记住我不喝奶茶、我的目标是体重到68kg、这个项目叫AI助手。</div>';
+
+  document.querySelectorAll('[data-memory-pin]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = Number(btn.dataset.memoryPin);
+      const pinned = btn.dataset.pinned !== '1';
+      try {
+        await api(`/api/assistant/memories/${id}`, { method: 'PATCH', body: JSON.stringify({ pinned }) });
+        toast(pinned ? '记忆已固定' : '已取消固定');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-memory-delete]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = Number(btn.dataset.memoryDelete);
+      if (!window.confirm('确定删除这条长期记忆吗？')) return;
+      try {
+        await api(`/api/assistant/memories/${id}`, { method: 'DELETE' });
+        toast('记忆已删除');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
 }
 
 function renderFitness() {
@@ -68,7 +122,19 @@ function renderFitness() {
       <strong>${escapeHtml(fitnessTitle(row))}</strong>
       <p>${escapeHtml(fitnessDetail(row))}</p>
       <div class="meta">${formatTime(row.recorded_at)}</div>
+      <div class="row-actions"><button class="danger-btn" type="button" data-fitness-delete="${row.id}">删除</button></div>
     </article>`).join('') : '<div class="empty-state">还没有健康记录。在企业微信发：体重 72.5、跑步 30 分钟、睡了 7 小时。</div>';
+  document.querySelectorAll('[data-fitness-delete]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = Number(btn.dataset.fitnessDelete);
+      if (!window.confirm('确定删除这条健康记录吗？')) return;
+      try {
+        await api(`/api/fitness/entries/${id}`, { method: 'DELETE' });
+        toast('健康记录已删除');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
 }
 
 function renderFinance() {
@@ -79,7 +145,19 @@ function renderFinance() {
       <strong>${escapeHtml(financeTitle(row))}</strong>
       <p>${escapeHtml(row.category || '未分类')}${row.note ? ` · ${escapeHtml(row.note)}` : ''}</p>
       <div class="meta">${formatTime(row.occurred_at)}</div>
+      <div class="row-actions"><button class="danger-btn" type="button" data-finance-delete="${row.id}">删除</button></div>
     </article>`).join('') : '<div class="empty-state">还没有账本记录。在企业微信发：买咖啡 18、收入工资 5000。</div>';
+  document.querySelectorAll('[data-finance-delete]').forEach((btn) => {
+    btn.onclick = async () => {
+      const id = Number(btn.dataset.financeDelete);
+      if (!window.confirm('确定删除这条账本记录吗？')) return;
+      try {
+        await api(`/api/finance/entries/${id}`, { method: 'DELETE' });
+        toast('账本记录已删除');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
 }
 
 function renderCache() {
@@ -150,6 +228,7 @@ async function loadAll() {
     await loadCacheRows();
   }
   renderSummary();
+  renderLongMemories();
   renderFitness();
   renderFinance();
   renderCache();
