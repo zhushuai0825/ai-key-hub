@@ -27,6 +27,7 @@ const WECHAT_WORK_ENCODING_AES_KEY = process.env.WECHAT_WORK_ENCODING_AES_KEY ||
 const WECHAT_WORK_CORP_ID = process.env.WECHAT_WORK_CORP_ID || '';
 const WECHAT_WORK_SECRET = process.env.WECHAT_WORK_SECRET || '';
 const WECHAT_WORK_AGENT_ID = process.env.WECHAT_WORK_AGENT_ID ? Number(process.env.WECHAT_WORK_AGENT_ID) : null;
+const WECHAT_DEFAULT_KB_ID = process.env.WECHAT_DEFAULT_KB_ID ? Number(process.env.WECHAT_DEFAULT_KB_ID) : null;
 const ASSISTANT_TASK_POLL_MS = Number(process.env.ASSISTANT_TASK_POLL_MS || 60000);
 const ASSISTANT_CACHE_TTL_WECHAT = Number(process.env.ASSISTANT_CACHE_TTL_WECHAT || 1800);
 const ASSISTANT_CACHE_TTL_WEB = Number(process.env.ASSISTANT_CACHE_TTL_WEB || 86400);
@@ -313,12 +314,13 @@ async function deepseekUnderstandWechatMessage(message, userContext, memoryConte
 能力：
 1. 用户表达体重、饮食、训练、睡眠时，记录到 fitness。
 2. 用户表达消费、收入、报销、转账、付款时，记录到 finance。
-3. 用户表达偏好、身份信息、长期目标、重要事实、承诺、计划、习惯、项目背景、AI 说过值得以后复用的话时，写入 memory。
-4. 用户只是提问、闲聊、要求总结时，直接回答；必要时结合个人记录、长期记忆和知识库。
-5. 你可以同时执行多个动作，例如“我今天72kg，记住我想减到68kg”要同时记录 fitness 和 memory。
-6. 用户要求“提醒我/明天/每周/每月/到点叫我”时，创建 task。
-7. 用户说“刚才那条错了/删除上一条/不是18是28/分类改成项目成本”时，根据最近对话输出 correction 或 delete。
-8. 用户要日报/周报/月报/总结时，输出 report。
+3. 用户表达偏好、身份信息、长期目标、重要事实、承诺、计划、习惯、项目背景等短句时，写入 memory。不要把“存入知识库/上传到知识库”当成 memory。
+4. 用户要把一段资料正文写入知识库时，使用 knowledge 动作（会切分并向量入库）。用户只发文件时由系统处理，你无需输出 knowledge。
+5. 用户只是提问、闲聊、要求总结时，直接回答；必要时结合个人记录、长期记忆和知识库。
+6. 你可以同时执行多个动作，例如“我今天72kg，记住我想减到68kg”要同时记录 fitness 和 memory。
+7. 用户要求“提醒我/明天/每周/每月/到点叫我”时，创建 task。
+8. 用户说“刚才那条错了/删除上一条/不是18是28/分类改成项目成本”时，根据最近对话输出 correction 或 delete。
+9. 用户要日报/周报/月报/总结时，输出 report。
 
 必须只返回 JSON，不要返回 Markdown。格式：
 {
@@ -326,7 +328,8 @@ async function deepseekUnderstandWechatMessage(message, userContext, memoryConte
   "actions": [
     {"type":"fitness","entry_type":"weight|meal|workout|sleep","weight_kg":72.5,"food_text":"...","meal_type":"早餐|午餐|晚餐|加餐","workout_type":"跑步|力量|骑行|HIIT|其他","workout_text":"...","duration_min":30,"intensity":"低|中|高","sleep_hours":7,"sleep_quality":"良好|一般|较差","note":"原话或摘要"},
     {"type":"finance","direction":"expense|income","amount":18,"category":"餐饮|交通|项目/工具|健身|收入|未分类","title":"咖啡","note":"原话或摘要"},
-    {"type":"memory","category":"preference|profile|goal|project|health|finance|knowledge|general","content":"值得长期记住的一句话","importance":1-5},
+    {"type":"memory","category":"preference|profile|goal|project|health|finance|general","content":"值得长期记住的一句话","importance":1-5},
+    {"type":"knowledge","title":"文档标题","text":"要写入知识库的完整正文"},
     {"type":"task","title":"提醒事项","note":"补充说明","remind_at":"2026-07-07 09:00","recurrence":"none|daily|weekly|monthly"},
     {"type":"correction","target":"last|fitness|finance|memory|task","field":"amount|category|title|note|weight_kg|content|status","value":"新值"},
     {"type":"delete","target":"last|fitness|finance|memory|task"},
@@ -334,11 +337,14 @@ async function deepseekUnderstandWechatMessage(message, userContext, memoryConte
     {"type":"answer","topic":"general|fitness|finance|knowledge|memory"}
   ]
 }
-如果没有需要记录的内容，actions 可以只包含 answer。纠错/删除必须优先参考最近对话。不要编造金额、体重、时间等数字；资料不足就说明。所有 remind_at 使用东八区时间，格式 YYYY-MM-DD HH:mm。`,
+如果没有需要记录的内容，actions 可以只包含 answer。纠错/删除必须优先参考最近对话。不要编造金额、体重、时间等数字；资料不足就说明。所有 remind_at 使用东八区时间，格式 YYYY-MM-DD HH:mm。相对时间（如「1分钟后」「半小时后」）必须按【当前时间】推算，不要猜成次日。`,
         },
         {
           role: 'user',
           content: `用户消息：${message}
+
+【当前东八区时间】
+${formatShanghaiDateTime()}
 
 【个人记录摘要】
 ${userContext || '暂无'}
@@ -949,6 +955,7 @@ async function processDueAssistantTasks() {
       }
       results.push({ id: task.id, ok: true, user: task.from_user || null });
     } catch (error) {
+      console.error(`[tasks] reminder ${task.id} failed:`, error.message);
       results.push({ id: task.id, ok: false, error: error.message });
     }
   }
@@ -990,6 +997,19 @@ async function ensureWechatDefaultKnowledgeBase() {
      VALUES ('微信上传资料','企业微信上传的文档会自动进入这里','general','active') RETURNING *`
   );
   return created.rows[0];
+}
+
+async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_text' }) {
+  const kb = await ensureWechatDefaultKnowledgeBase();
+  const clean = String(text || '').trim();
+  if (!clean) throw new Error('没有可写入的文本内容');
+  const doc = await pool.query(
+    `INSERT INTO knowledge_documents (kb_id, title, source_type, raw_text, status)
+     VALUES ($1, $2, $3, $4, 'processing') RETURNING *`,
+    [kb.id, title || '企微文字资料', sourceType, clean]
+  );
+  const processed = await processKnowledgeDocument(doc.rows[0].id);
+  return { kb, document: doc.rows[0], processed };
 }
 
 async function importWechatWorkMediaToKnowledge(payload) {
@@ -1272,11 +1292,55 @@ function shanghaiTimestampOrNull(value) {
   return text.replace('T', ' ');
 }
 
-async function createAssistantTask(data, fromUser) {
+const CN_NUM = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+
+function parseCnNumber(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return CN_NUM[raw] ?? null;
+}
+
+function formatShanghaiDateTime(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type) => parts.find((part) => part.type === type)?.value || '';
+  return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}`;
+}
+
+function parseRelativeRemindAt(message) {
+  const text = String(message || '');
+  if (/半\s*小时(?:后|之内)?/.test(text)) return formatShanghaiDateTime(new Date(Date.now() + 30 * 60 * 1000));
+  let match = text.match(/(\d+|一|二|两|三|四|五|六|七|八|九|十)\s*分钟(?:后|之内)?/);
+  if (match) {
+    const minutes = parseCnNumber(match[1]) || 1;
+    return formatShanghaiDateTime(new Date(Date.now() + minutes * 60 * 1000));
+  }
+  match = text.match(/(\d+|一|二|两|三|四|五|六|七|八|九|十)\s*小时(?:后|之内)?/);
+  if (match) {
+    const hours = parseCnNumber(match[1]) || 1;
+    return formatShanghaiDateTime(new Date(Date.now() + hours * 60 * 60 * 1000));
+  }
+  return null;
+}
+
+function resolveRemindAt(userMessage, aiRemindAt) {
+  return parseRelativeRemindAt(userMessage) || shanghaiTimestampOrNull(aiRemindAt);
+}
+
+async function createAssistantTask(data, fromUser, userMessage = '') {
+  const remindAt = resolveRemindAt(userMessage, data.remind_at);
   const result = await pool.query(
     `INSERT INTO assistant_tasks (from_user, title, note, remind_at, recurrence, status)
      VALUES ($1,$2,$3,CASE WHEN $4::text IS NULL THEN NULL ELSE $4::timestamp AT TIME ZONE 'Asia/Shanghai' END,$5,'pending') RETURNING *`,
-    [fromUser || null, data.title || '提醒事项', data.note || '', shanghaiTimestampOrNull(data.remind_at), data.recurrence || 'none']
+    [fromUser || null, data.title || '提醒事项', data.note || '', remindAt, data.recurrence || 'none']
   );
   return result.rows[0];
 }
@@ -1366,7 +1430,7 @@ async function createAssistantReport(action, fromUser) {
 }
 
 async function executeAssistantActions(actions, content, fromUser) {
-  const result = { financeEntry: null, fitnessEntry: null, memories: [], tasks: [], reports: [], corrections: [], deletions: [], intents: [] };
+  const result = { financeEntry: null, fitnessEntry: null, memories: [], knowledgeDocuments: [], tasks: [], reports: [], corrections: [], deletions: [], intents: [] };
   for (const action of Array.isArray(actions) ? actions : []) {
     if (action?.type === 'fitness' && action.entry_type) {
       const created = await createFitnessEntry({ ...action, note: action.note || content, source_user: fromUser });
@@ -1388,8 +1452,18 @@ async function executeAssistantActions(actions, content, fromUser) {
       }
       continue;
     }
+    if (action?.type === 'knowledge') {
+      const ingested = await ingestTextToKnowledgeBase({
+        title: action.title || '企微文字资料',
+        text: action.text || content,
+        sourceType: 'wechat_text',
+      });
+      result.knowledgeDocuments.push(ingested);
+      result.intents.push('knowledge.ingested');
+      continue;
+    }
     if (action?.type === 'task') {
-      const task = await createAssistantTask(action, fromUser);
+      const task = await createAssistantTask(action, fromUser, content);
       result.tasks.push(task);
       result.intents.push('task.created');
       continue;
@@ -1426,11 +1500,74 @@ function actionReplySuffix(executed) {
   if (executed.fitnessEntry) parts.push('健康记录已保存');
   if (executed.financeEntry) parts.push(`${executed.financeEntry.direction === 'income' ? '收入' : '支出'}已保存`);
   if (executed.memories.length) parts.push(`已记住 ${executed.memories.length} 条长期记忆`);
-  if (executed.tasks.length) parts.push(`已创建 ${executed.tasks.length} 个提醒`);
+  if (executed.knowledgeDocuments?.length) {
+    const names = executed.knowledgeDocuments.map((item) => item.document?.title || '文档').join('、');
+    const chunks = executed.knowledgeDocuments.reduce((sum, item) => sum + Number(item.processed?.chunks || 0), 0);
+    parts.push(`已写入知识库：${names}（${chunks} 段）`);
+  }
+  if (executed.tasks.length) {
+    const times = executed.tasks
+      .map((task) => (task.remind_at ? formatShanghaiDateTime(new Date(task.remind_at)) : '未设时间'))
+      .join('、');
+    parts.push(`已创建 ${executed.tasks.length} 个提醒（${times}）`);
+  }
   if (executed.corrections.length) parts.push('已按你的话修改');
   if (executed.deletions.length) parts.push('已删除对应记录');
   if (executed.reports.length) parts.push('报告已生成');
   return parts.length ? `\n\n${parts.join('，')}。` : '';
+}
+
+function isKnowledgeUploadIntent(text) {
+  return /^(存入|保存到?|上传到?)\s*知识库/.test(String(text || '').trim());
+}
+
+function parseKnowledgeTextCommand(text) {
+  const match = String(text || '').trim().match(/^(?:存入|保存到?|上传到?)\s*知识库[:：]?\s*([\s\S]+)/);
+  return match?.[1]?.trim() || '';
+}
+
+async function recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, intent, status, reply }) {
+  const message = await pool.query(
+    `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, intent, parse_status, reply_text)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+    [from_user || null, to_user || null, msg_type || 'text', content || '', JSON.stringify(raw_payload), financeEntry?.id || null, fitnessEntry?.id || null, intent, status, reply]
+  );
+  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, reply };
+}
+
+async function processWechatFileUploadAsync(payload) {
+  const fromUser = payload.from_user;
+  let intent = 'knowledge.upload_failed';
+  let status = 'failed';
+  let reply = '文件入库失败，请稍后重试。';
+  try {
+    const imported = await importWechatWorkMediaToKnowledge(payload);
+    intent = 'knowledge.upload';
+    status = 'recorded';
+    reply = `已上传到知识库「${imported.kb.name}」：${imported.document.title}，切分 ${imported.processed.chunks} 段。之后可以直接问我这份资料里的内容。`;
+  } catch (error) {
+    console.error('[wechat] file upload failed:', error.message);
+    reply = `文件入库失败：${error.message}。请确认文件是 TXT、MD、PDF、DOCX、JSON 或 CSV，且大小不超过企业微信限制。`;
+  }
+  await recordWechatMessageRow({
+    from_user: fromUser,
+    to_user: payload.to_user,
+    msg_type: payload.msg_type,
+    content: payload.file_name || payload.content || '',
+    raw_payload: payload.raw_payload || payload,
+    financeEntry: null,
+    fitnessEntry: null,
+    intent,
+    status,
+    reply,
+  });
+  if (fromUser && WECHAT_WORK_AGENT_ID) {
+    try {
+      await sendWechatWorkTextMessage(fromUser, reply);
+    } catch (error) {
+      console.error('[wechat] upload notify failed:', error.message);
+    }
+  }
 }
 
 async function saveWechatMessage({ from_user, to_user, msg_type = 'text', content = '', raw_payload = {} }) {
@@ -1440,18 +1577,27 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
   let status = 'ignored';
   let reply = '你好，我是你的助手。可以记录体重/消费/运动/睡眠，也可以问我「这个月花了多少」「最近体重趋势」或知识库问题。';
   if (['file', 'image'].includes(msg_type) && raw_payload.media_id) {
-    try {
-      const imported = await importWechatWorkMediaToKnowledge(raw_payload);
-      intent = 'knowledge.upload';
-      status = 'recorded';
-      reply = `已上传到知识库「${imported.kb.name}」：${imported.document.title}，切分 ${imported.processed.chunks} 段。之后可以直接问我这份资料里的内容。`;
-    } catch (error) {
-      intent = 'knowledge.upload_failed';
-      status = 'failed';
-      reply = `文件入库失败：${error.message}。请确认已配置企业微信 Secret，且文件是 TXT、MD、PDF、DOCX、JSON 或 CSV。`;
-    }
+    intent = 'knowledge.upload_pending';
+    status = 'processing';
+    reply = '收到文件，正在写入知识库，请稍候…';
   } else if (msg_type === 'text' && content.trim()) {
-    try {
+    const kbText = parseKnowledgeTextCommand(content);
+    if (kbText) {
+      try {
+        const ingested = await ingestTextToKnowledgeBase({ title: '企微文字资料', text: kbText, sourceType: 'wechat_text' });
+        intent = 'knowledge.ingested';
+        status = 'recorded';
+        reply = `已写入知识库「${ingested.kb.name}」：${ingested.document.title}，切分 ${ingested.processed.chunks} 段。`;
+      } catch (error) {
+        intent = 'knowledge.ingest_failed';
+        status = 'failed';
+        reply = `写入知识库失败：${error.message}`;
+      }
+    } else if (isKnowledgeUploadIntent(content)) {
+      intent = 'knowledge.hint';
+      status = 'replied';
+      reply = '企微自建应用目前不支持接收 PDF/文件消息（平台限制，不是 bug）。请用以下方式入库：\n1. 浏览器打开后台「知识库」页上传\n2. 发「存入知识库：」+ 正文\n3. 或将 PDF 截图成图片发送（图片可接收，但需有文字内容）';
+    } else try {
       const searchKb = await shouldSearchKnowledge(content, classifyUsefulTopic(content, []));
       const [userContext, memoryContext, knowledgeSources] = await Promise.all([
         buildWechatUserContext(from_user, { light: false }),
@@ -1495,12 +1641,7 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
       }
     }
   }
-  const message = await pool.query(
-    `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, intent, parse_status, reply_text)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [from_user || null, to_user || null, msg_type || 'text', content || '', JSON.stringify(raw_payload), financeEntry?.id || null, fitnessEntry?.id || null, intent, status, reply]
-  );
-  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, reply };
+  return recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, intent, status, reply });
 }
 
 async function createFitnessReport(entry) {
@@ -1652,6 +1793,16 @@ async function handleApi(req, res, url) {
     if (!verifyWechatWorkSignature(url, encrypted || body)) return sendJson(res, 403, { error: 'invalid signature' });
     const xml = encrypted && WECHAT_WORK_ENCODING_AES_KEY ? decryptWechatWork(encrypted).xml : body;
     const payload = parseWechatXml(xml);
+    console.log(`[wechat] inbound ${payload.msg_type} from ${payload.from_user || 'unknown'}${payload.file_name ? ` file=${payload.file_name}` : ''}`);
+    if (['file', 'image'].includes(payload.msg_type) && payload.media_id) {
+      res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
+      res.end(wechatWorkReply(payload.to_user, payload.from_user, '收到文件，正在写入知识库，请稍候…', url));
+      processWechatFileUploadAsync({
+        ...payload,
+        raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), xml, ...payload },
+      }).catch((error) => console.error('[wechat] async upload', error.message));
+      return;
+    }
     const saved = await saveWechatMessage({ ...payload, raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), xml, ...payload } });
     res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
     return res.end(wechatWorkReply(payload.to_user, payload.from_user, saved.reply, url));
