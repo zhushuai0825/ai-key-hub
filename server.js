@@ -11,6 +11,14 @@ import { PDFParse } from 'pdf-parse';
 import mammoth from 'mammoth';
 import { parse as csvParseSync } from 'csv-parse/sync';
 import { ChromaClient } from 'chromadb';
+import {
+  EMBEDDING_MODEL,
+  USE_HASH_EMBEDDING,
+  embedQuery,
+  embedTexts,
+  getEmbeddingStatus,
+  warmupEmbeddings,
+} from './lib/embeddings.js';
 
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -20,7 +28,7 @@ const AUTH_USER = process.env.APP_AUTH_USER || '';
 const AUTH_PASSWORD = process.env.APP_AUTH_PASSWORD || '';
 const PROFILE_HEIGHT_CM = 177;
 const CHROMA_URL = process.env.CHROMA_URL || 'http://127.0.0.1:8000';
-const KNOWLEDGE_COLLECTION = process.env.KNOWLEDGE_COLLECTION || 'ai_key_hub_knowledge';
+const KNOWLEDGE_COLLECTION = process.env.KNOWLEDGE_COLLECTION || (USE_HASH_EMBEDDING ? 'ai_key_hub_knowledge' : 'ai_key_hub_knowledge_bge');
 const UPLOAD_DIR = path.join(__dirname, 'uploads', 'knowledge');
 const WECHAT_WORK_TOKEN = process.env.WECHAT_WORK_TOKEN || '';
 const WECHAT_WORK_ENCODING_AES_KEY = process.env.WECHAT_WORK_ENCODING_AES_KEY || '';
@@ -712,8 +720,10 @@ async function deepseekKnowledgeAnswer(question, sources) {
 async function searchKnowledge(kbId, query, topK = 6) {
   try {
     const collection = await chromaCollection();
+    const queryEmbedding = await embedQuery(query);
+    if (!queryEmbedding) throw new Error('embedding unavailable');
     const result = await collection.query({
-      queryEmbeddings: [hashEmbedding(query)],
+      queryEmbeddings: [queryEmbedding],
       nResults: topK,
       where: kbId ? { kb_id: Number(kbId) } : undefined,
     });
@@ -726,8 +736,8 @@ async function searchKnowledge(kbId, query, topK = 6) {
       const rowMap = new Map(rows.rows.map((row) => [row.id, row]));
       return ids.map((id, index) => ({ ...rowMap.get(id), score: result.distances?.[0]?.[index] ?? null })).filter((item) => item.id);
     }
-  } catch (_) {
-    // Fall back to PostgreSQL keyword search below.
+  } catch (error) {
+    console.error('[knowledge] chroma search failed:', error.message);
   }
   const result = await pool.query(`
     SELECT c.*, d.title document_title, d.filename,
@@ -785,47 +795,35 @@ function chunkText(text, size = 900, overlap = 120) {
   return chunks.filter(Boolean);
 }
 
-function hashEmbedding(text, dimensions = 384) {
-  const vector = Array(dimensions).fill(0);
-  const tokens = String(text || '').toLowerCase().match(/[\p{L}\p{N}]+/gu) || [];
-  tokens.forEach((token) => {
-    let hash = 2166136261;
-    for (let i = 0; i < token.length; i += 1) {
-      hash ^= token.charCodeAt(i);
-      hash = Math.imul(hash, 16777619);
-    }
-    const index = Math.abs(hash) % dimensions;
-    vector[index] += 1;
-  });
-  const norm = Math.hypot(...vector) || 1;
-  return vector.map((value) => value / norm);
+async function chromaCollection() {
+  return chroma.getOrCreateCollection({ name: KNOWLEDGE_COLLECTION });
 }
 
-const localEmbeddingFunction = {
-  name: 'local-hash-embedding',
-  async generate(texts) {
-    return texts.map((text) => hashEmbedding(text));
-  },
-  async generateForQueries(texts) {
-    return texts.map((text) => hashEmbedding(text));
-  },
-};
-
-async function chromaCollection() {
-  return chroma.getOrCreateCollection({ name: KNOWLEDGE_COLLECTION, embeddingFunction: localEmbeddingFunction });
+async function chromaHeartbeat() {
+  try {
+    const base = CHROMA_URL.replace(/\/$/, '');
+    const response = await fetch(`${base}/api/v2/heartbeat`, { signal: AbortSignal.timeout(3000) });
+    if (response.ok) return true;
+    const legacy = await fetch(`${base}/api/v1/heartbeat`, { signal: AbortSignal.timeout(3000) });
+    return legacy.ok;
+  } catch (_) {
+    return false;
+  }
 }
 
 async function upsertChunksToChroma(chunks) {
   if (!chunks.length) return { ok: false, reason: 'empty chunks' };
   try {
     const collection = await chromaCollection();
+    const embeddings = await embedTexts(chunks.map((chunk) => chunk.content));
+    if (embeddings.length !== chunks.length) throw new Error('embedding count mismatch');
     await collection.upsert({
       ids: chunks.map((chunk) => chunk.embedding_id),
-      embeddings: chunks.map((chunk) => hashEmbedding(chunk.content)),
+      embeddings,
       documents: chunks.map((chunk) => chunk.content),
       metadatas: chunks.map((chunk) => ({ kb_id: chunk.kb_id, doc_id: chunk.doc_id, chunk_id: chunk.id, chunk_index: chunk.chunk_index })),
     });
-    return { ok: true };
+    return { ok: true, mode: USE_HASH_EMBEDDING ? 'hash' : 'transformers', model: USE_HASH_EMBEDDING ? 'hash-384' : EMBEDDING_MODEL };
   } catch (error) {
     return { ok: false, reason: error.message };
   }
@@ -1855,7 +1853,18 @@ async function stats() {
 }
 
 async function handleApi(req, res, url) {
-  if (url.pathname === '/api/health') return sendJson(res, 200, { ok: true });
+  if (url.pathname === '/api/health') {
+    const [chromaOk, embedding] = await Promise.all([
+      chromaHeartbeat(),
+      Promise.resolve(getEmbeddingStatus()),
+    ]);
+    return sendJson(res, 200, {
+      ok: true,
+      chroma: chromaOk,
+      knowledge_collection: KNOWLEDGE_COLLECTION,
+      embedding,
+    });
+  }
   if (url.pathname === '/api/wechat/webhook' && req.method === 'GET') {
     if (!verifyWechatSignature(url)) return sendJson(res, 403, { error: 'invalid signature' });
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -2212,6 +2221,29 @@ async function handleApi(req, res, url) {
     const rows = await searchKnowledge(data.kb_id, data.query || '', Number(data.top_k || 6));
     return sendJson(res, 200, rows);
   }
+  if (url.pathname === '/api/knowledge/reindex' && req.method === 'POST') {
+    const docs = await pool.query(`
+      SELECT id, title FROM knowledge_documents
+      WHERE COALESCE(length(raw_text), 0) > 0
+      ORDER BY id ASC`);
+    const results = [];
+    for (const doc of docs.rows) {
+      try {
+        const processed = await processKnowledgeDocument(doc.id);
+        results.push({ id: doc.id, title: doc.title, ok: true, chunks: processed.chunks, chroma: processed.chroma });
+      } catch (error) {
+        results.push({ id: doc.id, title: doc.title, ok: false, error: error.message });
+      }
+    }
+    resetKnowledgeChunkCountCache();
+    return sendJson(res, 200, {
+      collection: KNOWLEDGE_COLLECTION,
+      embedding: getEmbeddingStatus(),
+      processed: results.length,
+      ok: results.filter((item) => item.ok).length,
+      results,
+    });
+  }
   if (url.pathname === '/api/knowledge/ask' && req.method === 'POST') {
     const data = await jsonBody(req);
     const question = data.question || '';
@@ -2419,6 +2451,8 @@ http.createServer(async (req, res) => {
   }
 }).listen(PORT, () => {
   console.log(`AI Key Hub running at http://127.0.0.1:${PORT}`);
+  console.log(`[knowledge] collection=${KNOWLEDGE_COLLECTION} embedding=${USE_HASH_EMBEDDING ? 'hash' : EMBEDDING_MODEL}`);
+  warmupEmbeddings().catch((error) => console.error('[embeddings] warmup failed:', error.message));
   setTimeout(() => {
     processDueAssistantTasks().catch((error) => console.error('[tasks] startup', error.message));
   }, 5000);
