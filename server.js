@@ -86,6 +86,9 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_finance_entries_user_time ON finance_entries(source_user, occurred_at DESC)');
   await pool.query('ALTER TABLE fitness_entries ADD COLUMN IF NOT EXISTS source_user TEXT');
   await pool.query('ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS last_notified_at TIMESTAMPTZ');
+  await pool.query('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_user TEXT');
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_channel TEXT NOT NULL DEFAULT 'web'");
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_note TEXT NOT NULL DEFAULT ''");
   await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_user_time ON fitness_entries(source_user, recorded_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_tasks_user_status ON assistant_tasks(from_user, status, remind_at)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_reports_user_type ON assistant_reports(from_user, report_type, created_at DESC)');
@@ -270,6 +273,7 @@ async function buildAssistantMemoryContext(fromUser, limit = 30) {
     SELECT id, category, content, importance, pinned, updated_at
     FROM assistant_memories
     WHERE ($1::text IS NULL OR from_user=$1 OR from_user IS NULL)
+      AND category <> 'knowledge_upload_target'
     ORDER BY pinned DESC, importance DESC, updated_at DESC
     LIMIT $2`, [fromUser || null, limit]);
   if (!result.rows.length) return '暂无长期记忆';
@@ -582,6 +586,7 @@ async function assistantMemoryBundle() {
       LIMIT 50`),
     pool.query(`
       SELECT * FROM assistant_memories
+      WHERE category <> 'knowledge_upload_target'
       ORDER BY pinned DESC, importance DESC, updated_at DESC
       LIMIT 80`),
     pool.query("SELECT * FROM assistant_tasks WHERE status='pending' ORDER BY remind_at NULLS LAST, created_at DESC LIMIT 50"),
@@ -999,21 +1004,90 @@ async function ensureWechatDefaultKnowledgeBase() {
   return created.rows[0];
 }
 
-async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_text' }) {
-  const kb = await ensureWechatDefaultKnowledgeBase();
+async function findKnowledgeBaseByName(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return null;
+  const exact = await pool.query('SELECT * FROM knowledge_bases WHERE name=$1 ORDER BY id LIMIT 1', [clean]);
+  if (exact.rowCount) return exact.rows[0];
+  const fuzzy = await pool.query(
+    'SELECT * FROM knowledge_bases WHERE name ILIKE $1 ORDER BY id LIMIT 1',
+    [`%${clean.replace(/[%_]/g, '')}%`]
+  );
+  return fuzzy.rows[0] || null;
+}
+
+async function findOrCreateKnowledgeBaseByName(name) {
+  const clean = String(name || '').trim();
+  if (!clean) return ensureWechatDefaultKnowledgeBase();
+  const existing = await findKnowledgeBaseByName(clean);
+  if (existing) return existing;
+  const baseName = clean.endsWith('知识库') ? clean : `${clean}知识库`;
+  const created = await pool.query(
+    `INSERT INTO knowledge_bases (name, description, category, status)
+     VALUES ($1, $2, 'general', 'active') RETURNING *`,
+    [baseName, '企业微信指令自动创建']
+  );
+  return created.rows[0];
+}
+
+function parseKnowledgeTargetIntent(text) {
+  const clean = String(text || '').trim();
+  const match = clean.match(/(?:下一个|下一份|这个|这份)?(?:文件|文档|资料)?(?:保存|存入|上传|放)(?:到|进)?(.{0,30}?)(?:知识库|库)(?:里|中)?/);
+  if (!match) return null;
+  const target = (match[1] || '')
+    .replace(/^(默认|这个|那个|我的|一个|的)/, '')
+    .replace(/[，。,.!！?？\s]/g, '')
+    .trim();
+  return { target };
+}
+
+async function rememberNextKnowledgeUploadTarget(fromUser, content) {
+  if (!fromUser) return null;
+  const parsed = parseKnowledgeTargetIntent(content);
+  if (!parsed) return null;
+  const kb = parsed.target ? await findOrCreateKnowledgeBaseByName(parsed.target) : await ensureWechatDefaultKnowledgeBase();
+  const memory = await pool.query(
+    `INSERT INTO assistant_memories (from_user, category, content, importance, source, pinned)
+     VALUES ($1,'knowledge_upload_target',$2,4,'wechat',false) RETURNING *`,
+    [fromUser, JSON.stringify({ kb_id: kb.id, kb_name: kb.name, requested: parsed.target || '默认知识库', expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() })]
+  );
+  return { kb, memory: memory.rows[0] };
+}
+
+async function consumeNextKnowledgeUploadTarget(fromUser) {
+  if (!fromUser) return null;
+  const result = await pool.query(
+    `SELECT * FROM assistant_memories
+     WHERE from_user=$1 AND category='knowledge_upload_target'
+     ORDER BY created_at DESC LIMIT 1`,
+    [fromUser]
+  );
+  if (!result.rowCount) return null;
+  const memory = result.rows[0];
+  await pool.query('DELETE FROM assistant_memories WHERE id=$1', [memory.id]);
+  let data = {};
+  try { data = JSON.parse(memory.content || '{}'); } catch (_) { data = {}; }
+  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) return null;
+  if (!data.kb_id) return null;
+  const kb = await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [Number(data.kb_id)]);
+  return kb.rows[0] || null;
+}
+
+async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_text', sourceUser = null, kb = null, sourceNote = '' }) {
+  const targetKb = kb || await ensureWechatDefaultKnowledgeBase();
   const clean = String(text || '').trim();
   if (!clean) throw new Error('没有可写入的文本内容');
   const doc = await pool.query(
-    `INSERT INTO knowledge_documents (kb_id, title, source_type, raw_text, status)
-     VALUES ($1, $2, $3, $4, 'processing') RETURNING *`,
-    [kb.id, title || '企微文字资料', sourceType, clean]
+    `INSERT INTO knowledge_documents (kb_id, title, source_type, source_user, source_channel, source_note, raw_text, status)
+     VALUES ($1, $2, $3, $4, 'wechat', $5, $6, 'processing') RETURNING *`,
+    [targetKb.id, title || '企微文字资料', sourceType, sourceUser, sourceNote, clean]
   );
   const processed = await processKnowledgeDocument(doc.rows[0].id);
-  return { kb, document: doc.rows[0], processed };
+  return { kb: targetKb, document: doc.rows[0], processed };
 }
 
 async function importWechatWorkMediaToKnowledge(payload) {
-  const kb = await ensureWechatDefaultKnowledgeBase();
+  const kb = await consumeNextKnowledgeUploadTarget(payload.from_user) || await ensureWechatDefaultKnowledgeBase();
   const media = await downloadWechatWorkMedia(payload.media_id);
   const filename = payload.file_name || media.filename || `${payload.media_id}.dat`;
   await mkdir(UPLOAD_DIR, { recursive: true });
@@ -1023,9 +1097,9 @@ async function importWechatWorkMediaToKnowledge(payload) {
   const rawText = await parseDocumentBuffer(media.buffer, filename, 'upload');
   if (!rawText.trim()) throw new Error('文件没有解析出文本内容');
   const doc = await pool.query(
-    `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,raw_text,status)
-     VALUES ($1,$2,'wechat_upload',$3,$4,$5,'processing') RETURNING *`,
-    [kb.id, path.basename(filename), filename, filePath, rawText]
+    `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,source_user,source_channel,source_note,raw_text,status)
+     VALUES ($1,$2,'wechat_upload',$3,$4,$5,'wechat',$6,$7,'processing') RETURNING *`,
+    [kb.id, path.basename(filename), filename, filePath, payload.from_user || null, '企业微信文件上传', rawText]
   );
   const processed = await processKnowledgeDocument(doc.rows[0].id);
   return { kb, document: doc.rows[0], processed };
@@ -1518,7 +1592,7 @@ function actionReplySuffix(executed) {
 }
 
 function isKnowledgeUploadIntent(text) {
-  return /^(存入|保存到?|上传到?)\s*知识库/.test(String(text || '').trim());
+  return Boolean(parseKnowledgeTargetIntent(text)) || /^(存入|保存到?|上传到?)\s*知识库/.test(String(text || '').trim());
 }
 
 function parseKnowledgeTextCommand(text) {
@@ -1584,7 +1658,7 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
     const kbText = parseKnowledgeTextCommand(content);
     if (kbText) {
       try {
-        const ingested = await ingestTextToKnowledgeBase({ title: '企微文字资料', text: kbText, sourceType: 'wechat_text' });
+        const ingested = await ingestTextToKnowledgeBase({ title: '企微文字资料', text: kbText, sourceType: 'wechat_text', sourceUser: from_user, sourceNote: '企业微信文本命令' });
         intent = 'knowledge.ingested';
         status = 'recorded';
         reply = `已写入知识库「${ingested.kb.name}」：${ingested.document.title}，切分 ${ingested.processed.chunks} 段。`;
@@ -1594,9 +1668,16 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         reply = `写入知识库失败：${error.message}`;
       }
     } else if (isKnowledgeUploadIntent(content)) {
-      intent = 'knowledge.hint';
-      status = 'replied';
-      reply = '企微自建应用目前不支持接收 PDF/文件消息（平台限制，不是 bug）。请用以下方式入库：\n1. 浏览器打开后台「知识库」页上传\n2. 发「存入知识库：」+ 正文\n3. 或将 PDF 截图成图片发送（图片可接收，但需有文字内容）';
+      try {
+        const target = await rememberNextKnowledgeUploadTarget(from_user, content);
+        intent = 'knowledge.upload_target';
+        status = 'replied';
+        reply = `可以，5 分钟内发送的下一个文件会保存到知识库「${target?.kb?.name || '微信上传资料'}」。也可以直接发「存入知识库：」+ 正文。`;
+      } catch (error) {
+        intent = 'knowledge.upload_target_failed';
+        status = 'failed';
+        reply = `设置知识库目标失败：${error.message}`;
+      }
     } else try {
       const searchKb = await shouldSearchKnowledge(content, classifyUsefulTopic(content, []));
       const [userContext, memoryContext, knowledgeSources] = await Promise.all([
@@ -2216,6 +2297,7 @@ async function handleApi(req, res, url) {
       SELECT * FROM assistant_memories
       WHERE ($1::text IS NULL OR category=$1)
         AND ($2::text IS NULL OR content ILIKE '%' || $2 || '%')
+        AND category <> 'knowledge_upload_target'
       ORDER BY pinned DESC, importance DESC, updated_at DESC
       LIMIT 200`, [category || null, q || null]);
     return sendJson(res, 200, result.rows);

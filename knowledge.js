@@ -40,6 +40,14 @@ function statusLabel(status) {
   return labels[status] || status || '未知';
 }
 
+function sourceLabel(doc) {
+  if (doc.source_type === 'wechat_text') return '企业微信文本';
+  if (doc.source_channel === 'wechat') return '企业微信上传';
+  if (doc.source_type === 'upload') return '网页上传';
+  if (doc.source_type === 'text') return '网页文本';
+  return doc.source_type || '未知来源';
+}
+
 function renderBases() {
   $('#kbSummary').textContent = `${summary?.bases || 0} 库 · ${summary?.documents || 0} 文档 · ${summary?.chunks || 0} 向量片段`;
   $('#baseList').innerHTML = bases.length ? bases.map((base) => `
@@ -95,6 +103,11 @@ function renderDocs() {
       </div>
       <p>${escapeHtml(doc.filename || doc.source_type)} · ${doc.raw_text?.length || 0} 字符</p>
       <div class="meta">${doc.chunk_count || 0} 向量片段 · ${formatTime(doc.created_at)}</div>
+      <div class="doc-source-row">
+        <span>${escapeHtml(sourceLabel(doc))}</span>
+        ${doc.source_user ? `<span>上传人：${escapeHtml(doc.source_user)}</span>` : ''}
+        ${doc.source_note ? `<span>${escapeHtml(doc.source_note)}</span>` : ''}
+      </div>
       ${doc.error_message ? `<p class="error-text">${escapeHtml(doc.error_message)}</p>` : ''}
       <div class="row-actions"><button class="danger-btn" type="button" data-delete-doc="${doc.id}">删除文档</button></div>
     </article>`).join('') : '<div class="empty-state">当前知识库暂无文档。支持粘贴文本，也支持 TXT、MD、PDF、DOCX、JSON、CSV。</div>';

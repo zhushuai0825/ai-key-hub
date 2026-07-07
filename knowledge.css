@@ -39,6 +39,8 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .base-card p, .doc-card p, .result-card p, .history-card p { color: var(--ink-2); font-size: 12px; line-height: 1.65; word-break: break-word; }
 .result-card p { max-height: 210px; overflow: auto; }
 .meta { color: var(--muted); font-size: 11px; margin-top: 8px; }
+.doc-source-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.doc-source-row span { padding: 3px 6px; border: 1px solid var(--line); color: var(--ink-2); background: var(--surface-2); font-size: 11px; }
 .doc-title-row { display: flex; justify-content: space-between; align-items: start; gap: 10px; }
 .status-pill { flex: none; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 11px; }
 .status-pill.ok { color: #101214; background: var(--accent); border-color: var(--accent); }
