@@ -1263,8 +1263,9 @@ async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_tex
 
 async function importWechatWorkMediaToKnowledge(payload) {
   const kb = await consumeNextKnowledgeUploadTarget(payload.from_user) || await resolveUserKnowledgeBase(payload.from_user);
-  const media = await downloadWechatWorkMedia(payload.media_id);
-  const filename = payload.file_name || media.filename || `${payload.media_id}.dat`;
+  const mediaId = payload.media_id || payload.MediaId || payload.raw_payload?.media_id || payload.raw_payload?.MediaId;
+  const media = await downloadWechatWorkMedia(mediaId);
+  const filename = payload.file_name || payload.FileName || payload.raw_payload?.file_name || payload.raw_payload?.FileName || media.filename || `${mediaId}.dat`;
   await mkdir(UPLOAD_DIR, { recursive: true });
   const safeName = `${Date.now()}_${filename}`.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_');
   const filePath = path.join(UPLOAD_DIR, safeName);
@@ -2031,10 +2032,13 @@ async function recordWechatMessageRow({ from_user, to_user, msg_type, content, r
 
 async function processWechatFileUploadAsync(payload) {
   const fromUser = payload.from_user;
+  const mediaId = payload.media_id || payload.MediaId || payload.raw_payload?.media_id || payload.raw_payload?.MediaId || null;
+  const filename = payload.file_name || payload.FileName || payload.raw_payload?.file_name || payload.raw_payload?.FileName || payload.content || '';
   let intent = 'knowledge.upload_failed';
   let status = 'failed';
   let reply = '文件入库失败，请稍后重试。';
   let knowledgeDocument = null;
+  const existingMessageId = payload.message_id || null;
   try {
     const imported = await importWechatWorkMediaToKnowledge(payload);
     knowledgeDocument = imported.document;
@@ -2045,19 +2049,32 @@ async function processWechatFileUploadAsync(payload) {
     console.error('[wechat] file upload failed:', error.message);
     reply = `文件入库失败：${error.message}。请确认文件是 TXT、MD、PDF、DOCX、JSON 或 CSV，且大小不超过企业微信限制。`;
   }
-  await recordWechatMessageRow({
-    from_user: fromUser,
-    to_user: payload.to_user,
-    msg_type: payload.msg_type,
-    content: payload.file_name || payload.content || '',
-    raw_payload: payload.raw_payload || payload,
-    financeEntry: null,
-    fitnessEntry: null,
-    knowledgeDocument,
-    intent,
-    status,
-    reply,
-  });
+  if (existingMessageId) {
+    await pool.query(
+      `UPDATE wechat_messages
+       SET knowledge_document_id=$1, intent=$2, parse_status=$3, reply_text=$4, media_status=$5, media_error=$6
+       WHERE id=$7`,
+      [knowledgeDocument?.id || null, intent, status, reply, status === 'recorded' ? 'imported' : 'failed', status === 'recorded' ? null : reply, existingMessageId]
+    );
+  } else {
+    await recordWechatMessageRow({
+      from_user: fromUser,
+      to_user: payload.to_user,
+      msg_type: payload.msg_type,
+      content: filename,
+      raw_payload: payload.raw_payload || payload,
+      financeEntry: null,
+      fitnessEntry: null,
+      knowledgeDocument,
+      intent,
+      status,
+      reply,
+      sourceMsgType: payload.msg_type,
+      mediaId,
+      mediaStatus: status === 'recorded' ? 'imported' : 'failed',
+      mediaError: status === 'recorded' ? null : reply,
+    });
+  }
   if (fromUser && WECHAT_WORK_AGENT_ID) {
     try {
       await sendWechatWorkTextMessage(fromUser, reply);
@@ -2822,11 +2839,29 @@ async function handleApi(req, res, url) {
     const xml = encrypted && WECHAT_WORK_ENCODING_AES_KEY ? decryptWechatWork(encrypted).xml : body;
     const payload = parseWechatXml(xml);
     console.log(`[wechat] inbound ${payload.msg_type} from ${payload.from_user || 'unknown'}${payload.file_name ? ` file=${payload.file_name}` : ''}`);
-    if (payload.msg_type === 'file' && payload.media_id) {
+    if (payload.msg_type === 'file' && (payload.media_id || payload.MediaId)) {
+      const initial = await recordWechatMessageRow({
+        from_user: payload.from_user,
+        to_user: payload.to_user,
+        msg_type: payload.msg_type,
+        content: payload.file_name || payload.FileName || payload.content || '',
+        raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), xml, ...payload },
+        financeEntry: null,
+        fitnessEntry: null,
+        knowledgeDocument: null,
+        intent: 'knowledge.upload_pending',
+        status: 'processing',
+        reply: '收到文件，正在写入知识库，请稍候…',
+        sourceMsgType: payload.msg_type,
+        mediaId: payload.media_id || payload.MediaId,
+        mediaStatus: 'downloading',
+        mediaError: null,
+      });
       res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
       res.end(wechatWorkReply(payload.to_user, payload.from_user, '收到文件，正在写入知识库，请稍候…', url));
       processWechatFileUploadAsync({
         ...payload,
+        message_id: initial.message.id,
         raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), xml, ...payload },
       }).catch((error) => console.error('[wechat] async upload', error.message));
       return;
@@ -2856,7 +2891,8 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === '/api/wechat/test-file' && req.method === 'POST') {
     const data = await jsonBody(req);
-    const kb = await ensureWechatDefaultKnowledgeBase();
+    const fromUser = data.from_user || 'local-test-user';
+    const kb = await consumeNextKnowledgeUploadTarget(fromUser) || await resolveUserKnowledgeBase(fromUser);
     const filename = data.filename || 'wechat-test.txt';
     const buffer = Buffer.from(data.content || '', 'utf8');
     await mkdir(UPLOAD_DIR, { recursive: true });
