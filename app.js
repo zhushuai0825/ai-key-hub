@@ -25,11 +25,12 @@ const MODULES = [
   { id: 'agent', name: 'Agent Hub', desc: '多 Agent 编排与工具链调度', icon: 'agent.svg', status: 'planned' },
   { id: 'knowledge', name: 'Knowledge', desc: '选择知识库，检索上下文并进行 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
   { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
-  { id: 'tasks', name: 'Task Forge', desc: '企微提醒任务与定时推送', icon: 'tasks.svg', status: 'online', metricKey: 'pending_tasks', metricLabel: 'tasks' },
+  { id: 'tasks', name: 'WeCom Inbox', desc: '企微消息识别状态、失败原因与关联记录', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online', metricKey: 'pending_tasks', metricLabel: 'tasks' },
   { id: 'fitlog', name: 'FitLog', desc: '体重、饮食、运动记录与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
-  { id: 'monitor', name: 'Monitor', desc: '延迟、错误率与链路追踪', icon: 'monitor.svg', status: 'planned', wide: true },
+  { id: 'timeline', name: 'Timeline', desc: '账本、健康、知识库、提醒和审计统一动态', icon: 'audit.svg', href: '/timeline.html', status: 'online' },
+  { id: 'monitor', name: 'Monitor', desc: '服务健康、Chroma、企微、OCR 和网关状态', icon: 'monitor.svg', href: '/monitor.html', status: 'online', wide: true },
   { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },
-  { id: 'audit', name: 'Audit Log', desc: '操作审计与合规留痕', icon: 'audit.svg', status: 'planned' },
+  { id: 'audit', name: 'Audit Log', desc: '操作审计与合规留痕', icon: 'audit.svg', href: '/timeline.html?type=audit', status: 'online' },
 ];
 
 let stats = { count: 0, key_count: 0, total_balance: 0, abnormal_keys: 0, today_calls: 0, today_cost: 0, avg_latency: 0 };

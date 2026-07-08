@@ -24,6 +24,16 @@ export WECHAT_WORK_SECRET="你的自建应用 Secret"
 export WECHAT_WORK_AGENT_ID="你的自建应用 AgentId"
 ```
 
+如果要让图片消息自动识别文字，可配置 OpenAI 兼容的视觉大模型 OCR：
+
+```bash
+export OCR_API_KEY="视觉模型 API Key"
+export OCR_BASE_URL="https://你的视觉模型服务/v1"
+export OCR_MODEL="视觉模型名称"
+```
+
+配置后，图片消息没有 `OCRText` 时，系统会下载企业微信图片并调用视觉模型识别文字，再进入记账、健康、知识库和提醒处理链路。
+
 `Secret` 用于下载企业微信文件素材、获取 access_token 并**主动推送提醒消息**。`AgentId` 是应用详情页上的 AgentId 数字。
 
 若不配置 `WECHAT_WORK_AGENT_ID`，提醒任务仍会创建，但不会主动推送到企微。
@@ -119,6 +129,12 @@ export WECHAT_WORK_SECRET="你的自建应用 Secret"
 ```
 
 如果配置了 `WECHAT_DEFAULT_KB_ID`，默认文件会进入指定知识库；否则会自动创建/使用 `微信上传资料` 知识库。临时指定的目标知识库优先级更高。
+
+### 语音和图片识别
+
+- 语音消息：如果企业微信回调包含 `Recognition`，系统会当成文本继续处理。
+- 图片消息：如果企业微信回调包含 `OCRText/Text`，系统会当成文本继续处理。
+- 图片无 OCR 文本：配置 `OCR_API_KEY`、`OCR_BASE_URL`、`OCR_MODEL` 后，系统会调用视觉大模型识别图片文字。
 
 ## 6. 本地测试
 

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Timeline · 全部动态</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page timeline-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>Timeline</strong><span>账本、健康、知识库、提醒、报告、企微消息与审计统一时间线</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+  <main class="timeline-shell">
+    <section class="kb-panel timeline-filter-panel">
+      <div class="panel-head"><h2>筛选</h2><span id="timelineCount">0 条</span></div>
+      <form id="filterForm" class="search-form timeline-filter-form">
+        <select name="type">
+          <option value="">全部类型</option>
+          <option value="finance">账本</option>
+          <option value="fitness">健康</option>
+          <option value="knowledge">知识库</option>
+          <option value="wechat">企微消息</option>
+          <option value="task">提醒</option>
+          <option value="report">日报周报</option>
+          <option value="audit">审计</option>
+        </select>
+        <select name="limit">
+          <option value="80">最近 80 条</option>
+          <option value="160">最近 160 条</option>
+          <option value="300">最近 300 条</option>
+        </select>
+        <button class="btn btn-solid" type="submit">查看</button>
+      </form>
+    </section>
+    <section class="kb-panel timeline-list-panel">
+      <div class="panel-head"><h2>全部动态</h2><span id="updatedAt">--</span></div>
+      <div id="timelineList" class="timeline-list"></div>
+    </section>
+  </main>
+  <script src="./timeline.js"></script>
+</body>
+</html>

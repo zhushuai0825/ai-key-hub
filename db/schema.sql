@@ -16,6 +16,10 @@ CREATE TABLE IF NOT EXISTS api_keys (
   provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   api_key TEXT NOT NULL,
+  api_key_encrypted TEXT,
+  api_key_iv TEXT,
+  api_key_tag TEXT,
+  key_encryption_version INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'active',
   daily_quota NUMERIC(12, 2) DEFAULT 0,
   monthly_quota NUMERIC(12, 2) DEFAULT 0,
@@ -163,9 +167,14 @@ CREATE TABLE IF NOT EXISTS wechat_messages (
   raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   finance_entry_id INTEGER REFERENCES finance_entries(id) ON DELETE SET NULL,
   fitness_entry_id INTEGER REFERENCES fitness_entries(id) ON DELETE SET NULL,
+  knowledge_document_id INTEGER REFERENCES knowledge_documents(id) ON DELETE SET NULL,
   intent TEXT NOT NULL DEFAULT 'unknown',
   parse_status TEXT NOT NULL DEFAULT 'ignored',
   reply_text TEXT NOT NULL DEFAULT '',
+  source_msg_type TEXT,
+  media_id TEXT,
+  media_status TEXT,
+  media_error TEXT,
   received_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -225,5 +234,89 @@ CREATE TABLE IF NOT EXISTS assistant_reports (
   content TEXT NOT NULL,
   period_start TIMESTAMPTZ,
   period_end TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS assistant_report_subscriptions (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT NOT NULL,
+  report_type TEXT NOT NULL CHECK (report_type IN ('daily', 'weekly')),
+  send_time TEXT NOT NULL DEFAULT '21:30',
+  weekday INTEGER,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  last_sent_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(from_user, report_type)
+);
+
+CREATE TABLE IF NOT EXISTS assistant_goals (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT,
+  goal_type TEXT NOT NULL CHECK (goal_type IN ('weight', 'monthly_expense', 'weekly_workout', 'sleep')),
+  title TEXT NOT NULL,
+  target_value NUMERIC(12, 2) NOT NULL,
+  unit TEXT NOT NULL DEFAULT '',
+  period TEXT NOT NULL DEFAULT 'ongoing',
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS assistant_rules (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT,
+  rule_type TEXT NOT NULL CHECK (rule_type IN ('finance_category', 'finance_direction', 'fitness_type', 'knowledge_target')),
+  pattern TEXT NOT NULL,
+  value TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 100,
+  source TEXT NOT NULL DEFAULT 'manual',
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE(from_user, rule_type, pattern)
+);
+
+CREATE TABLE IF NOT EXISTS pending_media_messages (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT,
+  to_user TEXT,
+  msg_type TEXT NOT NULL,
+  media_id TEXT,
+  content_hint TEXT NOT NULL DEFAULT '',
+  raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  status TEXT NOT NULL DEFAULT 'pending',
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '10 minutes',
+  resolved_message_id INTEGER REFERENCES wechat_messages(id) ON DELETE SET NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS wechat_user_profiles (
+  id SERIAL PRIMARY KEY,
+  from_user TEXT UNIQUE NOT NULL,
+  display_name TEXT NOT NULL DEFAULT '',
+  default_kb_id INTEGER REFERENCES knowledge_bases(id) ON DELETE SET NULL,
+  daily_report_time TEXT NOT NULL DEFAULT '21:30',
+  weekly_report_time TEXT NOT NULL DEFAULT '09:00',
+  weekly_report_weekday INTEGER NOT NULL DEFAULT 1,
+  media_fail_preference TEXT NOT NULL DEFAULT 'ask',
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  note TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id SERIAL PRIMARY KEY,
+  actor TEXT,
+  action TEXT NOT NULL,
+  entity_type TEXT NOT NULL DEFAULT '',
+  entity_id TEXT NOT NULL DEFAULT '',
+  detail JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ip TEXT,
+  user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

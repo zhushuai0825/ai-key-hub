@@ -40,6 +40,13 @@ const ASSISTANT_TASK_POLL_MS = Number(process.env.ASSISTANT_TASK_POLL_MS || 6000
 const ASSISTANT_CACHE_TTL_WECHAT = Number(process.env.ASSISTANT_CACHE_TTL_WECHAT || 1800);
 const ASSISTANT_CACHE_TTL_WEB = Number(process.env.ASSISTANT_CACHE_TTL_WEB || 86400);
 const ASSISTANT_CACHE_TTL_PINNED = Number(process.env.ASSISTANT_CACHE_TTL_PINNED || 60 * 60 * 24 * 30);
+const GATEWAY_TOKEN = process.env.GATEWAY_TOKEN || '';
+const OCR_API_KEY = process.env.OCR_API_KEY || '';
+const OCR_BASE_URL = process.env.OCR_BASE_URL || '';
+const OCR_MODEL = process.env.OCR_MODEL || '';
+const KEY_ENCRYPTION_SECRET = process.env.KEY_ENCRYPTION_SECRET || '';
+const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS || 30000);
+const GATEWAY_RETRY_COUNT = Number(process.env.GATEWAY_RETRY_COUNT || 1);
 const pool = new Pool({ connectionString: DATABASE_URL });
 const chroma = new ChromaClient({ path: CHROMA_URL });
 
@@ -59,17 +66,102 @@ function maskKey(key = '') {
   return `${key.slice(0, 6)}${'*'.repeat(Math.max(6, key.length - 10))}${key.slice(-4)}`;
 }
 
+function encryptionKey() {
+  if (!KEY_ENCRYPTION_SECRET) return null;
+  return crypto.createHash('sha256').update(KEY_ENCRYPTION_SECRET).digest();
+}
+
+function encryptSecret(value = '') {
+  const key = encryptionKey();
+  const plain = String(value || '');
+  if (!key || !plain) return { api_key: plain, api_key_encrypted: null, api_key_iv: null, api_key_tag: null, key_encryption_version: 0 };
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const encrypted = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()]);
+  return {
+    api_key: maskKey(plain),
+    api_key_encrypted: encrypted.toString('base64'),
+    api_key_iv: iv.toString('base64'),
+    api_key_tag: cipher.getAuthTag().toString('base64'),
+    key_encryption_version: 1,
+  };
+}
+
+function decryptSecret(row = {}) {
+  if (!row.api_key_encrypted) return row.api_key || '';
+  const key = encryptionKey();
+  if (!key) return row.api_key || '';
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(row.api_key_iv || '', 'base64'));
+  decipher.setAuthTag(Buffer.from(row.api_key_tag || '', 'base64'));
+  return Buffer.concat([decipher.update(Buffer.from(row.api_key_encrypted, 'base64')), decipher.final()]).toString('utf8');
+}
+
+async function migratePlainApiKeysToEncrypted() {
+  if (!encryptionKey()) return;
+  const result = await pool.query(`
+    SELECT id, api_key
+    FROM api_keys
+    WHERE COALESCE(api_key_encrypted,'') = ''
+      AND COALESCE(api_key,'') <> ''
+      AND api_key NOT LIKE '%***%'`);
+  for (const row of result.rows) {
+    const secret = encryptSecret(row.api_key);
+    await pool.query(
+      `UPDATE api_keys
+       SET api_key=$1, api_key_encrypted=$2, api_key_iv=$3, api_key_tag=$4, key_encryption_version=$5, updated_at=now()
+       WHERE id=$6`,
+      [secret.api_key, secret.api_key_encrypted, secret.api_key_iv, secret.api_key_tag, secret.key_encryption_version, row.id]
+    );
+  }
+}
+
+function actorFromReq(req) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Basic ')) return 'system';
+  try {
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    return decoded.split(':')[0] || 'user';
+  } catch (_) {
+    return 'user';
+  }
+}
+
+function cleanAuditDetail(detail = {}) {
+  return JSON.parse(JSON.stringify(detail, (key, value) => {
+    if (/api[_-]?key|secret|token|password/i.test(key)) return '[hidden]';
+    return value;
+  }));
+}
+
+async function auditLog(req, { action, entityType = '', entityId = '', detail = {}, actor = '' } = {}) {
+  if (!action) return;
+  await pool.query(
+    `INSERT INTO audit_logs (actor, action, entity_type, entity_id, detail, ip, user_agent)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+    [actor || actorFromReq(req || { headers: {} }), action, entityType, String(entityId || ''), cleanAuditDetail(detail), req?.socket?.remoteAddress || '', req?.headers?.['user-agent'] || '']
+  ).catch((error) => console.error('[audit]', error.message));
+}
+
 async function initDb() {
   const sql = await readFile(path.join(__dirname, 'db/schema.sql'), 'utf8');
   await pool.query(sql);
   await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS daily_quota NUMERIC(12, 2) DEFAULT 0');
+  await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_encrypted TEXT');
+  await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_iv TEXT');
+  await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS api_key_tag TEXT');
+  await pool.query('ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS key_encryption_version INTEGER NOT NULL DEFAULT 0');
   await pool.query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS budget_action TEXT NOT NULL DEFAULT 'alert'");
   await pool.query('ALTER TABLE fitness_entries DROP CONSTRAINT IF EXISTS fitness_entries_entry_type_check');
   await pool.query("ALTER TABLE fitness_entries ADD CONSTRAINT fitness_entries_entry_type_check CHECK (entry_type IN ('weight', 'meal', 'workout', 'sleep'))");
   await pool.query('ALTER TABLE fitness_entries ADD COLUMN IF NOT EXISTS sleep_hours NUMERIC(5, 2)');
   await pool.query('ALTER TABLE fitness_entries ADD COLUMN IF NOT EXISTS sleep_quality TEXT');
   await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS fitness_entry_id INTEGER REFERENCES fitness_entries(id) ON DELETE SET NULL');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS knowledge_document_id INTEGER REFERENCES knowledge_documents(id) ON DELETE SET NULL');
   await pool.query("ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS intent TEXT NOT NULL DEFAULT 'unknown'");
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS source_msg_type TEXT');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS media_id TEXT');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS media_status TEXT');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS media_error TEXT');
   await pool.query("DELETE FROM api_keys WHERE api_key LIKE 'sk-demo-%' OR remark ILIKE '%演示%'");
   await pool.query(`
     INSERT INTO knowledge_categories (code, name) VALUES
@@ -82,6 +174,30 @@ async function initDb() {
   await pool.query("ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS recurrence TEXT NOT NULL DEFAULT 'none'");
   await pool.query("ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
   await pool.query('ALTER TABLE assistant_tasks ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ');
+  await pool.query("ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS report_type TEXT NOT NULL DEFAULT 'daily'");
+  await pool.query("ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS send_time TEXT NOT NULL DEFAULT '21:30'");
+  await pool.query('ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS weekday INTEGER');
+  await pool.query('ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true');
+  await pool.query('ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ');
+  await pool.query("ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS goal_type TEXT NOT NULL DEFAULT 'weight'");
+  await pool.query('ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS target_value NUMERIC(12, 2) NOT NULL DEFAULT 0');
+  await pool.query("ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT ''");
+  await pool.query("ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS period TEXT NOT NULL DEFAULT 'ongoing'");
+  await pool.query('ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true');
+  await pool.query("ALTER TABLE assistant_rules ADD COLUMN IF NOT EXISTS rule_type TEXT NOT NULL DEFAULT 'finance_category'");
+  await pool.query('ALTER TABLE assistant_rules ADD COLUMN IF NOT EXISTS priority INTEGER NOT NULL DEFAULT 100');
+  await pool.query('ALTER TABLE assistant_rules ADD COLUMN IF NOT EXISTS hit_count INTEGER NOT NULL DEFAULT 0');
+  await pool.query('ALTER TABLE assistant_rules ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true');
+  await pool.query("ALTER TABLE pending_media_messages ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending'");
+  await pool.query("ALTER TABLE pending_media_messages ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '10 minutes'");
+  await pool.query('ALTER TABLE pending_media_messages ADD COLUMN IF NOT EXISTS resolved_message_id INTEGER REFERENCES wechat_messages(id) ON DELETE SET NULL');
+  await pool.query("ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS display_name TEXT NOT NULL DEFAULT ''");
+  await pool.query('ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS default_kb_id INTEGER REFERENCES knowledge_bases(id) ON DELETE SET NULL');
+  await pool.query("ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS daily_report_time TEXT NOT NULL DEFAULT '21:30'");
+  await pool.query("ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS weekly_report_time TEXT NOT NULL DEFAULT '09:00'");
+  await pool.query('ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS weekly_report_weekday INTEGER NOT NULL DEFAULT 1');
+  await pool.query("ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS media_fail_preference TEXT NOT NULL DEFAULT 'ask'");
+  await pool.query('ALTER TABLE wechat_user_profiles ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true');
   await pool.query(`
     DELETE FROM assistant_answer_cache
     WHERE topic IS NULL
@@ -100,6 +216,16 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_user_time ON fitness_entries(source_user, recorded_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_tasks_user_status ON assistant_tasks(from_user, status, remind_at)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_reports_user_type ON assistant_reports(from_user, report_type, created_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_messages_status_time ON wechat_messages(parse_status, received_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_messages_intent_time ON wechat_messages(intent, received_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_report_subscriptions_due ON assistant_report_subscriptions(enabled, report_type, send_time)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_goals_user_type ON assistant_goals(from_user, goal_type, enabled)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_rules_lookup ON assistant_rules(rule_type, enabled, priority)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_pending_media_user_status ON pending_media_messages(from_user, status, expires_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_user_profiles_enabled ON wechat_user_profiles(enabled, from_user)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_action_time ON audit_logs(action, created_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_time ON audit_logs(entity_type, entity_id, created_at DESC)');
+  await migratePlainApiKeysToEncrypted();
 }
 
 function categoryCode(name = '') {
@@ -141,12 +267,12 @@ function localFitnessAdvice(entry) {
 
 async function deepseekApiKey() {
   const result = await pool.query(`
-    SELECT k.api_key
+    SELECT k.*
     FROM api_keys k JOIN providers p ON p.id=k.provider_id
     WHERE p.code='deepseek' AND k.status='active'
     ORDER BY k.updated_at DESC, k.id DESC
     LIMIT 1`);
-  return result.rows[0]?.api_key || '';
+  return result.rows[0] ? decryptSecret(result.rows[0]) : '';
 }
 
 function fitnessPrompt(entry) {
@@ -297,6 +423,24 @@ async function buildRecentWechatContext(fromUser, limit = 8) {
     LIMIT $2`, [fromUser || null, limit]);
   if (!result.rows.length) return '暂无最近对话';
   return result.rows.reverse().map((row) => `- #${row.id} 用户：${row.content || '[非文本]'}；处理：${row.intent}/${row.parse_status}；回复：${String(row.reply_text || '').slice(0, 80)}`).join('\n');
+}
+
+function compactAssistantContext({ userContext = '', memoryContext = '', knowledgeSources = [], recentContext = '', understood = null, error = null } = {}) {
+  const knowledge = knowledgeSources.map((item, index) => ({
+    index: index + 1,
+    title: item.title || item.document_title || item.metadata?.title || '',
+    score: item.score ?? item.distance ?? null,
+    preview: String(item.content || '').slice(0, 180),
+  }));
+  return {
+    recent_context: String(recentContext || '').slice(0, 1200),
+    user_context: String(userContext || '').slice(0, 1200),
+    memory_context: String(memoryContext || '').slice(0, 1200),
+    knowledge_sources: knowledge,
+    ai_actions: Array.isArray(understood?.actions) ? understood.actions.map((action) => action.type).filter(Boolean) : [],
+    ai_reply_preview: understood?.reply ? String(understood.reply).slice(0, 300) : '',
+    error: error ? String(error.message || error).slice(0, 300) : '',
+  };
 }
 
 function safeJsonFromAi(content) {
@@ -456,12 +600,14 @@ async function shouldSearchKnowledge(question, previewTopic = null) {
 }
 
 async function handleWechatChat(content, fromUser) {
+  const userKb = await resolveUserKnowledgeBase(fromUser).catch(() => null);
+  const kbId = userKb?.id || WECHAT_DEFAULT_KB_ID;
   const previewTopic = classifyUsefulTopic(content, []);
   if (previewTopic) {
     const cached = await getAssistantCache({
       question: content,
       channel: 'wechat',
-      kbId: WECHAT_DEFAULT_KB_ID,
+      kbId,
       fromUser,
     });
     if (cached) {
@@ -473,7 +619,7 @@ async function handleWechatChat(content, fromUser) {
   const searchKb = await shouldSearchKnowledge(content, previewTopic);
   const [userContext, knowledgeSources] = await Promise.all([
     buildWechatUserContext(fromUser, { light: lightContext }),
-    searchKb ? searchKnowledge(WECHAT_DEFAULT_KB_ID, content, 5) : Promise.resolve([]),
+    searchKb ? searchKnowledge(kbId, content, 5) : Promise.resolve([]),
   ]);
   const topic = classifyUsefulTopic(content, knowledgeSources);
   const answer = await deepseekWechatAssistant(content, userContext, knowledgeSources);
@@ -483,7 +629,7 @@ async function handleWechatChat(content, fromUser) {
       question: content,
       answer: reply,
       channel: 'wechat',
-      kbId: WECHAT_DEFAULT_KB_ID,
+      kbId,
       fromUser,
       topic,
       sources: knowledgeSources.map((item) => ({
@@ -1002,6 +1148,37 @@ async function ensureWechatDefaultKnowledgeBase() {
   return created.rows[0];
 }
 
+async function getWechatUserProfile(fromUser) {
+  if (!fromUser) return null;
+  const result = await pool.query('SELECT * FROM wechat_user_profiles WHERE from_user=$1 AND enabled=true', [fromUser]);
+  return result.rows[0] || null;
+}
+
+async function ensureWechatUserProfile(fromUser, data = {}) {
+  const clean = String(fromUser || '').trim();
+  if (!clean) throw new Error('from_user required');
+  const result = await pool.query(
+    `INSERT INTO wechat_user_profiles (from_user, display_name, default_kb_id, daily_report_time, weekly_report_time, weekly_report_weekday, media_fail_preference, enabled, note)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,COALESCE($8,true),$9)
+     ON CONFLICT (from_user)
+     DO UPDATE SET display_name=EXCLUDED.display_name, default_kb_id=EXCLUDED.default_kb_id, daily_report_time=EXCLUDED.daily_report_time,
+       weekly_report_time=EXCLUDED.weekly_report_time, weekly_report_weekday=EXCLUDED.weekly_report_weekday,
+       media_fail_preference=EXCLUDED.media_fail_preference, enabled=EXCLUDED.enabled, note=EXCLUDED.note, updated_at=now()
+     RETURNING *`,
+    [clean, data.display_name || '', data.default_kb_id || null, data.daily_report_time || '21:30', data.weekly_report_time || '09:00', Number(data.weekly_report_weekday ?? 1), data.media_fail_preference || 'ask', data.enabled === undefined ? true : Boolean(data.enabled), data.note || '']
+  );
+  return result.rows[0];
+}
+
+async function resolveUserKnowledgeBase(fromUser) {
+  const profile = await getWechatUserProfile(fromUser);
+  if (profile?.default_kb_id) {
+    const kb = await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [profile.default_kb_id]);
+    if (kb.rowCount) return kb.rows[0];
+  }
+  return ensureWechatDefaultKnowledgeBase();
+}
+
 async function findKnowledgeBaseByName(name) {
   const clean = String(name || '').trim();
   if (!clean) return null;
@@ -1043,7 +1220,7 @@ async function rememberNextKnowledgeUploadTarget(fromUser, content) {
   if (!fromUser) return null;
   const parsed = parseKnowledgeTargetIntent(content);
   if (!parsed) return null;
-  const kb = parsed.target ? await findOrCreateKnowledgeBaseByName(parsed.target) : await ensureWechatDefaultKnowledgeBase();
+  const kb = parsed.target ? await findOrCreateKnowledgeBaseByName(parsed.target) : await resolveUserKnowledgeBase(fromUser);
   const memory = await pool.query(
     `INSERT INTO assistant_memories (from_user, category, content, importance, source, pinned)
      VALUES ($1,'knowledge_upload_target',$2,4,'wechat',false) RETURNING *`,
@@ -1072,7 +1249,7 @@ async function consumeNextKnowledgeUploadTarget(fromUser) {
 }
 
 async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_text', sourceUser = null, kb = null, sourceNote = '' }) {
-  const targetKb = kb || await ensureWechatDefaultKnowledgeBase();
+  const targetKb = kb || await resolveUserKnowledgeBase(sourceUser);
   const clean = String(text || '').trim();
   if (!clean) throw new Error('没有可写入的文本内容');
   const doc = await pool.query(
@@ -1085,7 +1262,7 @@ async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_tex
 }
 
 async function importWechatWorkMediaToKnowledge(payload) {
-  const kb = await consumeNextKnowledgeUploadTarget(payload.from_user) || await ensureWechatDefaultKnowledgeBase();
+  const kb = await consumeNextKnowledgeUploadTarget(payload.from_user) || await resolveUserKnowledgeBase(payload.from_user);
   const media = await downloadWechatWorkMedia(payload.media_id);
   const filename = payload.file_name || media.filename || `${payload.media_id}.dat`;
   await mkdir(UPLOAD_DIR, { recursive: true });
@@ -1234,6 +1411,9 @@ function parseWechatXml(xml) {
     content: xmlValue(xml, 'Content'),
     media_id: xmlValue(xml, 'MediaId'),
     file_name: xmlValue(xml, 'FileName'),
+    recognition: xmlValue(xml, 'Recognition'),
+    pic_url: xmlValue(xml, 'PicUrl'),
+    ocr_text: xmlValue(xml, 'OCRText') || xmlValue(xml, 'Text'),
     agent_id: xmlValue(xml, 'AgentID'),
     msg_id: xmlValue(xml, 'MsgId'),
   };
@@ -1254,15 +1434,86 @@ function classifyFinanceCategory(text) {
   return rules.find(([pattern]) => pattern.test(text))?.[1] || '未分类';
 }
 
-function parseFinanceMessage(content) {
+async function matchAssistantRule({ fromUser, ruleType, text }) {
+  const result = await pool.query(
+    `SELECT * FROM assistant_rules
+     WHERE enabled=true AND rule_type=$1
+       AND ($2::text IS NULL OR from_user=$2 OR from_user IS NULL)
+     ORDER BY from_user NULLS LAST, priority ASC, updated_at DESC
+     LIMIT 200`,
+    [ruleType, fromUser || null]
+  );
+  const clean = String(text || '');
+  const rule = result.rows.find((row) => row.pattern && clean.includes(row.pattern));
+  if (rule) {
+    await pool.query('UPDATE assistant_rules SET hit_count=hit_count+1, updated_at=now() WHERE id=$1', [rule.id]);
+  }
+  return rule || null;
+}
+
+function learnPatternFromText(text) {
+  return String(text || '')
+    .replace(/(?:我)?(?:今天|刚刚|刚才|昨天|前天|这次|那个|这个)/g, '')
+    .replace(/(买了|买|花了|花|支出|消费|付款|付了|收入|收款|到账|工资|奖金|报销|元|块|¥|￥|rmb|RMB)/gi, ' ')
+    .replace(/-?\d+(?:\.\d{1,2})?/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 30);
+}
+
+async function saveAssistantRule({ fromUser = null, ruleType, pattern, value, priority = 50, source = 'manual' }) {
+  const cleanPattern = String(pattern || '').trim();
+  const cleanValue = String(value || '').trim();
+  if (!cleanPattern || !cleanValue) return null;
+  const result = await pool.query(
+    `INSERT INTO assistant_rules (from_user, rule_type, pattern, value, priority, source)
+     VALUES ($1,$2,$3,$4,$5,$6)
+     ON CONFLICT (from_user, rule_type, pattern)
+     DO UPDATE SET value=EXCLUDED.value, priority=LEAST(assistant_rules.priority, EXCLUDED.priority), source=EXCLUDED.source, enabled=true, updated_at=now()
+     RETURNING *`,
+    [fromUser || null, ruleType, cleanPattern, cleanValue, Number(priority || 50), source]
+  );
+  return result.rows[0];
+}
+
+async function savePendingMedia({ fromUser, toUser, msgType, mediaId, contentHint = '', rawPayload = {} }) {
+  if (!fromUser || !msgType) return null;
+  const result = await pool.query(
+    `INSERT INTO pending_media_messages (from_user, to_user, msg_type, media_id, content_hint, raw_payload, status, expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,'pending',now()+interval '10 minutes') RETURNING *`,
+    [fromUser || null, toUser || null, msgType, mediaId || null, contentHint || '', JSON.stringify(rawPayload || {})]
+  );
+  return result.rows[0];
+}
+
+async function latestPendingMedia(fromUser) {
+  if (!fromUser) return null;
+  const result = await pool.query(
+    `SELECT * FROM pending_media_messages
+     WHERE from_user=$1 AND status='pending' AND expires_at > now()
+     ORDER BY created_at DESC LIMIT 1`,
+    [fromUser]
+  );
+  return result.rows[0] || null;
+}
+
+function isMediaClarification(text) {
+  const clean = String(text || '').trim();
+  if (!clean) return false;
+  return /这张|这图|图片|照片|截图|刚才|上面|语音|录音|那条|这个/.test(clean) || clean.length <= 80;
+}
+
+async function parseFinanceMessage(content, fromUser = null) {
   const text = String(content || '').trim();
   if (!text) return null;
   const amountMatch = text.match(/(?:¥|￥|rmb|RMB)?\s*(-?\d+(?:\.\d{1,2})?)\s*(?:元|块|rmb|RMB)?/);
   if (!amountMatch) return null;
   const amount = Math.abs(Number(amountMatch[1]));
   if (!Number.isFinite(amount) || amount <= 0) return null;
+  const directionRule = await matchAssistantRule({ fromUser, ruleType: 'finance_direction', text });
   const isIncome = /收入|收款|到账|工资|奖金|报销|赚|入账|转入/.test(text) && !/买|花|支出|消费|付|付款/.test(text);
-  const direction = isIncome ? 'income' : 'expense';
+  const direction = directionRule?.value || (isIncome ? 'income' : 'expense');
+  const categoryRule = await matchAssistantRule({ fromUser, ruleType: 'finance_category', text });
   const title = text
     .replace(/(?:我)?(?:今天|刚刚|刚才|昨天|前天)?/g, '')
     .replace(/(买了|买|花了|花|支出|消费|付款|付了|收入|收款|到账|工资|奖金|报销|元|块|¥|￥|rmb|RMB)/g, ' ')
@@ -1272,7 +1523,7 @@ function parseFinanceMessage(content) {
   return {
     direction,
     amount,
-    category: classifyFinanceCategory(text),
+    category: categoryRule?.value || classifyFinanceCategory(text),
     title,
     note: text,
     raw_message: text,
@@ -1338,11 +1589,14 @@ async function createFitnessEntry(data) {
 async function createFinanceEntry(data, fromUser, rawMessage) {
   const amount = numberOrNull(data.amount);
   if (!amount || amount <= 0) throw new Error('finance amount required');
-  const direction = data.direction === 'income' ? 'income' : 'expense';
+  const directionRule = await matchAssistantRule({ fromUser, ruleType: 'finance_direction', text: rawMessage || data.note || data.title || '' });
+  const categoryRule = await matchAssistantRule({ fromUser, ruleType: 'finance_category', text: rawMessage || data.note || data.title || '' });
+  const direction = directionRule?.value === 'income' ? 'income' : (data.direction === 'income' ? 'income' : 'expense');
+  const category = categoryRule?.value || data.category || '未分类';
   const result = await pool.query(
     `INSERT INTO finance_entries (direction, amount, category, title, note, source_user, raw_message)
      VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [direction, amount, data.category || '未分类', data.title || (direction === 'income' ? '收入' : '支出'), data.note || rawMessage || '', fromUser || null, rawMessage || '']
+    [direction, amount, category, data.title || (direction === 'income' ? '收入' : '支出'), data.note || rawMessage || '', fromUser || null, rawMessage || '']
   );
   return result.rows[0];
 }
@@ -1439,7 +1693,12 @@ async function applyCorrection(action, fromUser) {
     if (!allowed.has(action.field)) return null;
     const value = action.field === 'amount' ? numberOrNull(action.value) : String(action.value || '');
     const result = await pool.query(`UPDATE finance_entries SET ${action.field}=$1 WHERE id=$2 RETURNING *`, [value, message.finance_entry_id]);
-    return { type: 'finance', row: result.rows[0] };
+    let learnedRule = null;
+    if (action.field === 'category') {
+      const pattern = learnPatternFromText(message.content || result.rows[0]?.raw_message || result.rows[0]?.title || '');
+      learnedRule = await saveAssistantRule({ fromUser, ruleType: 'finance_category', pattern, value, source: 'correction' });
+    }
+    return { type: 'finance', row: result.rows[0], rule: learnedRule };
   }
   if (message.fitness_entry_id) {
     const allowed = new Set(['weight_kg', 'food_text', 'workout_text', 'duration_min', 'sleep_hours', 'sleep_quality', 'note']);
@@ -1471,9 +1730,10 @@ async function applyDeleteAction(action, fromUser) {
 
 async function buildReportText(reportType, fromUser) {
   const days = reportType === 'monthly' ? 31 : (reportType === 'weekly' ? 7 : 1);
-  const [fitness, finance] = await Promise.all([
+  const [fitness, finance, goals] = await Promise.all([
     pool.query(`SELECT * FROM fitness_entries WHERE recorded_at >= now() - ($1 || ' days')::interval AND ($2::text IS NULL OR source_user=$2 OR source_user IS NULL) ORDER BY recorded_at ASC`, [days, fromUser || null]),
     pool.query(`SELECT * FROM finance_entries WHERE occurred_at >= now() - ($1 || ' days')::interval AND ($2::text IS NULL OR source_user=$2 OR source_user IS NULL) ORDER BY occurred_at ASC`, [days, fromUser || null]),
+    pool.query(`SELECT * FROM assistant_goals WHERE enabled=true AND ($1::text IS NULL OR from_user=$1 OR from_user IS NULL) ORDER BY from_user NULLS LAST, goal_type`, [fromUser || null]),
   ]);
   const income = finance.rows.filter((row) => row.direction === 'income').reduce((sum, row) => sum + Number(row.amount), 0);
   const expense = finance.rows.filter((row) => row.direction === 'expense').reduce((sum, row) => sum + Number(row.amount), 0);
@@ -1486,7 +1746,41 @@ async function buildReportText(reportType, fromUser) {
     `健康：记录 ${fitness.rowCount} 条，运动 ${workouts} 分钟。`,
   ];
   if (weights.length) lines.push(`体重：${weights[0].weight_kg}kg → ${weights[weights.length - 1].weight_kg}kg。`);
+  const goalLines = buildGoalStatusLines(goals.rows, { fitness: fitness.rows, finance: finance.rows });
+  if (goalLines.length) lines.push('目标：', ...goalLines.map((line) => `- ${line}`));
   return lines.join('\n');
+}
+
+function buildGoalStatusLines(goals, data) {
+  const lines = [];
+  const fitness = data.fitness || [];
+  const finance = data.finance || [];
+  for (const goal of goals) {
+    const target = Number(goal.target_value || 0);
+    if (goal.goal_type === 'weight') {
+      const latest = fitness.filter((row) => row.entry_type === 'weight' && row.weight_kg).at(-1);
+      if (!latest) lines.push(`${goal.title}：暂无体重记录，目标 ${target}${goal.unit || 'kg'}`);
+      else {
+        const current = Number(latest.weight_kg);
+        const diff = current - target;
+        lines.push(`${goal.title}：当前 ${current.toFixed(1)}kg，目标 ${target.toFixed(1)}kg，${diff <= 0 ? '已达成' : `还差 ${diff.toFixed(1)}kg`}`);
+      }
+    }
+    if (goal.goal_type === 'monthly_expense') {
+      const expense = finance.filter((row) => row.direction === 'expense').reduce((sum, row) => sum + Number(row.amount), 0);
+      lines.push(`${goal.title}：本期支出 ¥${expense.toFixed(2)} / 目标 ¥${target.toFixed(2)}，${expense <= target ? '未超预算' : `超出 ¥${(expense - target).toFixed(2)}`}`);
+    }
+    if (goal.goal_type === 'weekly_workout') {
+      const count = fitness.filter((row) => row.entry_type === 'workout').length;
+      lines.push(`${goal.title}：本期运动 ${count} 次 / 目标 ${target} 次，${count >= target ? '已达成' : `还差 ${target - count} 次`}`);
+    }
+    if (goal.goal_type === 'sleep') {
+      const sleeps = fitness.filter((row) => row.entry_type === 'sleep' && row.sleep_hours);
+      const avg = sleeps.length ? sleeps.reduce((sum, row) => sum + Number(row.sleep_hours), 0) / sleeps.length : 0;
+      lines.push(`${goal.title}：平均睡眠 ${avg ? avg.toFixed(1) : '0'} 小时 / 目标 ${target} 小时，${avg >= target ? '已达成' : '未达成'}`);
+    }
+  }
+  return lines;
 }
 
 async function createAssistantReport(action, fromUser) {
@@ -1499,6 +1793,61 @@ async function createAssistantReport(action, fromUser) {
     [fromUser || null, reportType, title, content]
   );
   return result.rows[0];
+}
+
+function shanghaiDateParts(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', weekday: 'short', hour12: false,
+  }).formatToParts(date);
+  const value = (type) => parts.find((part) => part.type === type)?.value || '';
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(value('weekday'));
+  return {
+    date: `${value('year')}-${value('month')}-${value('day')}`,
+    time: `${value('hour')}:${value('minute')}`,
+    weekday,
+  };
+}
+
+function shouldSendReportSubscription(row, nowParts) {
+  if (!row.enabled) return false;
+  if (String(row.send_time || '').slice(0, 5) !== nowParts.time) return false;
+  if (row.report_type === 'weekly' && row.weekday !== null && Number(row.weekday) !== nowParts.weekday) return false;
+  if (!row.last_sent_at) return true;
+  const last = shanghaiDateParts(new Date(row.last_sent_at));
+  if (row.report_type === 'daily') return last.date !== nowParts.date;
+  return last.date !== nowParts.date;
+}
+
+async function processDueReportSubscriptions() {
+  if (!WECHAT_WORK_AGENT_ID || !WECHAT_WORK_SECRET) {
+    return { skipped: true, reason: 'wechat agent not configured', processed: 0, results: [] };
+  }
+  const nowParts = shanghaiDateParts();
+  const candidates = await pool.query(
+    `SELECT * FROM assistant_report_subscriptions
+     WHERE enabled=true AND send_time=$1
+     ORDER BY id ASC
+     LIMIT 50`,
+    [nowParts.time]
+  );
+  const due = candidates.rows.filter((row) => shouldSendReportSubscription(row, nowParts));
+  const results = [];
+  for (const sub of due) {
+    try {
+      const report = await createAssistantReport({ report_type: sub.report_type }, sub.from_user);
+      const title = sub.report_type === 'weekly' ? '📊 每周总结' : '📊 每日总结';
+      await sendWechatWorkTextMessage(sub.from_user, `${title}\n${report.content}`);
+      await pool.query('UPDATE assistant_report_subscriptions SET last_sent_at=now(), updated_at=now() WHERE id=$1', [sub.id]);
+      results.push({ id: sub.id, ok: true, report_id: report.id, user: sub.from_user, type: sub.report_type });
+    } catch (error) {
+      console.error(`[reports] subscription ${sub.id} failed:`, error.message);
+      results.push({ id: sub.id, ok: false, error: error.message });
+    }
+  }
+  if (results.length) console.log(`[reports] processed ${results.length} report subscriptions`);
+  return { skipped: false, processed: results.length, results };
 }
 
 async function executeAssistantActions(actions, content, fromUser) {
@@ -1598,13 +1947,86 @@ function parseKnowledgeTextCommand(text) {
   return match?.[1]?.trim() || '';
 }
 
-async function recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, intent, status, reply }) {
+function extractVoiceText(payload) {
+  return String(payload.recognition || payload.Recognition || payload.raw_payload?.recognition || payload.raw_payload?.Recognition || '').trim();
+}
+
+function extractImageText(payload) {
+  return String(
+    payload.ocr_text || payload.OCRText || payload.text || payload.Text ||
+    payload.raw_payload?.ocr_text || payload.raw_payload?.OCRText || payload.raw_payload?.text || payload.raw_payload?.Text || ''
+  ).trim();
+}
+
+async function resolveImageText(payload) {
+  const existing = extractImageText(payload);
+  if (existing) return { text: existing, status: 'ocr_ready', error: null };
+  try {
+    let media;
+    if (payload.image_base64) {
+      media = {
+        buffer: Buffer.from(String(payload.image_base64).replace(/^data:image\/[^;]+;base64,/, ''), 'base64'),
+        contentType: payload.content_type || 'image/jpeg',
+      };
+    } else if (payload.media_id) {
+      media = await downloadWechatWorkMedia(payload.media_id);
+    } else {
+      throw new Error('缺少图片媒体内容');
+    }
+    const text = await recognizeImageTextWithVision({ buffer: media.buffer, contentType: media.contentType, hint: payload.content || payload.file_name || '' });
+    return { text, status: 'vision_ocr', error: null };
+  } catch (error) {
+    return { text: '', status: 'failed', error: `图片 OCR 失败：${error.message}` };
+  }
+}
+
+function imageDataUrl(buffer, contentType = '') {
+  const mimeType = contentType && contentType.startsWith('image/') ? contentType : 'image/jpeg';
+  return `data:${mimeType};base64,${Buffer.from(buffer).toString('base64')}`;
+}
+
+function parseOcrResponse(payload) {
+  const content = payload?.choices?.[0]?.message?.content;
+  if (Array.isArray(content)) {
+    return content.map((item) => item.text || item.content || '').join('\n').trim();
+  }
+  return String(content || '').trim();
+}
+
+async function recognizeImageTextWithVision({ buffer, contentType, hint = '' }) {
+  if (!OCR_API_KEY || !OCR_BASE_URL || !OCR_MODEL) throw new Error('未配置 OCR_API_KEY / OCR_BASE_URL / OCR_MODEL');
+  const url = `${OCR_BASE_URL.replace(/\/$/, '')}/chat/completions`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OCR_API_KEY}` },
+    body: JSON.stringify({
+      model: OCR_MODEL,
+      temperature: 0,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: `请识别图片里的文字，只输出可见文字，不要解释。${hint ? `\n提示：${hint}` : ''}` },
+            { type: 'image_url', image_url: { url: imageDataUrl(buffer, contentType) } },
+          ],
+        },
+      ],
+    }),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload?.error?.message || `OCR 服务失败：${response.status}`);
+  const text = parseOcrResponse(payload);
+  if (!text) throw new Error('OCR 服务没有识别出文本');
+  return text;
+}
+
+async function recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, intent, status, reply, sourceMsgType = null, mediaId = null, mediaStatus = null, mediaError = null }) {
   const message = await pool.query(
-    `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, intent, parse_status, reply_text)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-    [from_user || null, to_user || null, msg_type || 'text', content || '', JSON.stringify(raw_payload), financeEntry?.id || null, fitnessEntry?.id || null, intent, status, reply]
+    `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, knowledge_document_id, intent, parse_status, reply_text, source_msg_type, media_id, media_status, media_error)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+    [from_user || null, to_user || null, msg_type || 'text', content || '', JSON.stringify(raw_payload), financeEntry?.id || null, fitnessEntry?.id || null, knowledgeDocument?.id || null, intent, status, reply, sourceMsgType, mediaId, mediaStatus, mediaError]
   );
-  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, reply };
+  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, knowledge_document: knowledgeDocument, reply };
 }
 
 async function processWechatFileUploadAsync(payload) {
@@ -1612,8 +2034,10 @@ async function processWechatFileUploadAsync(payload) {
   let intent = 'knowledge.upload_failed';
   let status = 'failed';
   let reply = '文件入库失败，请稍后重试。';
+  let knowledgeDocument = null;
   try {
     const imported = await importWechatWorkMediaToKnowledge(payload);
+    knowledgeDocument = imported.document;
     intent = 'knowledge.upload';
     status = 'recorded';
     reply = `已上传到知识库「${imported.kb.name}」：${imported.document.title}，切分 ${imported.processed.chunks} 段。之后可以直接问我这份资料里的内容。`;
@@ -1629,6 +2053,7 @@ async function processWechatFileUploadAsync(payload) {
     raw_payload: payload.raw_payload || payload,
     financeEntry: null,
     fitnessEntry: null,
+    knowledgeDocument,
     intent,
     status,
     reply,
@@ -1643,20 +2068,71 @@ async function processWechatFileUploadAsync(payload) {
 }
 
 async function saveWechatMessage({ from_user, to_user, msg_type = 'text', content = '', raw_payload = {} }) {
+  if (msg_type === 'text' && content.trim() && !raw_payload.pending_media_id) {
+    const pending = await latestPendingMedia(from_user);
+    if (pending && isMediaClarification(content)) {
+      const merged = await saveWechatMessage({
+        from_user,
+        to_user,
+        msg_type: 'text',
+        content,
+        raw_payload: { ...raw_payload, pending_media_id: pending.id, pending_media_type: pending.msg_type, pending_media_media_id: pending.media_id },
+      });
+      await pool.query('UPDATE pending_media_messages SET status=$1, resolved_message_id=$2, updated_at=now() WHERE id=$3', ['resolved', merged.message.id, pending.id]);
+      merged.message.media_status = 'clarified';
+      return merged;
+    }
+  }
+  const sourceMsgType = msg_type;
+  const mediaId = raw_payload.media_id || raw_payload.MediaId || null;
+  let mediaStatus = null;
+  let mediaError = null;
+  if (msg_type === 'voice') {
+    const voiceText = extractVoiceText({ ...raw_payload, content });
+    if (voiceText) {
+      content = voiceText;
+      msg_type = 'text';
+      mediaStatus = 'transcribed';
+    } else {
+      content = content || '[语音消息]';
+      mediaStatus = 'failed';
+      mediaError = '语音消息没有 Recognition 转写结果，请在企业微信后台开启语音识别或发送文字。';
+    }
+  }
+  if (msg_type === 'image') {
+    const imageResult = await resolveImageText({ ...raw_payload, content });
+    if (imageResult.text) {
+      content = imageResult.text;
+      msg_type = 'text';
+      mediaStatus = imageResult.status;
+    } else {
+      content = content || raw_payload.file_name || raw_payload.pic_url || '[图片消息]';
+      mediaStatus = imageResult.status;
+      mediaError = imageResult.error || '图片没有 OCR 文本结果。';
+    }
+  }
   let financeEntry = null;
   let fitnessEntry = null;
+  let knowledgeDocument = null;
   let intent = 'unknown';
   let status = 'ignored';
   let reply = '你好，我是你的助手。可以记录体重/消费/运动/睡眠，也可以问我「这个月花了多少」「最近体重趋势」或知识库问题。';
-  if (['file', 'image'].includes(msg_type) && raw_payload.media_id) {
+  let assistantContext = null;
+  if (msg_type === 'file' && raw_payload.media_id) {
     intent = 'knowledge.upload_pending';
     status = 'processing';
     reply = '收到文件，正在写入知识库，请稍候…';
+  } else if (mediaError) {
+    await savePendingMedia({ fromUser: from_user, toUser: to_user, msgType: sourceMsgType, mediaId, contentHint: content, rawPayload: raw_payload });
+    intent = `${sourceMsgType}.media_failed`;
+    status = 'failed';
+    reply = `${mediaError}\n你可以直接补充一句说明，例如：这张图是午餐 28 元、这张图是体重 70.8kg、这张图存入知识库。`;
   } else if (msg_type === 'text' && content.trim()) {
     const kbText = parseKnowledgeTextCommand(content);
     if (kbText) {
       try {
         const ingested = await ingestTextToKnowledgeBase({ title: '企微文字资料', text: kbText, sourceType: 'wechat_text', sourceUser: from_user, sourceNote: '企业微信文本命令' });
+        knowledgeDocument = ingested.document;
         intent = 'knowledge.ingested';
         status = 'recorded';
         reply = `已写入知识库「${ingested.kb.name}」：${ingested.document.title}，切分 ${ingested.processed.chunks} 段。`;
@@ -1677,18 +2153,21 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         reply = `设置知识库目标失败：${error.message}`;
       }
     } else try {
+      const userKb = await resolveUserKnowledgeBase(from_user).catch(() => null);
       const searchKb = await shouldSearchKnowledge(content, classifyUsefulTopic(content, []));
       const [userContext, memoryContext, knowledgeSources] = await Promise.all([
         buildWechatUserContext(from_user, { light: false }),
         buildAssistantMemoryContext(from_user),
-        searchKb ? searchKnowledge(WECHAT_DEFAULT_KB_ID, content, 5) : Promise.resolve([]),
+        searchKb ? searchKnowledge(userKb?.id || WECHAT_DEFAULT_KB_ID, content, 5) : Promise.resolve([]),
       ]);
       const recentContext = await buildRecentWechatContext(from_user);
       const understood = await deepseekUnderstandWechatMessage(content, userContext, memoryContext, knowledgeSources, recentContext);
+      assistantContext = compactAssistantContext({ userContext, memoryContext, knowledgeSources, recentContext, understood });
       if (understood?.actions?.length) {
         const executed = await executeAssistantActions(understood.actions, content, from_user);
         financeEntry = executed.financeEntry;
         fitnessEntry = executed.fitnessEntry;
+        knowledgeDocument = executed.knowledgeDocuments?.[0]?.document || null;
         intent = executed.intents[0] || 'chat.assistant';
         status = executed.intents.length ? 'recorded' : 'replied';
         reply = truncateWechatReply(`${understood.reply || '已处理。'}${actionReplySuffix(executed)}`);
@@ -1700,8 +2179,9 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         status = 'replied';
       }
     } catch (error) {
+      assistantContext = assistantContext || compactAssistantContext({ error });
       const fitnessParsed = parseFitnessMessage(content);
-      const financeParsed = !fitnessParsed ? parseFinanceMessage(content) : null;
+      const financeParsed = !fitnessParsed ? await parseFinanceMessage(content, from_user) : null;
       if (fitnessParsed) {
         const created = await createFitnessEntry({ ...fitnessParsed, note: fitnessParsed.note || content, source_user: from_user });
         fitnessEntry = created.entry;
@@ -1720,7 +2200,8 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
       }
     }
   }
-  return recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, intent, status, reply });
+  if (assistantContext) raw_payload = { ...raw_payload, assistant_context: assistantContext };
+  return recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, intent, status, reply, sourceMsgType, mediaId, mediaStatus, mediaError });
 }
 
 async function createFitnessReport(entry) {
@@ -1763,6 +2244,12 @@ function authorized(req) {
   return user === AUTH_USER && password === AUTH_PASSWORD;
 }
 
+function gatewayAuthorized(req) {
+  if (!GATEWAY_TOKEN) return authorized(req);
+  const header = req.headers.authorization || '';
+  return header === `Bearer ${GATEWAY_TOKEN}`;
+}
+
 function sendUnauthorized(res) {
   res.writeHead(401, {
     'WWW-Authenticate': 'Basic realm="AI Key Hub"',
@@ -1772,7 +2259,7 @@ function sendUnauthorized(res) {
 }
 
 function copyPayload(provider, key, mode, model = '') {
-  const apiKey = key.api_key;
+  const apiKey = decryptSecret(key);
   const baseUrl = provider.base_url;
   const modelName = model || provider.default_model || '';
   if (mode === 'base_url') return `${baseUrl}\n${apiKey}`;
@@ -1781,6 +2268,185 @@ function copyPayload(provider, key, mode, model = '') {
     return `curl ${baseUrl}/chat/completions \\\n  -H "Authorization: Bearer ${apiKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"${modelName}","messages":[{"role":"user","content":"你好"}]}'`;
   }
   return apiKey;
+}
+
+function parseGatewayModel(model = '') {
+  const raw = String(model || '').trim();
+  if (!raw) return { providerCode: '', modelName: '' };
+  const separators = ['/', ':'];
+  for (const separator of separators) {
+    if (raw.includes(separator)) {
+      const [providerCode, ...rest] = raw.split(separator);
+      return { providerCode, modelName: rest.join(separator) || raw };
+    }
+  }
+  return { providerCode: '', modelName: raw };
+}
+
+async function selectGatewayTarget(model) {
+  const parsed = parseGatewayModel(model);
+  const params = [parsed.modelName];
+  let providerFilter = '';
+  if (parsed.providerCode) {
+    params.push(parsed.providerCode);
+    providerFilter = `AND p.code=$${params.length}`;
+  }
+  const result = await pool.query(`
+    SELECT p.id provider_id, p.code provider_code, p.name provider_name, p.base_url,
+           k.id key_id, k.api_key, k.api_key_encrypted, k.api_key_iv, k.api_key_tag, k.name key_name,
+           m.name model_name, m.input_price, m.output_price
+    FROM models m
+    JOIN providers p ON p.id=m.provider_id
+    JOIN api_keys k ON k.provider_id=p.id
+    WHERE m.enabled=true AND k.status='active' AND p.status='active'
+      AND m.name=$1 ${providerFilter}
+    ORDER BY k.updated_at DESC, k.id DESC
+    LIMIT 1`, params);
+  if (result.rowCount) return result.rows[0];
+  const fallback = await pool.query(`
+    SELECT p.id provider_id, p.code provider_code, p.name provider_name, p.base_url,
+           k.id key_id, k.api_key, k.api_key_encrypted, k.api_key_iv, k.api_key_tag, k.name key_name,
+           $1::text model_name, 0::numeric input_price, 0::numeric output_price
+    FROM providers p
+    JOIN api_keys k ON k.provider_id=p.id
+    WHERE k.status='active' AND p.status='active'
+      ${parsed.providerCode ? 'AND p.code=$2' : ''}
+    ORDER BY k.updated_at DESC, k.id DESC
+    LIMIT 1`, parsed.providerCode ? [parsed.modelName, parsed.providerCode] : [parsed.modelName]);
+  if (!fallback.rowCount) throw new Error('No active provider key found for model');
+  return fallback.rows[0];
+}
+
+async function selectGatewayTargets(model) {
+  const parsed = parseGatewayModel(model);
+  const params = [parsed.modelName];
+  let providerFilter = '';
+  if (parsed.providerCode) {
+    params.push(parsed.providerCode);
+    providerFilter = `AND p.code=$${params.length}`;
+  }
+  const exact = await pool.query(`
+    SELECT p.id provider_id, p.code provider_code, p.name provider_name, p.base_url,
+           k.id key_id, k.api_key, k.api_key_encrypted, k.api_key_iv, k.api_key_tag, k.name key_name,
+           m.name model_name, m.input_price, m.output_price
+    FROM models m
+    JOIN providers p ON p.id=m.provider_id
+    JOIN api_keys k ON k.provider_id=p.id
+    WHERE m.enabled=true AND k.status='active' AND p.status='active'
+      AND m.name=$1 ${providerFilter}
+    ORDER BY k.updated_at DESC, k.id DESC
+    LIMIT 5`, params);
+  if (exact.rowCount) return exact.rows;
+  const fallback = await pool.query(`
+    SELECT p.id provider_id, p.code provider_code, p.name provider_name, p.base_url,
+           k.id key_id, k.api_key, k.api_key_encrypted, k.api_key_iv, k.api_key_tag, k.name key_name,
+           $1::text model_name, 0::numeric input_price, 0::numeric output_price
+    FROM providers p
+    JOIN api_keys k ON k.provider_id=p.id
+    WHERE k.status='active' AND p.status='active'
+      ${parsed.providerCode ? 'AND p.code=$2' : ''}
+    ORDER BY k.updated_at DESC, k.id DESC
+    LIMIT 5`, parsed.providerCode ? [parsed.modelName, parsed.providerCode] : [parsed.modelName]);
+  if (!fallback.rowCount) throw new Error('No active provider key found for model');
+  return fallback.rows;
+}
+
+function estimateGatewayCost(target, usage = {}) {
+  const inputTokens = Number(usage.prompt_tokens || usage.input_tokens || 0);
+  const outputTokens = Number(usage.completion_tokens || usage.output_tokens || 0);
+  const inputPrice = Number(target.input_price || 0);
+  const outputPrice = Number(target.output_price || 0);
+  return {
+    inputTokens,
+    outputTokens,
+    cost: (inputTokens / 1_000_000) * inputPrice + (outputTokens / 1_000_000) * outputPrice,
+  };
+}
+
+async function recordGatewayUsage(target, modelName, usage, status, latencyMs) {
+  const estimated = estimateGatewayCost(target, usage);
+  await pool.query(
+    `INSERT INTO usage_logs (provider_id, api_key_id, model_name, input_tokens, output_tokens, cost, status, latency_ms)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [target?.provider_id || null, target?.key_id || null, modelName || target?.model_name || 'unknown', estimated.inputTokens, estimated.outputTokens, estimated.cost, status, latencyMs]
+  );
+  if (target?.key_id && estimated.cost > 0) {
+    await pool.query('UPDATE api_keys SET used_amount=COALESCE(used_amount,0)+$1, updated_at=now() WHERE id=$2', [estimated.cost, target.key_id]);
+  }
+  return estimated;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = GATEWAY_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function callGatewayTarget(target, data) {
+  const url = `${String(target.base_url).replace(/\/$/, '')}/chat/completions`;
+  const upstreamBody = { ...data, model: target.model_name };
+  const apiKey = decryptSecret(target);
+  if (!apiKey || apiKey.includes('***')) throw new Error(`API Key unavailable for ${target.provider_code}/${target.key_name}`);
+  let lastError = null;
+  for (let attempt = 0; attempt <= GATEWAY_RETRY_COUNT; attempt += 1) {
+    try {
+      const upstream = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify(upstreamBody),
+      });
+      const text = await upstream.text();
+      let payload = null;
+      try { payload = JSON.parse(text); } catch (_) { payload = null; }
+      if (upstream.ok || upstream.status < 500 || attempt >= GATEWAY_RETRY_COUNT) {
+        return { upstream, text, payload, attempt };
+      }
+      lastError = new Error(`upstream ${upstream.status}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= GATEWAY_RETRY_COUNT) break;
+    }
+  }
+  throw lastError || new Error('gateway upstream failed');
+}
+
+async function handleGatewayChatCompletions(req, res) {
+  const started = Date.now();
+  let target = null;
+  let modelName = 'unknown';
+  const failures = [];
+  try {
+    const data = await jsonBody(req);
+    const targets = await selectGatewayTargets(data.model);
+    for (const candidate of targets) {
+      target = candidate;
+      modelName = target.model_name;
+      const attemptStarted = Date.now();
+      try {
+        const { upstream, text, payload } = await callGatewayTarget(target, data);
+        const latencyMs = Date.now() - attemptStarted;
+        await recordGatewayUsage(target, modelName, payload?.usage || {}, upstream.ok ? 'success' : 'failed', latencyMs);
+        if (!upstream.ok && upstream.status >= 500 && targets.indexOf(candidate) < targets.length - 1) {
+          failures.push({ key_id: target.key_id, status: upstream.status });
+          continue;
+        }
+        res.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('content-type') || 'application/json; charset=utf-8' });
+        return res.end(text);
+      } catch (error) {
+        failures.push({ key_id: candidate.key_id, error: error.message });
+        await recordGatewayUsage(candidate, candidate.model_name, {}, 'failed', Date.now() - attemptStarted).catch(() => {});
+      }
+    }
+    throw new Error(`All gateway targets failed: ${failures.map((item) => item.error || item.status).join(', ')}`);
+  } catch (error) {
+    const latencyMs = Date.now() - started;
+    await recordGatewayUsage(target, modelName, {}, 'failed', latencyMs).catch(() => {});
+    return sendJson(res, 500, { error: { message: error.message, type: 'gateway_error', failures } });
+  }
 }
 
 function publicKeyRow(row) {
@@ -1817,7 +2483,7 @@ async function fetchDeepSeekBalance(apiKey) {
 
 async function refreshProviderBalances() {
   const rows = await pool.query(`
-    SELECT DISTINCT ON (p.id) p.id provider_id, p.code, p.name, k.id key_id, k.api_key
+    SELECT DISTINCT ON (p.id) p.id provider_id, p.code, p.name, k.id key_id, k.api_key, k.api_key_encrypted, k.api_key_iv, k.api_key_tag
     FROM providers p
     JOIN api_keys k ON k.provider_id = p.id
     WHERE k.status = 'active'
@@ -1830,7 +2496,7 @@ async function refreshProviderBalances() {
       continue;
     }
     try {
-      const balance = await fetchDeepSeekBalance(row.api_key);
+      const balance = await fetchDeepSeekBalance(decryptSecret(row));
       await pool.query(
         'UPDATE providers SET balance=$1,currency=$2,status=$3,updated_at=now() WHERE id=$4',
         [balance.total_balance, balance.currency, balance.is_available ? 'active' : 'warning', row.provider_id]
@@ -1850,6 +2516,278 @@ async function stats() {
     pool.query("SELECT COUNT(*)::int calls, COALESCE(SUM(\"cost\"),0)::float today_cost, COALESCE(AVG(latency_ms),0)::int avg_latency FROM usage_logs WHERE created_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"),
   ]);
   return { ...providers.rows[0], key_count: keys.rows[0].count, abnormal_keys: keys.rows[0].abnormal, today_calls: usage.rows[0].calls, today_cost: usage.rows[0].today_cost, avg_latency: usage.rows[0].avg_latency };
+}
+
+async function listTimeline(url) {
+  const limit = Math.min(300, Math.max(20, Number(url.searchParams.get('limit') || 120)));
+  const type = url.searchParams.get('type') || '';
+  const result = await pool.query(`
+    WITH timeline AS (
+      SELECT 'finance' type, id::text entity_id, occurred_at event_at, title,
+             jsonb_build_object('amount', amount, 'direction', direction, 'category', category, 'note', note, 'source_user', source_user) detail
+      FROM finance_entries
+      UNION ALL
+      SELECT 'fitness' type, id::text entity_id, recorded_at event_at,
+             CASE entry_type WHEN 'weight' THEN '体重记录' WHEN 'meal' THEN '饮食记录' WHEN 'workout' THEN '训练记录' WHEN 'sleep' THEN '睡眠记录' ELSE entry_type END title,
+             jsonb_build_object('entry_type', entry_type, 'weight_kg', weight_kg, 'calories', calories, 'duration_min', duration_min, 'sleep_hours', sleep_hours, 'note', note, 'source_user', source_user) detail
+      FROM fitness_entries
+      UNION ALL
+      SELECT 'knowledge' type, id::text entity_id, created_at event_at, title,
+             jsonb_build_object('kb_id', kb_id, 'filename', filename, 'status', status, 'source_user', source_user, 'source_channel', source_channel) detail
+      FROM knowledge_documents
+      UNION ALL
+      SELECT 'wechat' type, id::text entity_id, received_at event_at, COALESCE(NULLIF(content,''), msg_type) title,
+             jsonb_build_object('from_user', from_user, 'msg_type', msg_type, 'intent', intent, 'parse_status', parse_status, 'media_status', media_status) detail
+      FROM wechat_messages
+      UNION ALL
+      SELECT 'task' type, id::text entity_id, COALESCE(remind_at, created_at) event_at, title,
+             jsonb_build_object('status', status, 'recurrence', recurrence, 'from_user', from_user, 'note', note) detail
+      FROM assistant_tasks
+      UNION ALL
+      SELECT 'report' type, id::text entity_id, created_at event_at, title,
+             jsonb_build_object('report_type', report_type, 'from_user', from_user) detail
+      FROM assistant_reports
+      UNION ALL
+      SELECT 'audit' type, id::text entity_id, created_at event_at, action title,
+             jsonb_build_object('actor', actor, 'entity_type', entity_type, 'entity_id', entity_id, 'detail', detail) detail
+      FROM audit_logs
+    )
+    SELECT type, entity_id, event_at, title, detail
+    FROM timeline
+    WHERE ($1::text = '' OR type=$1)
+    ORDER BY event_at DESC
+    LIMIT $2`, [type, limit]);
+  return result.rows;
+}
+
+async function systemStatus() {
+  const started = Date.now();
+  const status = {
+    ok: true,
+    checked_at: new Date().toISOString(),
+    app: { port: PORT, auth_enabled: Boolean(AUTH_USER && AUTH_PASSWORD) },
+    database: { ok: false },
+    chroma: { ok: false, url: CHROMA_URL },
+    embeddings: getEmbeddingStatus(),
+    wechat: {
+      corp_id: Boolean(WECHAT_WORK_CORP_ID),
+      agent_id: Boolean(WECHAT_WORK_AGENT_ID),
+      secret: Boolean(WECHAT_WORK_SECRET),
+      token: Boolean(WECHAT_WORK_TOKEN),
+      aes_key: Boolean(WECHAT_WORK_ENCODING_AES_KEY),
+    },
+    ocr: { configured: Boolean(OCR_API_KEY && OCR_BASE_URL && OCR_MODEL), base_url: Boolean(OCR_BASE_URL), model: OCR_MODEL || '' },
+    gateway: { enabled: Boolean(GATEWAY_TOKEN), timeout_ms: GATEWAY_TIMEOUT_MS, retry_count: GATEWAY_RETRY_COUNT },
+  };
+  try {
+    const db = await pool.query('SELECT now() now');
+    const [errors, gateway, audits] = await Promise.all([
+      pool.query("SELECT COUNT(*)::int count FROM wechat_messages WHERE parse_status IN ('failed','needs_clarification') AND received_at >= now() - interval '24 hours'"),
+      pool.query("SELECT COUNT(*)::int calls, COUNT(*) FILTER (WHERE status='failed')::int failed FROM usage_logs WHERE created_at >= now() - interval '24 hours'"),
+      pool.query('SELECT action, actor, entity_type, entity_id, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 20'),
+    ]);
+    status.database = { ok: true, now: db.rows[0].now };
+    status.wechat.recent_problem_messages = errors.rows[0].count;
+    status.gateway.last_24h_calls = gateway.rows[0].calls;
+    status.gateway.last_24h_failed = gateway.rows[0].failed;
+    status.recent_audits = audits.rows;
+  } catch (error) {
+    status.ok = false;
+    status.database = { ok: false, error: error.message };
+  }
+  try {
+    let heartbeat = await fetchWithTimeout(`${CHROMA_URL.replace(/\/$/, '')}/api/v2/heartbeat`, {}, 3000);
+    if (heartbeat.status === 404) heartbeat = await fetchWithTimeout(`${CHROMA_URL.replace(/\/$/, '')}/api/v1/heartbeat`, {}, 3000);
+    status.chroma.ok = heartbeat.ok;
+    status.chroma.status = heartbeat.status;
+  } catch (error) {
+    status.chroma.error = error.message;
+  }
+  status.ok = status.ok && status.database.ok && status.chroma.ok;
+  status.latency_ms = Date.now() - started;
+  return status;
+}
+
+async function listWechatInbox(url) {
+  const status = url.searchParams.get('status');
+  const intent = url.searchParams.get('intent');
+  const msgType = url.searchParams.get('msg_type');
+  const q = url.searchParams.get('q');
+  const limit = Math.min(200, Math.max(20, Number(url.searchParams.get('limit') || 80)));
+  const filters = [];
+  const params = [];
+  if (status) {
+    params.push(status);
+    filters.push(`m.parse_status=$${params.length}`);
+  }
+  if (intent) {
+    params.push(`${intent}%`);
+    filters.push(`m.intent ILIKE $${params.length}`);
+  }
+  if (msgType) {
+    params.push(msgType);
+    filters.push(`m.msg_type=$${params.length}`);
+  }
+  if (q) {
+    params.push(`%${q}%`);
+    filters.push(`(m.content ILIKE $${params.length} OR m.reply_text ILIKE $${params.length} OR m.from_user ILIKE $${params.length})`);
+  }
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  params.push(limit);
+  const rows = await pool.query(`
+    SELECT
+      m.*,
+      f.direction finance_direction,
+      f.amount finance_amount,
+      f.category finance_category,
+      f.title finance_title,
+      fit.entry_type fitness_type,
+      fit.weight_kg,
+      fit.meal_type,
+      fit.food_text,
+      fit.workout_type,
+      fit.duration_min,
+      fit.sleep_hours,
+      d.title knowledge_title,
+      d.filename knowledge_filename,
+      d.status knowledge_status,
+      d.source_channel knowledge_source_channel,
+      kb.name knowledge_base_name,
+      t.id task_id,
+      t.title task_title,
+      t.remind_at task_remind_at,
+      t.status task_status
+    FROM wechat_messages m
+    LEFT JOIN finance_entries f ON f.id=m.finance_entry_id
+    LEFT JOIN fitness_entries fit ON fit.id=m.fitness_entry_id
+    LEFT JOIN knowledge_documents d ON d.id=m.knowledge_document_id
+    LEFT JOIN knowledge_bases kb ON kb.id=d.kb_id
+    LEFT JOIN LATERAL (
+      SELECT id, title, remind_at, status
+      FROM assistant_tasks
+      WHERE source_message_id=m.id OR (from_user=m.from_user AND created_at BETWEEN m.received_at - interval '5 seconds' AND m.received_at + interval '30 seconds')
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) t ON true
+    ${where}
+    ORDER BY m.received_at DESC, m.id DESC
+    LIMIT $${params.length}`,
+    params
+  );
+  const summary = await pool.query(`
+    SELECT
+      COUNT(*)::int total,
+      COUNT(*) FILTER (WHERE parse_status='recorded')::int recorded,
+      COUNT(*) FILTER (WHERE parse_status='replied')::int replied,
+      COUNT(*) FILTER (WHERE parse_status='failed')::int failed,
+      COUNT(*) FILTER (WHERE parse_status='processing')::int processing,
+      COUNT(*) FILTER (WHERE parse_status='ignored')::int ignored,
+      COUNT(*) FILTER (WHERE received_at >= now() - interval '24 hours')::int last_24h
+    FROM wechat_messages`);
+  const intents = await pool.query(`
+    SELECT intent, COUNT(*)::int count
+    FROM wechat_messages
+    GROUP BY intent
+    ORDER BY count DESC, intent ASC
+    LIMIT 40`);
+  return { summary: summary.rows[0], intents: intents.rows, rows: rows.rows };
+}
+
+async function getWechatInboxRow(messageId) {
+  const result = await pool.query(`
+    SELECT
+      m.*,
+      f.direction finance_direction,
+      f.amount finance_amount,
+      f.category finance_category,
+      f.title finance_title,
+      fit.entry_type fitness_type,
+      fit.weight_kg,
+      fit.meal_type,
+      fit.food_text,
+      fit.workout_type,
+      fit.duration_min,
+      fit.sleep_hours,
+      d.title knowledge_title,
+      d.filename knowledge_filename,
+      d.status knowledge_status,
+      d.source_channel knowledge_source_channel,
+      kb.name knowledge_base_name,
+      t.id task_id,
+      t.title task_title,
+      t.remind_at task_remind_at,
+      t.status task_status
+    FROM wechat_messages m
+    LEFT JOIN finance_entries f ON f.id=m.finance_entry_id
+    LEFT JOIN fitness_entries fit ON fit.id=m.fitness_entry_id
+    LEFT JOIN knowledge_documents d ON d.id=m.knowledge_document_id
+    LEFT JOIN knowledge_bases kb ON kb.id=d.kb_id
+    LEFT JOIN LATERAL (
+      SELECT id, title, remind_at, status
+      FROM assistant_tasks
+      WHERE source_message_id=m.id OR (from_user=m.from_user AND created_at BETWEEN m.received_at - interval '5 seconds' AND m.received_at + interval '30 seconds')
+      ORDER BY created_at DESC
+      LIMIT 1
+    ) t ON true
+    WHERE m.id=$1`, [messageId]);
+  return result.rows[0] || null;
+}
+
+async function deleteWechatMessageLinks(message) {
+  const deleted = [];
+  if (message.finance_entry_id) {
+    const result = await pool.query('DELETE FROM finance_entries WHERE id=$1 RETURNING id,title,amount', [message.finance_entry_id]);
+    if (result.rowCount) deleted.push({ type: 'finance', row: result.rows[0] });
+  }
+  if (message.fitness_entry_id) {
+    const result = await pool.query('DELETE FROM fitness_entries WHERE id=$1 RETURNING id,entry_type,note', [message.fitness_entry_id]);
+    if (result.rowCount) deleted.push({ type: 'fitness', row: result.rows[0] });
+  }
+  if (message.knowledge_document_id) {
+    const deletedDoc = await deleteKnowledgeDocument(message.knowledge_document_id);
+    if (deletedDoc) deleted.push({ type: 'knowledge_document', id: message.knowledge_document_id });
+  }
+  if (message.task_id) {
+    const result = await pool.query('DELETE FROM assistant_tasks WHERE id=$1 RETURNING id,title', [message.task_id]);
+    if (result.rowCount) deleted.push({ type: 'task', row: result.rows[0] });
+  }
+  await pool.query(
+    `UPDATE wechat_messages
+     SET finance_entry_id=NULL, fitness_entry_id=NULL, knowledge_document_id=NULL
+     WHERE id=$1`,
+    [message.id]
+  );
+  return deleted;
+}
+
+async function reprocessWechatMessage(messageId) {
+  const original = await getWechatInboxRow(messageId);
+  if (!original) throw new Error('消息不存在');
+  if (original.msg_type !== 'text') throw new Error('目前只支持重新处理文本消息');
+  await deleteWechatMessageLinks(original);
+  const fresh = await saveWechatMessage({
+    from_user: original.from_user,
+    to_user: original.to_user,
+    msg_type: original.msg_type,
+    content: original.content,
+    raw_payload: { ...(original.raw_payload || {}), reprocessed_from: original.id },
+  });
+  await pool.query(
+    `UPDATE wechat_messages
+     SET finance_entry_id=$1, fitness_entry_id=$2, knowledge_document_id=$3, intent=$4, parse_status=$5, reply_text=$6
+     WHERE id=$7`,
+    [
+      fresh.message.finance_entry_id || null,
+      fresh.message.fitness_entry_id || null,
+      fresh.message.knowledge_document_id || null,
+      fresh.message.intent,
+      fresh.message.parse_status,
+      fresh.message.reply_text,
+      original.id,
+    ]
+  );
+  await pool.query('DELETE FROM wechat_messages WHERE id=$1', [fresh.message.id]);
+  return getWechatInboxRow(original.id);
 }
 
 async function handleApi(req, res, url) {
@@ -1884,7 +2822,7 @@ async function handleApi(req, res, url) {
     const xml = encrypted && WECHAT_WORK_ENCODING_AES_KEY ? decryptWechatWork(encrypted).xml : body;
     const payload = parseWechatXml(xml);
     console.log(`[wechat] inbound ${payload.msg_type} from ${payload.from_user || 'unknown'}${payload.file_name ? ` file=${payload.file_name}` : ''}`);
-    if (['file', 'image'].includes(payload.msg_type) && payload.media_id) {
+    if (payload.msg_type === 'file' && payload.media_id) {
       res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
       res.end(wechatWorkReply(payload.to_user, payload.from_user, '收到文件，正在写入知识库，请稍候…', url));
       processWechatFileUploadAsync({
@@ -1910,7 +2848,7 @@ async function handleApi(req, res, url) {
     const saved = await saveWechatMessage({
       from_user: data.from_user || 'local-test-user',
       to_user: data.to_user || 'ai-key-hub',
-      msg_type: 'text',
+      msg_type: data.msg_type || 'text',
       content: data.content || '',
       raw_payload: data,
     });
@@ -1942,12 +2880,123 @@ async function handleApi(req, res, url) {
   if (financeEntryMatch && req.method === 'DELETE') {
     await pool.query('UPDATE wechat_messages SET finance_entry_id=NULL WHERE finance_entry_id=$1', [Number(financeEntryMatch[1])]);
     const result = await pool.query('DELETE FROM finance_entries WHERE id=$1', [Number(financeEntryMatch[1])]);
+    await auditLog(req, { action: 'finance.delete', entityType: 'finance_entry', entityId: financeEntryMatch[1], detail: { deleted: result.rowCount > 0 } });
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   if (url.pathname === '/api/wechat/messages' && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM wechat_messages ORDER BY received_at DESC, id DESC LIMIT 100');
     return sendJson(res, 200, result.rows);
   }
+  if (url.pathname === '/api/wechat/inbox' && req.method === 'GET') {
+    return sendJson(res, 200, await listWechatInbox(url));
+  }
+  const inboxMatch = url.pathname.match(/^\/api\/wechat\/inbox\/(\d+)$/);
+  if (inboxMatch && req.method === 'GET') {
+    const row = await getWechatInboxRow(Number(inboxMatch[1]));
+    if (!row) return sendJson(res, 404, { error: 'message not found' });
+    return sendJson(res, 200, row);
+  }
+  const inboxReprocessMatch = url.pathname.match(/^\/api\/wechat\/inbox\/(\d+)\/reprocess$/);
+  if (inboxReprocessMatch && req.method === 'POST') {
+    try {
+      const row = await reprocessWechatMessage(Number(inboxReprocessMatch[1]));
+      await auditLog(req, { action: 'wechat_message.reprocess', entityType: 'wechat_message', entityId: inboxReprocessMatch[1], detail: { intent: row.intent, parse_status: row.parse_status } });
+      return sendJson(res, 200, { message: row });
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+  const inboxLinksMatch = url.pathname.match(/^\/api\/wechat\/inbox\/(\d+)\/links$/);
+  if (inboxLinksMatch && req.method === 'DELETE') {
+    const row = await getWechatInboxRow(Number(inboxLinksMatch[1]));
+    if (!row) return sendJson(res, 404, { error: 'message not found' });
+    const deleted = await deleteWechatMessageLinks(row);
+    const updated = await getWechatInboxRow(Number(inboxLinksMatch[1]));
+    await auditLog(req, { action: 'wechat_message.unlink', entityType: 'wechat_message', entityId: inboxLinksMatch[1], detail: deleted });
+    return sendJson(res, 200, { deleted, message: updated });
+  }
+  if (url.pathname === '/api/assistant/rules' && req.method === 'GET') {
+    const ruleType = url.searchParams.get('rule_type');
+    const result = await pool.query(
+      `SELECT * FROM assistant_rules
+       WHERE ($1::text IS NULL OR rule_type=$1)
+       ORDER BY enabled DESC, priority ASC, updated_at DESC
+       LIMIT 200`,
+      [ruleType || null]
+    );
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/rules' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const rule = await saveAssistantRule({
+      fromUser: data.from_user || null,
+      ruleType: data.rule_type || 'finance_category',
+      pattern: data.pattern,
+      value: data.value,
+      priority: data.priority || 50,
+      source: 'manual',
+    });
+    if (!rule) return sendJson(res, 400, { error: 'pattern and value required' });
+    await auditLog(req, { action: 'assistant_rule.create', entityType: 'assistant_rule', entityId: rule.id, detail: { rule_type: rule.rule_type, pattern: rule.pattern, value: rule.value } });
+    return sendJson(res, 201, rule);
+  }
+  const ruleMatch = url.pathname.match(/^\/api\/assistant\/rules\/(\d+)$/);
+  if (ruleMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(
+      `UPDATE assistant_rules
+       SET value=COALESCE($1,value), priority=COALESCE($2,priority), enabled=COALESCE($3,enabled), updated_at=now()
+       WHERE id=$4 RETURNING *`,
+      [data.value || null, data.priority === undefined ? null : Number(data.priority), data.enabled === undefined ? null : Boolean(data.enabled), Number(ruleMatch[1])]
+    );
+    if (result.rowCount) await auditLog(req, { action: 'assistant_rule.update', entityType: 'assistant_rule', entityId: ruleMatch[1], detail: data });
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
+  if (ruleMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM assistant_rules WHERE id=$1', [Number(ruleMatch[1])]);
+    await auditLog(req, { action: 'assistant_rule.delete', entityType: 'assistant_rule', entityId: ruleMatch[1], detail: { deleted: result.rowCount > 0 } });
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/wechat/user-profiles' && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT p.*, kb.name default_kb_name
+      FROM wechat_user_profiles p
+      LEFT JOIN knowledge_bases kb ON kb.id=p.default_kb_id
+      ORDER BY p.enabled DESC, p.updated_at DESC
+      LIMIT 200`);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/wechat/user-profiles' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    try {
+      const profile = await ensureWechatUserProfile(data.from_user, data);
+      await auditLog(req, { action: 'wechat_profile.upsert', entityType: 'wechat_user_profile', entityId: profile.from_user, detail: { display_name: profile.display_name, enabled: profile.enabled, default_kb_id: profile.default_kb_id } });
+      return sendJson(res, 201, profile);
+    } catch (error) {
+      return sendJson(res, 400, { error: error.message });
+    }
+  }
+  const profileMatch = url.pathname.match(/^\/api\/wechat\/user-profiles\/([^/]+)$/);
+  if (profileMatch && req.method === 'PATCH') {
+    const fromUser = decodeURIComponent(profileMatch[1]);
+    const current = await pool.query('SELECT * FROM wechat_user_profiles WHERE from_user=$1', [fromUser]);
+    if (!current.rowCount) return sendJson(res, 404, { error: 'not found' });
+    const data = { ...current.rows[0], ...(await jsonBody(req)) };
+    const profile = await ensureWechatUserProfile(fromUser, data);
+    await auditLog(req, { action: 'wechat_profile.update', entityType: 'wechat_user_profile', entityId: fromUser, detail: { display_name: profile.display_name, enabled: profile.enabled, default_kb_id: profile.default_kb_id } });
+    return sendJson(res, 200, profile);
+  }
+  if (profileMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM wechat_user_profiles WHERE from_user=$1', [decodeURIComponent(profileMatch[1])]);
+    await auditLog(req, { action: 'wechat_profile.delete', entityType: 'wechat_user_profile', entityId: decodeURIComponent(profileMatch[1]), detail: { deleted: result.rowCount > 0 } });
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/timeline' && req.method === 'GET') return sendJson(res, 200, await listTimeline(url));
+  if (url.pathname === '/api/audit-logs' && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 200');
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/system/status' && req.method === 'GET') return sendJson(res, 200, await systemStatus());
   if (url.pathname === '/api/stats') return sendJson(res, 200, await stats());
   if (url.pathname === '/api/balances/refresh' && req.method === 'POST') {
     return sendJson(res, 200, { updated_at: new Date().toISOString(), results: await refreshProviderBalances() });
@@ -2000,22 +3049,31 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === '/api/keys' && req.method === 'POST') {
     const data = await jsonBody(req);
+    const secret = encryptSecret(data.api_key);
     const result = await pool.query(
-      `INSERT INTO api_keys (provider_id, name, api_key, status, monthly_quota, used_amount, remark)
-       VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [data.provider_id, data.name, data.api_key, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '']
+      `INSERT INTO api_keys (provider_id, name, api_key, api_key_encrypted, api_key_iv, api_key_tag, key_encryption_version, status, monthly_quota, used_amount, remark)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [data.provider_id, data.name, secret.api_key, secret.api_key_encrypted, secret.api_key_iv, secret.api_key_tag, secret.key_encryption_version, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '']
     );
+    await auditLog(req, { action: 'api_key.create', entityType: 'api_key', entityId: result.rows[0].id, detail: { provider_id: data.provider_id, name: data.name, status: data.status || 'active' } });
     return sendJson(res, 201, publicKeyRow(result.rows[0]));
   }
   const keyMatch = url.pathname.match(/^\/api\/keys\/(\d+)$/);
   if (keyMatch && req.method === 'PUT') {
     const id = Number(keyMatch[1]);
     const data = await jsonBody(req);
+    const current = await pool.query('SELECT * FROM api_keys WHERE id=$1', [id]);
+    if (!current.rowCount) return sendJson(res, 404, { error: 'not found' });
+    const keepExistingSecret = !data.api_key || String(data.api_key).includes('***');
+    const secret = keepExistingSecret ? current.rows[0] : encryptSecret(data.api_key);
     const result = await pool.query(
-      `UPDATE api_keys SET provider_id=$1,name=$2,api_key=$3,status=$4,monthly_quota=$5,used_amount=$6,remark=$7,updated_at=now()
-       WHERE id=$8 RETURNING *`,
-      [data.provider_id, data.name, data.api_key, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '', id]
+      `UPDATE api_keys
+       SET provider_id=$1,name=$2,api_key=$3,api_key_encrypted=$4,api_key_iv=$5,api_key_tag=$6,key_encryption_version=$7,
+           status=$8,monthly_quota=$9,used_amount=$10,remark=$11,updated_at=now()
+       WHERE id=$12 RETURNING *`,
+      [data.provider_id, data.name, secret.api_key, secret.api_key_encrypted, secret.api_key_iv, secret.api_key_tag, secret.key_encryption_version || 0, data.status || 'active', data.monthly_quota || 0, data.used_amount || 0, data.remark || '', id]
     );
+    await auditLog(req, { action: 'api_key.update', entityType: 'api_key', entityId: id, detail: { provider_id: data.provider_id, name: data.name, status: data.status || 'active', changed_secret: !keepExistingSecret } });
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? publicKeyRow(result.rows[0]) : { error: 'not found' });
   }
   const budgetMatch = url.pathname.match(/^\/api\/keys\/(\d+)\/budget$/);
@@ -2031,10 +3089,12 @@ async function handleApi(req, res, url) {
        WHERE id=$5 RETURNING *`,
       [dailyQuota, monthlyQuota, budgetAction, data.remark || '', id]
     );
+    if (result.rowCount) await auditLog(req, { action: 'api_key.budget_update', entityType: 'api_key', entityId: id, detail: { daily_quota: dailyQuota, monthly_quota: monthlyQuota, budget_action: budgetAction } });
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? publicKeyRow(result.rows[0]) : { error: 'not found' });
   }
   if (keyMatch && req.method === 'DELETE') {
     const result = await pool.query('DELETE FROM api_keys WHERE id=$1', [Number(keyMatch[1])]);
+    await auditLog(req, { action: 'api_key.delete', entityType: 'api_key', entityId: keyMatch[1], detail: { deleted: result.rowCount > 0 } });
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   const copyMatch = url.pathname.match(/^\/api\/keys\/(\d+)\/copy$/);
@@ -2044,6 +3104,7 @@ async function handleApi(req, res, url) {
     const result = await pool.query('SELECT k.*, p.* FROM api_keys k JOIN providers p ON p.id=k.provider_id WHERE k.id=$1', [Number(copyMatch[1])]);
     if (!result.rowCount) return sendJson(res, 404, { error: 'not found' });
     const row = result.rows[0];
+    await auditLog(req, { action: 'api_key.copy', entityType: 'api_key', entityId: copyMatch[1], detail: { mode, model } });
     return sendJson(res, 200, { mode, content: copyPayload(row, row, mode, model) });
   }
   if (url.pathname === '/api/models' && req.method === 'GET') {
@@ -2102,6 +3163,7 @@ async function handleApi(req, res, url) {
   if (fitnessEntryMatch && req.method === 'DELETE') {
     await pool.query('UPDATE wechat_messages SET fitness_entry_id=NULL WHERE fitness_entry_id=$1', [Number(fitnessEntryMatch[1])]);
     const result = await pool.query('DELETE FROM fitness_entries WHERE id=$1', [Number(fitnessEntryMatch[1])]);
+    await auditLog(req, { action: 'fitness.delete', entityType: 'fitness_entry', entityId: fitnessEntryMatch[1], detail: { deleted: result.rowCount > 0 } });
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   if (url.pathname === '/api/knowledge/summary' && req.method === 'GET') {
@@ -2376,6 +3438,87 @@ async function handleApi(req, res, url) {
     const data = await jsonBody(req);
     return sendJson(res, 201, await createAssistantReport(data, data.from_user || null));
   }
+  if (url.pathname === '/api/assistant/report-subscriptions' && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM assistant_report_subscriptions ORDER BY enabled DESC, report_type ASC, from_user ASC');
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/report-subscriptions' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const fromUser = String(data.from_user || '').trim();
+    const reportType = ['daily', 'weekly'].includes(data.report_type) ? data.report_type : 'daily';
+    const sendTime = String(data.send_time || '21:30').slice(0, 5);
+    if (!fromUser) return sendJson(res, 400, { error: 'from_user required' });
+    if (!/^\d{2}:\d{2}$/.test(sendTime)) return sendJson(res, 400, { error: 'send_time must be HH:mm' });
+    const weekday = reportType === 'weekly' ? Number(data.weekday ?? 1) : null;
+    const result = await pool.query(
+      `INSERT INTO assistant_report_subscriptions (from_user, report_type, send_time, weekday, enabled)
+       VALUES ($1,$2,$3,$4,COALESCE($5,true))
+       ON CONFLICT (from_user, report_type)
+       DO UPDATE SET send_time=EXCLUDED.send_time, weekday=EXCLUDED.weekday, enabled=EXCLUDED.enabled, updated_at=now()
+       RETURNING *`,
+      [fromUser, reportType, sendTime, weekday, data.enabled === undefined ? true : Boolean(data.enabled)]
+    );
+    await auditLog(req, { action: 'report_subscription.upsert', entityType: 'assistant_report_subscription', entityId: result.rows[0].id, detail: { from_user: fromUser, report_type: reportType, send_time: sendTime, weekday } });
+    return sendJson(res, 201, result.rows[0]);
+  }
+  if (url.pathname === '/api/assistant/report-subscriptions/run-due' && req.method === 'POST') {
+    return sendJson(res, 200, await processDueReportSubscriptions());
+  }
+  const reportSubMatch = url.pathname.match(/^\/api\/assistant\/report-subscriptions\/(\d+)$/);
+  if (reportSubMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const sendTime = data.send_time === undefined ? null : String(data.send_time).slice(0, 5);
+    if (sendTime !== null && !/^\d{2}:\d{2}$/.test(sendTime)) return sendJson(res, 400, { error: 'send_time must be HH:mm' });
+    const result = await pool.query(
+      `UPDATE assistant_report_subscriptions
+       SET send_time=COALESCE($1,send_time), weekday=COALESCE($2,weekday), enabled=COALESCE($3,enabled), updated_at=now()
+       WHERE id=$4 RETURNING *`,
+      [sendTime, data.weekday === undefined ? null : Number(data.weekday), data.enabled === undefined ? null : Boolean(data.enabled), Number(reportSubMatch[1])]
+    );
+    if (result.rowCount) await auditLog(req, { action: 'report_subscription.update', entityType: 'assistant_report_subscription', entityId: reportSubMatch[1], detail: data });
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
+  if (reportSubMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM assistant_report_subscriptions WHERE id=$1', [Number(reportSubMatch[1])]);
+    await auditLog(req, { action: 'report_subscription.delete', entityType: 'assistant_report_subscription', entityId: reportSubMatch[1], detail: { deleted: result.rowCount > 0 } });
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+  if (url.pathname === '/api/assistant/goals' && req.method === 'GET') {
+    const result = await pool.query('SELECT * FROM assistant_goals ORDER BY enabled DESC, goal_type ASC, updated_at DESC LIMIT 200');
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/assistant/goals' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const goalType = ['weight', 'monthly_expense', 'weekly_workout', 'sleep'].includes(data.goal_type) ? data.goal_type : 'weight';
+    const targetValue = numberOrNull(data.target_value);
+    if (!targetValue || targetValue <= 0) return sendJson(res, 400, { error: 'target_value required' });
+    const defaultTitle = { weight: '体重目标', monthly_expense: '月支出目标', weekly_workout: '周运动目标', sleep: '睡眠目标' }[goalType];
+    const defaultUnit = { weight: 'kg', monthly_expense: 'CNY', weekly_workout: '次', sleep: '小时' }[goalType];
+    const result = await pool.query(
+      `INSERT INTO assistant_goals (from_user, goal_type, title, target_value, unit, period, enabled, note)
+       VALUES ($1,$2,$3,$4,$5,$6,COALESCE($7,true),$8) RETURNING *`,
+      [data.from_user || null, goalType, data.title || defaultTitle, targetValue, data.unit || defaultUnit, data.period || 'ongoing', data.enabled === undefined ? true : Boolean(data.enabled), data.note || '']
+    );
+    await auditLog(req, { action: 'goal.create', entityType: 'assistant_goal', entityId: result.rows[0].id, detail: { goal_type: goalType, title: result.rows[0].title, target_value: targetValue } });
+    return sendJson(res, 201, result.rows[0]);
+  }
+  const goalMatch = url.pathname.match(/^\/api\/assistant\/goals\/(\d+)$/);
+  if (goalMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(
+      `UPDATE assistant_goals
+       SET title=COALESCE($1,title), target_value=COALESCE($2,target_value), unit=COALESCE($3,unit), period=COALESCE($4,period), enabled=COALESCE($5,enabled), note=COALESCE($6,note), updated_at=now()
+       WHERE id=$7 RETURNING *`,
+      [data.title || null, data.target_value === undefined ? null : numberOrNull(data.target_value), data.unit || null, data.period || null, data.enabled === undefined ? null : Boolean(data.enabled), data.note === undefined ? null : String(data.note || ''), Number(goalMatch[1])]
+    );
+    if (result.rowCount) await auditLog(req, { action: 'goal.update', entityType: 'assistant_goal', entityId: goalMatch[1], detail: data });
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
+  if (goalMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM assistant_goals WHERE id=$1', [Number(goalMatch[1])]);
+    await auditLog(req, { action: 'goal.delete', entityType: 'assistant_goal', entityId: goalMatch[1], detail: { deleted: result.rowCount > 0 } });
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
   const memoryMatch = url.pathname.match(/^\/api\/assistant\/memories\/(\d+)$/);
   if (memoryMatch && req.method === 'PATCH') {
     const data = await jsonBody(req);
@@ -2383,10 +3526,12 @@ async function handleApi(req, res, url) {
       UPDATE assistant_memories
       SET pinned=COALESCE($1, pinned), importance=COALESCE($2, importance), updated_at=now()
       WHERE id=$3 RETURNING *`, [data.pinned === undefined ? null : Boolean(data.pinned), data.importance === undefined ? null : Number(data.importance), Number(memoryMatch[1])]);
+    if (result.rowCount) await auditLog(req, { action: 'memory.update', entityType: 'assistant_memory', entityId: memoryMatch[1], detail: data });
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
   }
   if (memoryMatch && req.method === 'DELETE') {
     const result = await pool.query('DELETE FROM assistant_memories WHERE id=$1', [Number(memoryMatch[1])]);
+    await auditLog(req, { action: 'memory.delete', entityType: 'assistant_memory', entityId: memoryMatch[1], detail: { deleted: result.rowCount > 0 } });
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   if (url.pathname === '/api/assistant/cache/clear' && req.method === 'POST') {
@@ -2441,6 +3586,10 @@ await initDb();
 http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   try {
+    if (url.pathname === '/v1/chat/completions' && req.method === 'POST') {
+      if (!gatewayAuthorized(req)) return sendUnauthorized(res);
+      return await handleGatewayChatCompletions(req, res);
+    }
     const publicApi = ['/api/health', '/api/wechat/webhook', '/api/wechat/work-webhook'].includes(url.pathname);
     if (!publicApi && !authorized(req)) return sendUnauthorized(res);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
@@ -2455,8 +3604,10 @@ http.createServer(async (req, res) => {
   warmupEmbeddings().catch((error) => console.error('[embeddings] warmup failed:', error.message));
   setTimeout(() => {
     processDueAssistantTasks().catch((error) => console.error('[tasks] startup', error.message));
+    processDueReportSubscriptions().catch((error) => console.error('[reports] startup', error.message));
   }, 5000);
   setInterval(() => {
     processDueAssistantTasks().catch((error) => console.error('[tasks] poll', error.message));
+    processDueReportSubscriptions().catch((error) => console.error('[reports] poll', error.message));
   }, ASSISTANT_TASK_POLL_MS);
 });

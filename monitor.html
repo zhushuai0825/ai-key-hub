@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Monitor · 系统监控</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page monitor-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>Monitor</strong><span>数据库、Chroma、企微、OCR、模型网关与审计状态</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+  <main class="monitor-shell">
+    <section class="kb-panel monitor-health-panel">
+      <div class="panel-head"><h2>健康状态</h2><span id="updatedAt">--</span></div>
+      <div id="healthGrid" class="monitor-grid"></div>
+    </section>
+    <section class="kb-panel monitor-audit-panel">
+      <div class="panel-head"><h2>最近审计</h2><a class="btn" href="/timeline.html?type=audit">查看全部</a></div>
+      <div id="auditList" class="timeline-list compact"></div>
+    </section>
+  </main>
+  <script src="./monitor.js"></script>
+</body>
+</html>

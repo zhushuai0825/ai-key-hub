@@ -1,6 +1,8 @@
 const $ = (selector) => document.querySelector(selector);
 let memory = null;
 let cacheRows = [];
+let reportSubscriptions = [];
+let goals = [];
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[char]));
@@ -209,6 +211,99 @@ function renderCache() {
   });
 }
 
+function reportTypeLabel(type) {
+  return { daily: '日报', weekly: '周报' }[type] || type;
+}
+
+function weekdayLabel(value) {
+  return ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][Number(value)] || '--';
+}
+
+function renderReportSubscriptions() {
+  $('#reportSubCount').textContent = `${reportSubscriptions.length} 条`;
+  $('#reportSubList').innerHTML = reportSubscriptions.length ? reportSubscriptions.map((row) => `
+    <article class="history-card cache-card ${row.enabled ? 'pinned' : 'expired'}">
+      <div class="cache-card-head">
+        <strong>${escapeHtml(row.from_user)} · ${escapeHtml(reportTypeLabel(row.report_type))}</strong>
+        <div class="cache-badges">
+          <span class="status-pill ${row.enabled ? 'ok' : ''}">${row.enabled ? '已启用' : '已停用'}</span>
+          <span class="status-pill">${escapeHtml(row.send_time)}</span>
+          ${row.report_type === 'weekly' ? `<span class="status-pill">${escapeHtml(weekdayLabel(row.weekday))}</span>` : ''}
+        </div>
+      </div>
+      <div class="meta">最近推送 ${row.last_sent_at ? formatTime(row.last_sent_at) : '从未'} · 更新 ${formatTime(row.updated_at)}</div>
+      <div class="row-actions">
+        <button type="button" data-report-toggle="${row.id}" data-enabled="${row.enabled ? '1' : '0'}">${row.enabled ? '停用' : '启用'}</button>
+        <button class="danger-btn" type="button" data-report-delete="${row.id}">删除</button>
+      </div>
+    </article>`).join('') : '<div class="empty-state">暂无报告订阅。添加后系统会按时间通过企业微信推送日报或周报。</div>';
+  document.querySelectorAll('[data-report-toggle]').forEach((button) => {
+    button.onclick = async () => {
+      const enabled = button.dataset.enabled !== '1';
+      try {
+        await api(`/api/assistant/report-subscriptions/${button.dataset.reportToggle}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+        toast(enabled ? '订阅已启用' : '订阅已停用');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-report-delete]').forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm('删除这个报告订阅？')) return;
+      try {
+        await api(`/api/assistant/report-subscriptions/${button.dataset.reportDelete}`, { method: 'DELETE' });
+        toast('订阅已删除');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
+}
+
+function goalTypeLabel(type) {
+  return { weight: '体重', monthly_expense: '月支出', weekly_workout: '周运动', sleep: '睡眠' }[type] || type;
+}
+
+function renderGoals() {
+  $('#goalCount').textContent = `${goals.length} 条`;
+  $('#goalList').innerHTML = goals.length ? goals.map((row) => `
+    <article class="history-card cache-card ${row.enabled ? 'pinned' : 'expired'}">
+      <div class="cache-card-head">
+        <strong>${escapeHtml(row.title)} · ${Number(row.target_value).toFixed(row.goal_type === 'weekly_workout' ? 0 : 1)}${escapeHtml(row.unit || '')}</strong>
+        <div class="cache-badges">
+          <span class="status-pill ${row.enabled ? 'ok' : ''}">${row.enabled ? '启用' : '停用'}</span>
+          <span class="status-pill">${escapeHtml(goalTypeLabel(row.goal_type))}</span>
+          ${row.from_user ? `<span class="status-pill">${escapeHtml(row.from_user)}</span>` : '<span class="status-pill">全局</span>'}
+        </div>
+      </div>
+      ${row.note ? `<p>${escapeHtml(row.note)}</p>` : ''}
+      <div class="meta">更新 ${formatTime(row.updated_at)}</div>
+      <div class="row-actions">
+        <button type="button" data-goal-toggle="${row.id}" data-enabled="${row.enabled ? '1' : '0'}">${row.enabled ? '停用' : '启用'}</button>
+        <button class="danger-btn" type="button" data-goal-delete="${row.id}">删除</button>
+      </div>
+    </article>`).join('') : '<div class="empty-state">暂无目标。可以添加体重、月支出、周运动或睡眠目标，日报/周报会自动对比偏差。</div>';
+  document.querySelectorAll('[data-goal-toggle]').forEach((button) => {
+    button.onclick = async () => {
+      const enabled = button.dataset.enabled !== '1';
+      try {
+        await api(`/api/assistant/goals/${button.dataset.goalToggle}`, { method: 'PATCH', body: JSON.stringify({ enabled }) });
+        toast(enabled ? '目标已启用' : '目标已停用');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-goal-delete]').forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm('删除这个目标？')) return;
+      try {
+        await api(`/api/assistant/goals/${button.dataset.goalDelete}`, { method: 'DELETE' });
+        toast('目标已删除');
+        await loadAll();
+      } catch (error) { toast(error.message); }
+    };
+  });
+}
+
 async function loadCacheRows() {
   const form = new FormData($('#filterForm'));
   const params = new URLSearchParams();
@@ -218,7 +313,11 @@ async function loadCacheRows() {
 }
 
 async function loadAll() {
-  memory = await api('/api/assistant/memory');
+  [memory, reportSubscriptions, goals] = await Promise.all([
+    api('/api/assistant/memory'),
+    api('/api/assistant/report-subscriptions'),
+    api('/api/assistant/goals'),
+  ]);
   const form = new FormData($('#filterForm'));
   const topic = form.get('topic');
   const q = form.get('q');
@@ -231,6 +330,8 @@ async function loadAll() {
   renderLongMemories();
   renderFitness();
   renderFinance();
+  renderGoals();
+  renderReportSubscriptions();
   renderCache();
 }
 
@@ -245,5 +346,27 @@ $('#filterForm').addEventListener('submit', async (event) => {
 });
 
 $('#refreshBtn').onclick = () => loadAll().catch((error) => toast(error.message));
+
+$('#goalForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+    if (!payload.from_user) delete payload.from_user;
+    await api('/api/assistant/goals', { method: 'POST', body: JSON.stringify(payload) });
+    event.currentTarget.reset();
+    toast('目标已添加');
+    await loadAll();
+  } catch (error) { toast(error.message); }
+});
+
+$('#reportSubForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
+    await api('/api/assistant/report-subscriptions', { method: 'POST', body: JSON.stringify(payload) });
+    toast('报告订阅已保存');
+    await loadAll();
+  } catch (error) { toast(error.message); }
+});
 
 loadAll().catch((error) => toast(error.message));

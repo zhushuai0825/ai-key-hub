@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WeCom Inbox · 消息处理台</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page inbox-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>WeCom Inbox</strong><span>查看企微消息识别、入库、失败原因与关联记录</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+
+  <main class="inbox-shell">
+    <section class="kb-panel inbox-summary-panel">
+      <div class="panel-head"><h2>处理概览</h2><span id="updatedAt">--</span></div>
+      <div class="cache-stats" id="summaryStats"></div>
+      <form id="filterForm" class="search-form inbox-filter-form">
+        <select name="status">
+          <option value="">全部状态</option>
+          <option value="recorded">已记录</option>
+          <option value="replied">已回复</option>
+          <option value="failed">失败</option>
+          <option value="processing">处理中</option>
+          <option value="ignored">已忽略</option>
+        </select>
+        <select name="intent">
+          <option value="">全部意图</option>
+          <option value="finance">账本</option>
+          <option value="fitness">健康</option>
+          <option value="knowledge">知识库</option>
+          <option value="task">提醒</option>
+          <option value="memory">记忆</option>
+          <option value="chat">聊天</option>
+          <option value="report">报告</option>
+        </select>
+        <select name="msg_type">
+          <option value="">全部类型</option>
+          <option value="text">文本</option>
+          <option value="file">文件</option>
+          <option value="image">图片</option>
+        </select>
+        <input name="q" placeholder="搜索原文、回复、用户" />
+        <button class="btn btn-solid" type="submit">筛选</button>
+      </form>
+    </section>
+
+    <section class="kb-panel inbox-intent-panel">
+      <div class="panel-head"><h2>意图分布</h2><span id="intentCount">0 类</span></div>
+      <div id="intentList" class="intent-list"></div>
+    </section>
+
+    <section class="kb-panel inbox-rule-panel">
+      <div class="panel-head"><h2>学习规则</h2><span id="ruleCount">0 条</span></div>
+      <form id="ruleForm" class="search-form rule-form">
+        <input name="pattern" placeholder="关键词，如 蜜雪冰城" required />
+        <select name="value">
+          <option value="餐饮">餐饮</option>
+          <option value="交通">交通</option>
+          <option value="项目/工具">项目/工具</option>
+          <option value="健身">健身</option>
+          <option value="收入">收入</option>
+          <option value="未分类">未分类</option>
+        </select>
+        <input name="from_user" placeholder="用户ID，可空" />
+        <button class="btn btn-solid" type="submit">添加</button>
+      </form>
+      <div id="ruleList" class="intent-list"></div>
+    </section>
+
+    <section class="kb-panel inbox-profile-panel">
+      <div class="panel-head"><h2>用户绑定</h2><span id="profileCount">0 人</span></div>
+      <form id="profileForm" class="search-form profile-form">
+        <input name="from_user" placeholder="企业微信用户ID" required />
+        <input name="display_name" placeholder="昵称" />
+        <select name="default_kb_id" id="profileKbSelect"><option value="">默认知识库</option></select>
+        <input name="daily_report_time" type="time" value="21:30" />
+        <button class="btn btn-solid" type="submit">保存用户</button>
+      </form>
+      <div id="profileList" class="intent-list"></div>
+    </section>
+
+    <section class="kb-panel inbox-list-panel">
+      <div class="panel-head"><h2>消息记录</h2><span id="rowCount">0 条</span></div>
+      <div id="messageList" class="history-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./wechat-inbox.js"></script>
+</body>
+</html>
