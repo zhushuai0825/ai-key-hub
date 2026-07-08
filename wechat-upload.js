@@ -15,6 +15,9 @@ async function loadTarget() {
 
 $('#uploadTokenForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const button = event.currentTarget.querySelector('button');
+  if (button.disabled) return;
+  button.disabled = true;
   $('#statusText').textContent = '上传中';
   $('#resultBox').textContent = '正在解析和写入向量知识库，请稍候...';
   const formData = new FormData(event.currentTarget);
@@ -28,6 +31,7 @@ $('#uploadTokenForm').addEventListener('submit', async (event) => {
   } catch (error) {
     $('#statusText').textContent = '失败';
     $('#resultBox').textContent = error.message;
+    button.disabled = false;
   }
 });
 

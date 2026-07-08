@@ -1249,6 +1249,14 @@ async function consumeKnowledgeUploadToken(token) {
   return { memory, data, kb: kb?.rows?.[0] || await resolveUserKnowledgeBase(memory.from_user) };
 }
 
+async function claimKnowledgeUploadToken(token) {
+  const target = await consumeKnowledgeUploadToken(token);
+  if (!target) return null;
+  const claimed = await pool.query('DELETE FROM assistant_memories WHERE id=$1 RETURNING *', [target.memory.id]);
+  if (!claimed.rowCount) return null;
+  return target;
+}
+
 async function consumeNextKnowledgeUploadTarget(fromUser) {
   if (!fromUser) return null;
   const result = await pool.query(
@@ -1327,7 +1335,13 @@ async function parseMultipart(req) {
     busboy.on('file', (name, file, info) => {
       const chunks = [];
       file.on('data', (data) => chunks.push(data));
-      file.on('end', () => files.push({ name, filename: info.filename, mimeType: info.mimeType, buffer: Buffer.concat(chunks) }));
+      file.on('end', () => {
+        let filename = info.filename || '';
+        if (/[ÃÂåæä]/.test(filename)) {
+          try { filename = Buffer.from(filename, 'latin1').toString('utf8'); } catch (_) {}
+        }
+        files.push({ name, filename, mimeType: info.mimeType, buffer: Buffer.concat(chunks) });
+      });
     });
     busboy.on('error', reject);
     busboy.on('finish', () => resolve({ fields, files }));
@@ -2906,7 +2920,7 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === '/api/wechat/upload-token' && req.method === 'POST') {
     const token = url.searchParams.get('token') || '';
-    const target = await consumeKnowledgeUploadToken(token);
+    const target = await claimKnowledgeUploadToken(token);
     if (!target) return sendJson(res, 404, { error: '上传链接不存在或已过期' });
     const { fields, files } = await parseMultipart(req);
     const file = files[0];
@@ -2923,7 +2937,6 @@ async function handleApi(req, res, url) {
       [target.kb.id, fields.title || file.filename || safeName, file.filename || safeName, filePath, target.memory.from_user || null, '企业微信上传链接', rawText]
     );
     const processed = await processKnowledgeDocument(doc.rows[0].id);
-    await pool.query('DELETE FROM assistant_memories WHERE id=$1', [target.memory.id]);
     await recordWechatMessageRow({
       from_user: target.memory.from_user,
       to_user: 'wechat-upload-link',
