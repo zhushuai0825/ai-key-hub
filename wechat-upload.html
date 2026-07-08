@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>上传到知识库</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page upload-token-page">
+  <main class="upload-token-shell">
+    <section class="kb-panel upload-token-panel">
+      <div class="panel-head"><h2>上传到知识库</h2><span id="statusText">检查链接中</span></div>
+      <form id="uploadTokenForm" class="doc-form">
+        <p class="form-hint" id="targetText">正在读取上传目标...</p>
+        <input name="title" placeholder="文档标题，可空" />
+        <input name="file" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv" required />
+        <button class="btn btn-solid" type="submit">上传并写入知识库</button>
+        <p class="form-hint">支持 TXT / MD / PDF / DOCX / JSON / CSV。上传后会自动解析、切分并写入向量知识库。</p>
+      </form>
+      <div id="resultBox" class="empty-state"></div>
+    </section>
+  </main>
+  <script src="./wechat-upload.js"></script>
+</body>
+</html>

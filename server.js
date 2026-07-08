@@ -47,6 +47,7 @@ const OCR_MODEL = process.env.OCR_MODEL || '';
 const KEY_ENCRYPTION_SECRET = process.env.KEY_ENCRYPTION_SECRET || '';
 const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS || 30000);
 const GATEWAY_RETRY_COUNT = Number(process.env.GATEWAY_RETRY_COUNT || 1);
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
 const chroma = new ChromaClient({ path: CHROMA_URL });
 
@@ -1221,12 +1222,31 @@ async function rememberNextKnowledgeUploadTarget(fromUser, content) {
   const parsed = parseKnowledgeTargetIntent(content);
   if (!parsed) return null;
   const kb = parsed.target ? await findOrCreateKnowledgeBaseByName(parsed.target) : await resolveUserKnowledgeBase(fromUser);
+  const uploadToken = crypto.randomBytes(18).toString('hex');
   const memory = await pool.query(
     `INSERT INTO assistant_memories (from_user, category, content, importance, source, pinned)
      VALUES ($1,'knowledge_upload_target',$2,4,'wechat',false) RETURNING *`,
-    [fromUser, JSON.stringify({ kb_id: kb.id, kb_name: kb.name, requested: parsed.target || '默认知识库', expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString() })]
+    [fromUser, JSON.stringify({ kb_id: kb.id, kb_name: kb.name, requested: parsed.target || '默认知识库', upload_token: uploadToken, expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString() })]
   );
-  return { kb, memory: memory.rows[0] };
+  return { kb, memory: memory.rows[0], upload_token: uploadToken };
+}
+
+async function consumeKnowledgeUploadToken(token) {
+  const clean = String(token || '').trim();
+  if (!/^[a-f0-9]{24,64}$/i.test(clean)) return null;
+  const result = await pool.query(
+    `SELECT * FROM assistant_memories
+     WHERE category='knowledge_upload_target' AND content::jsonb->>'upload_token'=$1
+     ORDER BY created_at DESC LIMIT 1`,
+    [clean]
+  );
+  if (!result.rowCount) return null;
+  const memory = result.rows[0];
+  let data = {};
+  try { data = JSON.parse(memory.content || '{}'); } catch (_) { data = {}; }
+  if (data.expires_at && new Date(data.expires_at).getTime() < Date.now()) return null;
+  const kb = data.kb_id ? await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [Number(data.kb_id)]) : null;
+  return { memory, data, kb: kb?.rows?.[0] || await resolveUserKnowledgeBase(memory.from_user) };
 }
 
 async function consumeNextKnowledgeUploadTarget(fromUser) {
@@ -2163,7 +2183,9 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         const target = await rememberNextKnowledgeUploadTarget(from_user, content);
         intent = 'knowledge.upload_target';
         status = 'replied';
-        reply = `可以，5 分钟内发送的下一个文件会保存到知识库「${target?.kb?.name || '微信上传资料'}」。也可以直接发「存入知识库：」+ 正文。`;
+        const publicBase = raw_payload.public_base_url || PUBLIC_BASE_URL || '';
+        const uploadUrl = `${String(publicBase).replace(/\/$/, '')}/wechat-upload.html?token=${target.upload_token}`;
+        reply = `可以，30 分钟内发送的下一个文件会保存到知识库「${target?.kb?.name || '微信上传资料'}」。如果企业微信文件没有触发回调，也可以打开这个链接上传：${uploadUrl}\n也可以直接发「存入知识库：」+ 正文。`;
       } catch (error) {
         intent = 'knowledge.upload_target_failed';
         status = 'failed';
@@ -2273,6 +2295,12 @@ function sendUnauthorized(res) {
     'Content-Type': 'text/plain; charset=utf-8',
   });
   res.end('authentication required');
+}
+
+function requestBaseUrl(req) {
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/$/, '');
+  const proto = req.headers['x-forwarded-proto'] || 'http';
+  return `${proto}://${req.headers.host}`.replace(/\/$/, '');
 }
 
 function copyPayload(provider, key, mode, model = '') {
@@ -2866,15 +2894,61 @@ async function handleApi(req, res, url) {
       }).catch((error) => console.error('[wechat] async upload', error.message));
       return;
     }
-    const saved = await saveWechatMessage({ ...payload, raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), xml, ...payload } });
+    const saved = await saveWechatMessage({ ...payload, raw_payload: { provider: 'wechat_work', encrypted: Boolean(encrypted), public_base_url: requestBaseUrl(req), xml, ...payload } });
     res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
     return res.end(wechatWorkReply(payload.to_user, payload.from_user, saved.reply, url));
+  }
+  if (url.pathname === '/api/wechat/upload-token' && req.method === 'GET') {
+    const token = url.searchParams.get('token') || '';
+    const target = await consumeKnowledgeUploadToken(token);
+    if (!target) return sendJson(res, 404, { error: '上传链接不存在或已过期' });
+    return sendJson(res, 200, { kb_name: target.kb.name, expires_at: target.data.expires_at, from_user: target.memory.from_user });
+  }
+  if (url.pathname === '/api/wechat/upload-token' && req.method === 'POST') {
+    const token = url.searchParams.get('token') || '';
+    const target = await consumeKnowledgeUploadToken(token);
+    if (!target) return sendJson(res, 404, { error: '上传链接不存在或已过期' });
+    const { fields, files } = await parseMultipart(req);
+    const file = files[0];
+    if (!file) return sendJson(res, 400, { error: 'file required' });
+    await mkdir(UPLOAD_DIR, { recursive: true });
+    const safeName = `${Date.now()}_${file.filename || 'wechat-upload'}`.replace(/[^a-zA-Z0-9._\-\u4e00-\u9fa5]/g, '_');
+    const filePath = path.join(UPLOAD_DIR, safeName);
+    await writeFile(filePath, file.buffer);
+    const rawText = await parseDocumentBuffer(file.buffer, file.filename, 'upload');
+    if (!rawText.trim()) return sendJson(res, 400, { error: '文件没有解析出文本内容' });
+    const doc = await pool.query(
+      `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,source_user,source_channel,source_note,raw_text,status)
+       VALUES ($1,$2,'wechat_link_upload',$3,$4,$5,'wechat',$6,$7,'processing') RETURNING *`,
+      [target.kb.id, fields.title || file.filename || safeName, file.filename || safeName, filePath, target.memory.from_user || null, '企业微信上传链接', rawText]
+    );
+    const processed = await processKnowledgeDocument(doc.rows[0].id);
+    await pool.query('DELETE FROM assistant_memories WHERE id=$1', [target.memory.id]);
+    await recordWechatMessageRow({
+      from_user: target.memory.from_user,
+      to_user: 'wechat-upload-link',
+      msg_type: 'file',
+      content: file.filename || safeName,
+      raw_payload: { provider: 'wechat_upload_link', token_used: true, kb_id: target.kb.id, filename: file.filename || safeName },
+      financeEntry: null,
+      fitnessEntry: null,
+      knowledgeDocument: doc.rows[0],
+      intent: 'knowledge.upload_link',
+      status: 'recorded',
+      reply: `已通过上传链接写入知识库「${target.kb.name}」：${doc.rows[0].title}，切分 ${processed.chunks} 段。`,
+      sourceMsgType: 'file',
+      mediaStatus: 'imported',
+    });
+    if (target.memory.from_user && WECHAT_WORK_AGENT_ID) {
+      sendWechatWorkTextMessage(target.memory.from_user, `已写入知识库「${target.kb.name}」：${doc.rows[0].title}，切分 ${processed.chunks} 段。`).catch((error) => console.error('[wechat] upload-link notify failed:', error.message));
+    }
+    return sendJson(res, 201, { kb: target.kb, document: doc.rows[0], processed });
   }
   if (url.pathname === '/api/wechat/webhook' && req.method === 'POST') {
     if (!verifyWechatSignature(url)) return sendJson(res, 403, { error: 'invalid signature' });
     const xml = await readTextBody(req);
     const payload = parseWechatXml(xml);
-    const saved = await saveWechatMessage({ ...payload, raw_payload: { xml, ...payload } });
+    const saved = await saveWechatMessage({ ...payload, raw_payload: { public_base_url: requestBaseUrl(req), xml, ...payload } });
     res.writeHead(200, { 'Content-Type': 'application/xml; charset=utf-8' });
     return res.end(wechatTextReply(payload.to_user, payload.from_user, saved.reply));
   }
@@ -3626,7 +3700,9 @@ http.createServer(async (req, res) => {
       if (!gatewayAuthorized(req)) return sendUnauthorized(res);
       return await handleGatewayChatCompletions(req, res);
     }
-    const publicApi = ['/api/health', '/api/wechat/webhook', '/api/wechat/work-webhook'].includes(url.pathname);
+    const publicPage = ['/wechat-upload.html', '/wechat-upload.js', '/theme.css', '/knowledge.css'].includes(url.pathname);
+    const publicApi = ['/api/health', '/api/wechat/webhook', '/api/wechat/work-webhook', '/api/wechat/upload-token'].includes(url.pathname);
+    if (publicPage) return await serveStatic(req, res, url);
     if (!publicApi && !authorized(req)) return sendUnauthorized(res);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);

@@ -195,3 +195,6 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .assistant-context-details p { margin: 10px 0 0; color: var(--ink-2); }
 .context-source-list { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); line-height: 1.6; }
 .context-source-list li { margin: 3px 0; }
+.upload-token-shell { width: min(680px, calc(100% - 28px)); margin: 32px auto; }
+.upload-token-panel { max-height: none; overflow: visible; }
+.upload-token-page .doc-form input[type="file"] { padding: 13px; border-style: dashed; }
