@@ -3185,38 +3185,38 @@ async function listTimeline(url) {
   const type = url.searchParams.get('type') || '';
   const result = await pool.query(`
     WITH timeline AS (
-      SELECT 'finance' type, id::text entity_id, occurred_at event_at, title,
-             jsonb_build_object('amount', amount, 'direction', direction, 'category', category, 'note', note, 'source_user', source_user) detail
+      SELECT 'finance'::text AS item_type, id::text AS entity_id, occurred_at AS event_at, title,
+             jsonb_build_object('amount', amount, 'direction', direction, 'category', category, 'note', note, 'source_user', source_user) AS detail
       FROM finance_entries
       UNION ALL
-      SELECT 'fitness' type, id::text entity_id, recorded_at event_at,
-             CASE entry_type WHEN 'weight' THEN '体重记录' WHEN 'meal' THEN '饮食记录' WHEN 'workout' THEN '训练记录' WHEN 'sleep' THEN '睡眠记录' ELSE entry_type END title,
-             jsonb_build_object('entry_type', entry_type, 'weight_kg', weight_kg, 'calories', calories, 'duration_min', duration_min, 'sleep_hours', sleep_hours, 'note', note, 'source_user', source_user) detail
+      SELECT 'fitness'::text AS item_type, id::text AS entity_id, recorded_at AS event_at,
+             CASE entry_type WHEN 'weight' THEN '体重记录' WHEN 'meal' THEN '饮食记录' WHEN 'workout' THEN '训练记录' WHEN 'sleep' THEN '睡眠记录' ELSE entry_type END AS title,
+             jsonb_build_object('entry_type', entry_type, 'weight_kg', weight_kg, 'calories', calories, 'duration_min', duration_min, 'sleep_hours', sleep_hours, 'note', note, 'source_user', source_user) AS detail
       FROM fitness_entries
       UNION ALL
-      SELECT 'knowledge' type, id::text entity_id, created_at event_at, title,
-             jsonb_build_object('kb_id', kb_id, 'filename', filename, 'status', status, 'source_user', source_user, 'source_channel', source_channel) detail
+      SELECT 'knowledge'::text AS item_type, id::text AS entity_id, created_at AS event_at, title,
+             jsonb_build_object('kb_id', kb_id, 'filename', filename, 'status', status, 'source_user', source_user, 'source_channel', source_channel) AS detail
       FROM knowledge_documents
       UNION ALL
-      SELECT 'wechat' type, id::text entity_id, received_at event_at, COALESCE(NULLIF(content,''), msg_type) title,
-             jsonb_build_object('from_user', from_user, 'msg_type', msg_type, 'intent', intent, 'parse_status', parse_status, 'media_status', media_status) detail
+      SELECT 'wechat'::text AS item_type, id::text AS entity_id, received_at AS event_at, COALESCE(NULLIF(content,''), msg_type) AS title,
+             jsonb_build_object('from_user', from_user, 'msg_type', msg_type, 'intent', intent, 'parse_status', parse_status, 'media_status', media_status) AS detail
       FROM wechat_messages
       UNION ALL
-      SELECT 'task' type, id::text entity_id, COALESCE(remind_at, created_at) event_at, title,
-             jsonb_build_object('status', status, 'recurrence', recurrence, 'from_user', from_user, 'note', note) detail
+      SELECT 'task'::text AS item_type, id::text AS entity_id, COALESCE(remind_at, created_at) AS event_at, title,
+             jsonb_build_object('status', status, 'recurrence', recurrence, 'from_user', from_user, 'note', note) AS detail
       FROM assistant_tasks
       UNION ALL
-      SELECT 'report' type, id::text entity_id, created_at event_at, title,
-             jsonb_build_object('report_type', report_type, 'from_user', from_user) detail
+      SELECT 'report'::text AS item_type, id::text AS entity_id, created_at AS event_at, title,
+             jsonb_build_object('report_type', report_type, 'from_user', from_user) AS detail
       FROM assistant_reports
       UNION ALL
-      SELECT 'audit' type, id::text entity_id, created_at event_at, action title,
-             jsonb_build_object('actor', actor, 'entity_type', entity_type, 'entity_id', entity_id, 'detail', detail) detail
+      SELECT 'audit'::text AS item_type, id::text AS entity_id, created_at AS event_at, action AS title,
+             jsonb_build_object('actor', actor, 'entity_type', entity_type, 'entity_id', entity_id, 'detail', detail) AS detail
       FROM audit_logs
     )
-    SELECT type, entity_id, event_at, title, detail
+    SELECT item_type AS type, entity_id, event_at, title, detail
     FROM timeline
-    WHERE ($1::text = '' OR type=$1)
+    WHERE ($1::text = '' OR item_type = $1)
     ORDER BY event_at DESC
     LIMIT $2`, [type, limit]);
   return result.rows;
