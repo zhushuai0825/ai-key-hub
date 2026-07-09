@@ -111,21 +111,32 @@ function rowHref(row) {
   return '';
 }
 
+function shortText(value = '', max = 80) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function render(rows) {
   $('#auditCount').textContent = `${rows.length} 条`;
   $('#auditList').innerHTML = rows.length ? rows.map((row) => {
     const href = rowHref(row);
     const detail = detailText(row);
-    return `<article class="timeline-item">
-      <div class="timeline-mark ok">操作</div>
-      <div class="timeline-main">
-        <div class="timeline-title">
+    const meta = [
+      actorLabel(row.actor),
+      detail,
+      row.entity_id ? `#${row.entity_id}` : '',
+      row.action || '',
+    ].filter(Boolean).join(' · ');
+    return `<article class="log-row tone-ok">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line">
           <strong>${escapeHtml(actionLabel(row.action))}</strong>
           <time>${escapeHtml(formatTime(row.created_at))}</time>
         </div>
-        <p>${escapeHtml(actorLabel(row.actor))}${detail ? ` · ${escapeHtml(detail)}` : ''}${row.entity_id ? ` · #${escapeHtml(row.entity_id)}` : ''}</p>
-        <div class="timeline-foot">
-          <code>${escapeHtml(row.action || '')}</code>
+        <div class="log-meta">
+          <span title="${escapeHtml(meta)}">${escapeHtml(shortText(meta, 110))}</span>
           ${href ? `<a class="timeline-link" href="${escapeHtml(href)}">查看</a>` : ''}
         </div>
       </div>

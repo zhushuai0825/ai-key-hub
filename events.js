@@ -48,10 +48,32 @@ function renderSummary(summary = []) {
 
 function eventActionButtons(row) {
   const buttons = [];
-  if (row.href) buttons.push(`<a class="btn" href="${escapeHtml(row.href)}">打开关联</a>`);
-  if (String(row.action || '').startsWith('wechat.retry')) buttons.push('<button type="button" data-retry-failed="1">重试失败</button>');
-  if (String(row.action || '').startsWith('backup.')) buttons.push('<button type="button" data-create-backup="1">新建备份</button>');
-  return buttons.length ? `<div class="row-actions inbox-actions">${buttons.join('')}</div>` : '';
+  if (row.href) buttons.push(`<a class="timeline-link" href="${escapeHtml(row.href)}">打开</a>`);
+  if (String(row.action || '').startsWith('wechat.retry')) buttons.push('<button type="button" class="timeline-link" data-retry-failed="1">重试失败</button>');
+  if (String(row.action || '').startsWith('backup.')) buttons.push('<button type="button" class="timeline-link" data-create-backup="1">新建备份</button>');
+  return buttons.join('');
+}
+
+function shortText(value = '', max = 90) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function eventMeta(row) {
+  const detail = row.detail || {};
+  const parts = [
+    levelLabel(row.level),
+    row.entity_type || 'system',
+    row.entity_id || '',
+    detail.reason || '',
+    detail.processed !== undefined ? `处理 ${detail.processed}` : '',
+    detail.failed !== undefined ? `失败 ${detail.failed}` : '',
+    detail.size ? `${detail.size}B` : '',
+    detail.error || detail.errmsg || '',
+    row.action || '',
+  ];
+  return parts.filter(Boolean).join(' · ');
 }
 
 const EVENT_ACTIONS = {
@@ -76,15 +98,19 @@ function eventTitle(action = '') {
 function renderEvents(rows = []) {
   $('#eventCount').textContent = `${rows.length} 条`;
   $('#eventList').innerHTML = rows.length ? rows.map((row) => {
-    const detail = row.detail || {};
-    const detailText = JSON.stringify(detail, null, 2);
-    return `<article class="timeline-item">
-      <div class="timeline-mark ${levelClass(row.level)}">${escapeHtml(levelLabel(row.level))}</div>
-      <div class="timeline-main">
-        <div class="timeline-title"><strong>${escapeHtml(eventTitle(row.action))}</strong><time>${escapeHtml(formatTime(row.created_at))}</time></div>
-        <p>${escapeHtml(row.entity_type || 'system')}${row.entity_id ? ` · ${escapeHtml(row.entity_id)}` : ''} · <code>${escapeHtml(row.action || '')}</code></p>
-        ${eventActionButtons(row)}
-        <details class="payload-details"><summary>事件详情</summary><pre>${escapeHtml(detailText)}</pre></details>
+    const meta = eventMeta(row);
+    const actions = eventActionButtons(row);
+    return `<article class="log-row tone-${levelClass(row.level)}">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line">
+          <strong>${escapeHtml(eventTitle(row.action))}</strong>
+          <time>${escapeHtml(formatTime(row.created_at))}</time>
+        </div>
+        <div class="log-meta">
+          <span title="${escapeHtml(meta)}">${escapeHtml(shortText(meta, 120))}</span>
+          ${actions}
+        </div>
       </div>
     </article>`;
   }).join('') : '<div class="empty-state">没有匹配的系统日志。</div>';

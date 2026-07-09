@@ -82,26 +82,35 @@ function renderSummary(summary = {}) {
     <span class="log-stat ${tone}"><em>${escapeHtml(label)}</em><b>${count}</b></span>`).join('');
 }
 
+function shortText(value = '', max = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function renderRows(rows = []) {
   $('#chatCount').textContent = `${rows.length} 条`;
   $('#chatList').innerHTML = rows.length ? rows.map((row) => {
     const content = String(row.content || '').trim() || `（${msgTypeLabel(row.msg_type)}消息）`;
     const reply = String(row.reply_text || '').trim();
     const relation = relationText(row);
-    return `<article class="timeline-item chat-log-item">
-      <div class="timeline-mark ${statusClass(row.parse_status)}">${escapeHtml(statusLabel(row.parse_status))}</div>
-      <div class="timeline-main">
-        <div class="timeline-title">
-          <div class="timeline-heading">
-            <span class="timeline-type">${escapeHtml(intentLabel(row.intent))}</span>
-            <strong>${escapeHtml(content)}</strong>
-          </div>
+    const meta = [
+      statusLabel(row.parse_status),
+      intentLabel(row.intent),
+      row.from_user || '',
+      msgTypeLabel(row.source_msg_type || row.msg_type),
+      relation,
+    ].filter(Boolean).join(' · ');
+    return `<article class="log-row tone-${statusClass(row.parse_status) || 'muted'}">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line">
+          <strong title="${escapeHtml(content)}">${escapeHtml(shortText(content, 64))}</strong>
           <time>${escapeHtml(formatTime(row.received_at))}</time>
         </div>
-        <p>用户 ${escapeHtml(row.from_user || '--')} · ${escapeHtml(msgTypeLabel(row.source_msg_type || row.msg_type))}${relation ? ` · ${escapeHtml(relation)}` : ''}</p>
-        ${reply ? `<div class="chat-reply"><span>系统回复</span><p>${escapeHtml(reply)}</p></div>` : ''}
-        <div class="timeline-foot">
-          <code>#${escapeHtml(row.id)} · ${escapeHtml(row.intent || 'unknown')}</code>
+        <div class="log-meta">
+          <span>${escapeHtml(meta)}</span>
+          ${reply ? `<span class="log-reply" title="${escapeHtml(reply)}">回复：${escapeHtml(shortText(reply, 56))}</span>` : ''}
           <a class="timeline-link" href="/wechat-inbox.html?q=${encodeURIComponent(`#${row.id}`)}">处理</a>
         </div>
       </div>
