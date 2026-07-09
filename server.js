@@ -302,7 +302,16 @@ async function initDb() {
   await pool.query('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_user TEXT');
   await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_channel TEXT NOT NULL DEFAULT 'web'");
   await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS source_note TEXT NOT NULL DEFAULT ''");
+  await pool.query('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1');
+  await pool.query('ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS parent_doc_id INTEGER REFERENCES knowledge_documents(id) ON DELETE SET NULL');
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS version_status TEXT NOT NULL DEFAULT 'current'");
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS content_hash TEXT NOT NULL DEFAULT ''");
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS quality_status TEXT NOT NULL DEFAULT 'unchecked'");
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS quality_issues JSONB NOT NULL DEFAULT '[]'::jsonb");
+  await pool.query("ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS ocr_text TEXT NOT NULL DEFAULT ''");
   await pool.query('CREATE INDEX IF NOT EXISTS idx_fitness_entries_user_time ON fitness_entries(source_user, recorded_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_knowledge_documents_version ON knowledge_documents(kb_id, title, filename, version_status, version DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_knowledge_documents_source_user ON knowledge_documents(source_user, kb_id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_tasks_user_status ON assistant_tasks(from_user, status, remind_at)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_reports_user_type ON assistant_reports(from_user, report_type, created_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_messages_status_time ON wechat_messages(parse_status, received_at DESC)');
@@ -1190,7 +1199,7 @@ async function invalidateAssistantCacheForUser(fromUser) {
 async function deepseekKnowledgeAnswer(question, sources, globalContext = '') {
   const apiKey = await deepseekApiKey();
   if (!apiKey) throw new Error('DeepSeek Key not configured');
-  const context = sources.map((item, index) => `【资料${index + 1}】${item.content}`).join('\n\n');
+  const context = sources.map((item, index) => `【资料${index + 1}｜doc:${item.doc_id}｜chunk:${item.chunk_index}｜score:${item.score ?? '--'}】${item.content}`).join('\n\n');
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -1208,6 +1217,109 @@ async function deepseekKnowledgeAnswer(question, sources, globalContext = '') {
   return body?.choices?.[0]?.message?.content || '没有生成答案。';
 }
 
+function normalizeSimilarity(score) {
+  if (score === null || score === undefined) return null;
+  const value = Number(score);
+  if (!Number.isFinite(value)) return null;
+  if (value >= 0 && value <= 1) return 1 - value;
+  return value;
+}
+
+function knowledgeSourcePayload(item, index = 0) {
+  return {
+    index: index + 1,
+    doc_id: item.doc_id,
+    chunk_id: item.id || item.chunk_id,
+    kb_id: item.kb_id,
+    document_title: item.document_title || item.title || '未命名文档',
+    filename: item.filename || '',
+    chunk_index: item.chunk_index,
+    content: item.content || '',
+    preview: String(item.content || '').slice(0, 260),
+    score: item.score ?? null,
+    similarity: normalizeSimilarity(item.score),
+    href: `/knowledge.html?doc=${item.doc_id}&chunk=${item.chunk_index}`,
+  };
+}
+
+function contentHash(text = '') {
+  return crypto.createHash('sha256').update(String(text || '')).digest('hex');
+}
+
+async function userCanAccessKnowledgeBase(kbId, fromUser = null) {
+  if (!fromUser || !kbId) return true;
+  const profile = await pool.query('SELECT default_kb_id FROM wechat_user_profiles WHERE from_user=$1 AND enabled=true', [fromUser]);
+  if (!profile.rowCount || !profile.rows[0].default_kb_id) return true;
+  return Number(profile.rows[0].default_kb_id) === Number(kbId);
+}
+
+async function assertKnowledgeAccess(kbId, fromUser = null) {
+  if (!(await userCanAccessKnowledgeBase(kbId, fromUser))) throw new Error('无权访问这个知识库');
+}
+
+async function prepareKnowledgeDocumentVersion({ kbId, title, filename = '', strategy = 'keep' }) {
+  const cleanTitle = String(title || filename || '未命名文档');
+  const cleanFilename = String(filename || '');
+  const existing = await pool.query(`
+    SELECT * FROM knowledge_documents
+    WHERE kb_id=$1 AND (title=$2 OR ($3::text<>'' AND filename=$3))
+    ORDER BY version DESC, created_at DESC`, [Number(kbId), cleanTitle, cleanFilename]);
+  const rows = existing.rows;
+  if (!rows.length || strategy === 'keep') return { title: cleanTitle, version: rows.length ? Number(rows[0].version || 1) + 1 : 1, parent_doc_id: rows[0]?.parent_doc_id || rows[0]?.id || null, version_status: 'current' };
+  if (strategy === 'replace') {
+    for (const row of rows) await deleteKnowledgeDocument(row.id);
+    return { title: cleanTitle, version: 1, parent_doc_id: null, version_status: 'current' };
+  }
+  if (strategy === 'new_version') {
+    await pool.query("UPDATE knowledge_documents SET version_status='archived', updated_at=now() WHERE kb_id=$1 AND (title=$2 OR ($3::text<>'' AND filename=$3))", [Number(kbId), cleanTitle, cleanFilename]);
+    return { title: cleanTitle, version: Number(rows[0].version || 1) + 1, parent_doc_id: rows[0].parent_doc_id || rows[0].id, version_status: 'current' };
+  }
+  return { title: cleanTitle, version: Number(rows[0]?.version || 0) + 1, parent_doc_id: rows[0]?.parent_doc_id || rows[0]?.id || null, version_status: 'current' };
+}
+
+async function createKnowledgeDocument({ kbId, title, sourceType = 'text', filename = null, filePath = null, rawText = '', sourceUser = null, sourceChannel = 'web', sourceNote = '', versionStrategy = 'keep', ocrText = '' }) {
+  await assertKnowledgeAccess(kbId, sourceUser);
+  const version = await prepareKnowledgeDocumentVersion({ kbId, title, filename, strategy: versionStrategy });
+  const hash = contentHash(rawText);
+  const doc = await pool.query(
+    `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,source_user,source_channel,source_note,raw_text,status,version,parent_doc_id,version_status,content_hash,ocr_text)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'processing',$10,$11,$12,$13,$14) RETURNING *`,
+    [Number(kbId), version.title, sourceType, filename || null, filePath || null, sourceUser || null, sourceChannel, sourceNote, rawText || '', version.version, version.parent_doc_id, version.version_status, hash, ocrText || '']
+  );
+  const processed = await processKnowledgeDocument(doc.rows[0].id);
+  return { document: doc.rows[0], processed };
+}
+
+async function evaluateKnowledgeDocumentQuality(docId) {
+  const [doc, chunks, duplicates] = await Promise.all([
+    pool.query('SELECT * FROM knowledge_documents WHERE id=$1', [docId]),
+    pool.query('SELECT * FROM knowledge_chunks WHERE doc_id=$1 ORDER BY chunk_index ASC', [docId]),
+    pool.query(`SELECT id,title,filename FROM knowledge_documents WHERE id<>$1 AND content_hash<>'' AND content_hash=(SELECT content_hash FROM knowledge_documents WHERE id=$1) LIMIT 20`, [docId]),
+  ]);
+  if (!doc.rowCount) throw new Error('document not found');
+  const issues = [];
+  const text = doc.rows[0].raw_text || '';
+  if (!text.trim()) issues.push({ level: 'error', type: 'empty_document', message: '文档没有解析出文本' });
+  if (doc.rows[0].status !== 'ready') issues.push({ level: doc.rows[0].status === 'ready_pg_only' ? 'warn' : 'error', type: 'vector_status', message: `向量状态：${doc.rows[0].status}` });
+  if (!chunks.rowCount) issues.push({ level: 'error', type: 'no_chunks', message: '没有切分片段' });
+  const shortChunks = chunks.rows.filter((row) => row.char_count < 20);
+  const longChunks = chunks.rows.filter((row) => row.char_count > 1800);
+  if (shortChunks.length) issues.push({ level: 'warn', type: 'short_chunks', message: `${shortChunks.length} 个片段过短` });
+  if (longChunks.length) issues.push({ level: 'warn', type: 'long_chunks', message: `${longChunks.length} 个片段过长` });
+  if (duplicates.rowCount) issues.push({ level: 'warn', type: 'duplicate_document', message: `发现 ${duplicates.rowCount} 个内容重复文档`, duplicates: duplicates.rows });
+  const chunkContents = new Map();
+  let duplicateChunks = 0;
+  for (const chunk of chunks.rows) {
+    const key = contentHash(chunk.content.trim());
+    if (chunkContents.has(key)) duplicateChunks += 1;
+    else chunkContents.set(key, chunk.id);
+  }
+  if (duplicateChunks) issues.push({ level: 'warn', type: 'duplicate_chunks', message: `${duplicateChunks} 个重复片段` });
+  const status = issues.some((item) => item.level === 'error') ? 'bad' : (issues.length ? 'warn' : 'ok');
+  await pool.query('UPDATE knowledge_documents SET quality_status=$1, quality_issues=$2, updated_at=now() WHERE id=$3', [status, JSON.stringify(issues), docId]);
+  return { doc_id: docId, status, issues, chunk_count: chunks.rowCount };
+}
+
 async function searchKnowledge(kbId, query, topK = 6) {
   try {
     const collection = await chromaCollection();
@@ -1221,9 +1333,9 @@ async function searchKnowledge(kbId, query, topK = 6) {
     const ids = result.metadatas?.[0]?.map((meta) => meta.chunk_id).filter(Boolean) || [];
     if (ids.length) {
       const rows = await pool.query(`
-        SELECT c.*, d.title document_title, d.filename
+        SELECT c.*, d.title document_title, d.filename, d.version, d.version_status, d.source_user
         FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.doc_id
-        WHERE c.id = ANY($1::int[])`, [ids]);
+        WHERE c.id = ANY($1::int[]) AND d.version_status='current'`, [ids]);
       const rowMap = new Map(rows.rows.map((row) => [row.id, row]));
       return ids.map((id, index) => ({ ...rowMap.get(id), score: result.distances?.[0]?.[index] ?? null })).filter((item) => item.id);
     }
@@ -1231,10 +1343,11 @@ async function searchKnowledge(kbId, query, topK = 6) {
     console.error('[knowledge] chroma search failed:', error.message);
   }
   const result = await pool.query(`
-    SELECT c.*, d.title document_title, d.filename,
+    SELECT c.*, d.title document_title, d.filename, d.version, d.version_status, d.source_user,
            ts_rank_cd(to_tsvector('simple', c.content), plainto_tsquery('simple', $2)) score
     FROM knowledge_chunks c JOIN knowledge_documents d ON d.id=c.doc_id
     WHERE ($1::int IS NULL OR c.kb_id=$1)
+      AND d.version_status='current'
       AND (c.content ILIKE '%' || $2 || '%' OR to_tsvector('simple', c.content) @@ plainto_tsquery('simple', $2))
     ORDER BY score DESC NULLS LAST, c.id DESC
     LIMIT $3`, [kbId ? Number(kbId) : null, query, topK]);
@@ -1371,7 +1484,8 @@ async function processKnowledgeDocument(docId) {
   const chromaResult = await upsertChunksToChroma(inserted);
   await pool.query('UPDATE knowledge_documents SET status=$1,error_message=$2,updated_at=now() WHERE id=$3', [chromaResult.ok ? 'ready' : 'ready_pg_only', chromaResult.ok ? null : chromaResult.reason, docId]);
   resetKnowledgeChunkCountCache();
-  return { chunks: inserted.length, chroma: chromaResult };
+  const quality = await evaluateKnowledgeDocumentQuality(docId).catch((error) => ({ status: 'unchecked', issues: [{ level: 'warn', type: 'quality_failed', message: error.message }] }));
+  return { chunks: inserted.length, chroma: chromaResult, quality };
 }
 
 let wechatWorkTokenCache = { token: '', expiresAt: 0 };
@@ -1628,13 +1742,8 @@ async function ingestTextToKnowledgeBase({ title, text, sourceType = 'wechat_tex
   const targetKb = kb || await resolveUserKnowledgeBase(sourceUser);
   const clean = String(text || '').trim();
   if (!clean) throw new Error('没有可写入的文本内容');
-  const doc = await pool.query(
-    `INSERT INTO knowledge_documents (kb_id, title, source_type, source_user, source_channel, source_note, raw_text, status)
-     VALUES ($1, $2, $3, $4, 'wechat', $5, $6, 'processing') RETURNING *`,
-    [targetKb.id, title || '企微文字资料', sourceType, sourceUser, sourceNote, clean]
-  );
-  const processed = await processKnowledgeDocument(doc.rows[0].id);
-  return { kb: targetKb, document: doc.rows[0], processed };
+  const created = await createKnowledgeDocument({ kbId: targetKb.id, title: title || '企微文字资料', sourceType, rawText: clean, sourceUser, sourceChannel: 'wechat', sourceNote, versionStrategy: 'new_version' });
+  return { kb: targetKb, ...created };
 }
 
 async function importWechatWorkMediaToKnowledge(payload) {
@@ -1648,13 +1757,8 @@ async function importWechatWorkMediaToKnowledge(payload) {
   await writeFile(filePath, media.buffer);
   const rawText = await parseDocumentBuffer(media.buffer, filename, 'upload');
   if (!rawText.trim()) throw new Error('文件没有解析出文本内容');
-  const doc = await pool.query(
-    `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,source_user,source_channel,source_note,raw_text,status)
-     VALUES ($1,$2,'wechat_upload',$3,$4,$5,'wechat',$6,$7,'processing') RETURNING *`,
-    [kb.id, path.basename(filename), filename, filePath, payload.from_user || null, '企业微信文件上传', rawText]
-  );
-  const processed = await processKnowledgeDocument(doc.rows[0].id);
-  return { kb, document: doc.rows[0], processed };
+  const created = await createKnowledgeDocument({ kbId: kb.id, title: path.basename(filename), sourceType: 'wechat_upload', filename, filePath, rawText, sourceUser: payload.from_user || null, sourceChannel: 'wechat', sourceNote: '企业微信文件上传', versionStrategy: 'new_version' });
+  return { kb, ...created };
 }
 
 async function deleteKnowledgeDocument(docId) {
@@ -2450,7 +2554,9 @@ async function resolveImageText(payload) {
   if (existing) return { text: existing, status: 'ocr_ready', error: null };
   try {
     let media;
-    if (payload.image_base64) {
+    if (payload.buffer) {
+      media = { buffer: payload.buffer, contentType: payload.content_type || payload.contentType || 'image/jpeg' };
+    } else if (payload.image_base64) {
       media = {
         buffer: Buffer.from(String(payload.image_base64).replace(/^data:image\/[^;]+;base64,/, ''), 'base64'),
         contentType: payload.content_type || 'image/jpeg',
@@ -3550,12 +3656,9 @@ async function handleApi(req, res, url) {
     await writeFile(filePath, file.buffer);
     const rawText = await parseDocumentBuffer(file.buffer, file.filename, 'upload');
     if (!rawText.trim()) return sendJson(res, 400, { error: '文件没有解析出文本内容' });
-    const doc = await pool.query(
-      `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,source_user,source_channel,source_note,raw_text,status)
-       VALUES ($1,$2,'wechat_link_upload',$3,$4,$5,'wechat',$6,$7,'processing') RETURNING *`,
-      [target.kb.id, fields.title || file.filename || safeName, file.filename || safeName, filePath, target.memory.from_user || null, '企业微信上传链接', rawText]
-    );
-    const processed = await processKnowledgeDocument(doc.rows[0].id);
+    const created = await createKnowledgeDocument({ kbId: target.kb.id, title: fields.title || file.filename || safeName, sourceType: 'wechat_link_upload', filename: file.filename || safeName, filePath, rawText, sourceUser: target.memory.from_user || null, sourceChannel: 'wechat', sourceNote: '企业微信上传链接', versionStrategy: fields.version_strategy || 'new_version' });
+    const doc = { rows: [created.document] };
+    const processed = created.processed;
     await recordWechatMessageRow({
       from_user: target.memory.from_user,
       to_user: 'wechat-upload-link',
@@ -3606,13 +3709,8 @@ async function handleApi(req, res, url) {
     const filePath = path.join(UPLOAD_DIR, safeName);
     await writeFile(filePath, buffer);
     const rawText = await parseDocumentBuffer(buffer, filename, 'upload');
-    const doc = await pool.query(
-      `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,raw_text,status)
-       VALUES ($1,$2,'wechat_upload_test',$3,$4,$5,'processing') RETURNING *`,
-      [kb.id, path.basename(filename), filename, filePath, rawText]
-    );
-    const processed = await processKnowledgeDocument(doc.rows[0].id);
-    return sendJson(res, 201, { kb, document: doc.rows[0], processed });
+    const created = await createKnowledgeDocument({ kbId: kb.id, title: path.basename(filename), sourceType: 'wechat_upload_test', filename, filePath, rawText, sourceUser: fromUser, sourceChannel: 'wechat', sourceNote: '测试文件上传', versionStrategy: data.version_strategy || 'keep' });
+    return sendJson(res, 201, { kb, ...created });
   }
   if (url.pathname === '/api/finance/entries' && req.method === 'GET') {
     const q = url.searchParams.get('q');
@@ -4067,12 +4165,17 @@ async function handleApi(req, res, url) {
   const textDocMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/documents\/text$/);
   if (textDocMatch && req.method === 'POST') {
     const data = await jsonBody(req);
-    const doc = await pool.query(
-      `INSERT INTO knowledge_documents (kb_id,title,source_type,raw_text,status) VALUES ($1,$2,'text',$3,'processing') RETURNING *`,
-      [Number(textDocMatch[1]), data.title || '未命名文本', data.text || '']
-    );
-    const processed = await processKnowledgeDocument(doc.rows[0].id);
-    return sendJson(res, 201, { document: doc.rows[0], processed });
+    const created = await createKnowledgeDocument({
+      kbId: Number(textDocMatch[1]),
+      title: data.title || '未命名文本',
+      sourceType: 'text',
+      rawText: data.text || '',
+      sourceUser: data.from_user || null,
+      sourceChannel: 'web',
+      sourceNote: '网页文本入库',
+      versionStrategy: data.version_strategy || 'keep',
+    });
+    return sendJson(res, 201, created);
   }
   const uploadDocMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/documents\/upload$/);
   if (uploadDocMatch && req.method === 'POST') {
@@ -4082,13 +4185,29 @@ async function handleApi(req, res, url) {
     const safeName = `${Date.now()}_${file.filename || 'upload'}`.replace(/[^a-zA-Z0-9._-]/g, '_');
     const filePath = path.join(UPLOAD_DIR, safeName);
     await writeFile(filePath, file.buffer);
-    const rawText = await parseDocumentBuffer(file.buffer, file.filename, 'upload');
-    const doc = await pool.query(
-      `INSERT INTO knowledge_documents (kb_id,title,source_type,filename,file_path,raw_text,status) VALUES ($1,$2,'upload',$3,$4,$5,'processing') RETURNING *`,
-      [Number(uploadDocMatch[1]), fields.title || file.filename || '上传文档', file.filename || safeName, filePath, rawText]
-    );
-    const processed = await processKnowledgeDocument(doc.rows[0].id);
-    return sendJson(res, 201, { document: doc.rows[0], processed });
+    const ext = path.extname(file.filename || '').toLowerCase();
+    let ocrText = '';
+    let sourceType = ['.png', '.jpg', '.jpeg', '.webp'].includes(ext) ? 'image_ocr' : 'upload';
+    let rawText = sourceType === 'image_ocr' ? '' : await parseDocumentBuffer(file.buffer, file.filename, 'upload');
+    if (sourceType === 'image_ocr') {
+      ocrText = await resolveImageText({ content: fields.note || '', ocr_text: fields.ocr_text || '', OCRText: fields.ocr_text || '', buffer: file.buffer, content_type: file.mimeType || file.contentType || 'image/jpeg', filename: file.filename }).then((r) => r.text || '').catch(() => '');
+      rawText = [fields.note || '', ocrText].filter(Boolean).join('\n\n').trim();
+      if (!rawText) return sendJson(res, 400, { error: '图片没有识别出文本，请补充 OCR 文本或说明' });
+    }
+    const created = await createKnowledgeDocument({
+      kbId: Number(uploadDocMatch[1]),
+      title: fields.title || file.filename || '上传文档',
+      sourceType,
+      filename: file.filename || safeName,
+      filePath,
+      rawText,
+      sourceUser: fields.from_user || null,
+      sourceChannel: 'web',
+      sourceNote: fields.note || '',
+      versionStrategy: fields.version_strategy || 'keep',
+      ocrText,
+    });
+    return sendJson(res, 201, created);
   }
   const docMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)$/);
   if (docMatch && req.method === 'GET') {
@@ -4115,7 +4234,8 @@ async function handleApi(req, res, url) {
         ORDER BY created_at DESC`, [docId]),
     ]);
     if (!doc.rowCount) return sendJson(res, 404, { error: 'not found' });
-    return sendJson(res, 200, { document: doc.rows[0], chunks: chunks.rows, queries: queries.rows, duplicates: duplicates.rows });
+    const versions = await pool.query(`SELECT id,title,filename,version,version_status,created_at FROM knowledge_documents WHERE kb_id=$1 AND (title=$2 OR filename=$3 OR parent_doc_id=$4 OR id=$4) ORDER BY version DESC, created_at DESC`, [doc.rows[0].kb_id, doc.rows[0].title, doc.rows[0].filename || '', doc.rows[0].parent_doc_id || doc.rows[0].id]);
+    return sendJson(res, 200, { document: doc.rows[0], chunks: chunks.rows, queries: queries.rows, duplicates: duplicates.rows, versions: versions.rows });
   }
   const docReindexMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)\/reindex$/);
   if (docReindexMatch && req.method === 'POST') {
@@ -4140,8 +4260,21 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === '/api/knowledge/search' && req.method === 'POST') {
     const data = await jsonBody(req);
+    await assertKnowledgeAccess(data.kb_id, data.from_user || null);
     const rows = await searchKnowledge(data.kb_id, data.query || '', Number(data.top_k || 6));
-    return sendJson(res, 200, rows);
+    return sendJson(res, 200, rows.map(knowledgeSourcePayload));
+  }
+  if (url.pathname === '/api/knowledge/quality' && req.method === 'GET') {
+    const kbId = url.searchParams.get('kb_id');
+    const [summary, docs] = await Promise.all([
+      pool.query(`SELECT quality_status, COUNT(*)::int count FROM knowledge_documents WHERE ($1::int IS NULL OR kb_id=$1) GROUP BY quality_status`, [kbId ? Number(kbId) : null]),
+      pool.query(`SELECT id,kb_id,title,filename,status,quality_status,quality_issues,version,version_status,updated_at FROM knowledge_documents WHERE ($1::int IS NULL OR kb_id=$1) AND (quality_status<>'ok' OR status<>'ready') ORDER BY updated_at DESC LIMIT 200`, [kbId ? Number(kbId) : null]),
+    ]);
+    return sendJson(res, 200, { summary: summary.rows, documents: docs.rows });
+  }
+  const qualityDocMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)\/quality$/);
+  if (qualityDocMatch && req.method === 'POST') {
+    return sendJson(res, 200, await evaluateKnowledgeDocumentQuality(Number(qualityDocMatch[1])));
   }
   if (url.pathname === '/api/global-search' && req.method === 'POST') {
     const data = await jsonBody(req);
@@ -4208,10 +4341,12 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/knowledge/ask' && req.method === 'POST') {
     const data = await jsonBody(req);
     const question = data.question || '';
-    const [sources, globalBundle] = await Promise.all([
+    await assertKnowledgeAccess(data.kb_id, data.from_user || null);
+    const [rawSources, globalBundle] = await Promise.all([
       searchKnowledge(data.kb_id, question, Number(data.top_k || 6)),
       globalSearch(question, { kbId: data.kb_id || null, limit: 6 }),
     ]);
+    const sources = rawSources.map(knowledgeSourcePayload);
     const globalContext = formatGlobalSearchContext(globalBundle);
     const topic = classifyUsefulTopic(question, sources);
     if (topic) {
@@ -4247,12 +4382,7 @@ async function handleApi(req, res, url) {
         kbId: data.kb_id || null,
         fromUser: null,
         topic,
-        sources: sources.map((item) => ({
-          document_title: item.document_title,
-          filename: item.filename,
-          chunk_index: item.chunk_index,
-          content: String(item.content || '').slice(0, 240),
-        })),
+          sources: sources.map((item) => ({ ...item, content: String(item.content || '').slice(0, 240) })),
       });
     }
     const saved = await pool.query('INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *', [data.kb_id || null, question, answer, JSON.stringify(sources.slice(0, 6))]);

@@ -40,18 +40,27 @@
         <form id="textForm" class="doc-form">
           <h3>粘贴文本</h3>
           <input name="title" placeholder="标题" />
+          <select name="version_strategy"><option value="keep">保留旧版并新增</option><option value="new_version">更新为新版本</option><option value="replace">替换旧文档</option></select>
           <textarea name="text" placeholder="粘贴文本或 Markdown 内容"></textarea>
           <button class="btn btn-solid" type="submit">保存并切分</button>
         </form>
         <form id="uploadForm" class="doc-form">
           <h3>上传文件</h3>
           <input name="title" placeholder="标题，可选" />
-          <input name="file" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv" />
-          <p class="form-hint">支持 TXT / MD / PDF / DOCX / JSON / CSV，上传后自动解析、切分并写入 ChromaDB。</p>
+          <select name="version_strategy"><option value="keep">保留旧版并新增</option><option value="new_version">更新为新版本</option><option value="replace">替换旧文档</option></select>
+          <input name="note" placeholder="图片/OCR 说明，可选" />
+          <input name="file" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv,.png,.jpg,.jpeg,.webp" />
+          <p class="form-hint">支持 TXT / MD / PDF / DOCX / JSON / CSV / 图片。图片会先 OCR，再把 OCR 文本写入知识库。</p>
           <button class="btn btn-solid" type="submit">上传并入库</button>
         </form>
       </div>
       <div id="docList" class="doc-list"></div>
+    </section>
+
+    <section class="kb-panel quality-panel">
+      <div class="panel-head"><h2>知识质量中心</h2><button class="btn" id="refreshQualityBtn" type="button">刷新检测</button></div>
+      <div id="qualitySummary" class="monitor-grid"></div>
+      <div id="qualityList" class="timeline-list compact"></div>
     </section>
 
     <section class="kb-panel doc-detail-panel">

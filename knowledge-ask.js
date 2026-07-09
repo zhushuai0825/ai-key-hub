@@ -67,7 +67,7 @@ function renderResults(rows) {
     <article class="result-card">
       <strong>#${index + 1} ${escapeHtml(row.document_title || '文档片段')}</strong>
       <p>${escapeHtml(row.content)}</p>
-      <div class="meta">chunk ${row.chunk_index} · score ${row.score === null || row.score === undefined ? '--' : Number(row.score).toFixed(4)}</div>
+      <div class="meta">chunk ${row.chunk_index} · similarity ${row.similarity === null || row.similarity === undefined ? '--' : Number(row.similarity).toFixed(4)} · <a href="${escapeHtml(row.href || `/knowledge.html?doc=${row.doc_id}&chunk=${row.chunk_index}`)}">查看原文</a></div>
     </article>`).join('') : '<div class="empty-state">没有检索到内容。</div>';
 }
 
@@ -79,7 +79,7 @@ function renderAnswer(data) {
     <div class="answer-text">${escapeHtml(data.answer || '').replace(/\n/g, '<br>')}</div>
     <div class="source-list">
       <strong>引用来源</strong>
-      ${sources.length ? sources.map((item, index) => `<p>${index + 1}. ${escapeHtml(item.document_title || item.filename || '文档片段')} · chunk ${item.chunk_index}</p>`).join('') : '<p>没有引用来源。</p>'}
+      ${sources.length ? sources.map((item, index) => `<p>${index + 1}. <a href="${escapeHtml(item.href || `/knowledge.html?doc=${item.doc_id}&chunk=${item.chunk_index}`)}">${escapeHtml(item.document_title || item.filename || '文档片段')} · chunk ${item.chunk_index}</a> · similarity ${item.similarity === null || item.similarity === undefined ? '--' : Number(item.similarity).toFixed(4)}</p>`).join('') : '<p>没有引用来源。</p>'}
     </div>`;
   if (globalResults.length) {
     $('#answerBox').innerHTML += `<div class="source-list"><strong>全局搜索结果</strong>${globalResults.map((item) => `<p>${escapeHtml(item.type)} · ${escapeHtml(item.title)} · ${escapeHtml(item.meta || '')}</p>`).join('')}</div>`;
