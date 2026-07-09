@@ -1,5 +1,4 @@
 const $ = (selector) => document.querySelector(selector);
-let bases = [];
 let queries = [];
 let activeKbId = null;
 let summary = null;
@@ -25,41 +24,13 @@ function formatTime(value) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
-function activeBase() {
-  return bases.find((base) => Number(base.id) === Number(activeKbId));
-}
-
 function requireKb() {
-  if (!activeKbId) throw new Error('请先选择知识库');
+  if (!activeKbId) throw new Error('知识库尚未就绪');
 }
 
-function renderBases() {
-  $('#kbSummary').textContent = `${summary?.bases || 0} 库 · ${summary?.documents || 0} 文档 · ${summary?.chunks || 0} 向量片段`;
-  $('#baseList').innerHTML = bases.length ? bases.map((base) => `
-    <article class="base-card ${Number(base.id) === Number(activeKbId) ? 'active' : ''}" data-base="${base.id}">
-      <div class="card-main">
-        <strong>${escapeHtml(base.name)}</strong>
-        <p>${escapeHtml(base.description || '暂无描述')}</p>
-        <div class="meta">${escapeHtml(base.category)} · ${base.document_count || 0} 文档 · ${base.chunk_count || 0} 向量片段</div>
-      </div>
-    </article>`).join('') : '<div class="empty-state">还没有知识库。请先去“管理知识库”上传资料。</div>';
-  document.querySelectorAll('[data-base]').forEach((el) => {
-    el.onclick = () => {
-      activeKbId = Number(el.dataset.base);
-      renderBases();
-      renderActiveName();
-      loadQueries();
-      $('#answerBox').innerHTML = '<div class="empty-state">已切换知识库，可以开始提问。</div>';
-      $('#searchResults').innerHTML = '';
-    };
-  });
-}
-
-function renderActiveName() {
-  const current = activeBase();
-  const name = current ? current.name : '请选择知识库';
-  $('#askKbName').textContent = name;
-  $('#searchKbName').textContent = name;
+function renderSummary() {
+  $('#kbSummary').textContent = `${summary?.documents || 0} 文档 · ${summary?.chunks || 0} 向量片段`;
+  $('#askKbName').textContent = '统一知识库';
 }
 
 function renderResults(rows) {
@@ -95,12 +66,13 @@ function renderQueries() {
     </article>`).join('') : '<div class="empty-state">暂无问答历史。</div>';
 }
 
-async function loadBases() {
-  [summary, bases] = await Promise.all([api('/api/knowledge/summary'), api('/api/knowledge/bases')]);
-  if (!activeKbId && bases[0]) activeKbId = bases[0].id;
-  renderBases();
-  renderActiveName();
+async function loadPrimary() {
+  const primary = await api('/api/knowledge/primary');
+  activeKbId = primary.id;
+  summary = await api('/api/knowledge/summary');
+  renderSummary();
   await loadQueries();
+  $('#answerBox').innerHTML = '<div class="empty-state">直接提问即可，所有文档都在同一个知识库里。</div>';
 }
 
 async function loadQueries() {
@@ -133,9 +105,10 @@ $('#askForm').onsubmit = async (event) => {
     $('#answerBox').textContent = '正在检索知识库并调用 DeepSeek...';
     const data = await api('/api/knowledge/ask', { method: 'POST', body: JSON.stringify({ kb_id: activeKbId, question: payload.question }) });
     renderAnswer(data);
+    summary = await api('/api/knowledge/summary');
+    renderSummary();
     await loadQueries();
-    await loadBases();
   } catch (error) { toast(error.message); }
 };
 
-loadBases().catch((error) => toast(error.message));
+loadPrimary().catch((error) => toast(error.message));

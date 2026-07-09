@@ -103,14 +103,85 @@ body.cockpit {
   white-space: nowrap;
 }
 
-/* ── Telemetry strip (below header) ── */
+/* ── Main layout: stacked zones ── */
+
+.cockpit-body {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 24px 28px 20px;
+  min-height: 0;
+  max-width: 1280px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.hub-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 18px 16px;
+  background: rgba(15, 17, 20, 0.72);
+  border: 1px solid var(--line);
+}
+
+.hub-zone-ops {
+  border-top: 2px solid var(--accent);
+}
+
+.hub-zone-life {
+  border-top: 2px solid var(--ok);
+}
+
+.hub-zone-modules {
+  border-top: 2px solid var(--ink-2);
+}
+
+.zone-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.zone-kicker {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.zone-head h1 {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.zone-desc {
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 360px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.hub-zone-ops .zone-kicker { color: var(--accent); }
+.hub-zone-life .zone-kicker { color: var(--ok); }
+.hub-zone-modules .zone-kicker { color: var(--ink-2); }
+
+/* ── Telemetry (inside ops zone) ── */
 
 .telemetry-strip {
-  position: relative;
-  z-index: 9;
-  padding: 16px 28px;
-  border-bottom: 1px solid var(--line-bright);
-  background: rgba(9, 10, 12, 0.96);
+  padding: 0;
+  border: none;
+  background: transparent;
 }
 
 .telemetry {
@@ -124,8 +195,8 @@ body.cockpit {
 
 .tel-item {
   flex: 1;
-  min-width: 120px;
-  padding: 12px 16px;
+  min-width: 110px;
+  padding: 12px 14px;
   background: var(--surface);
 }
 
@@ -160,25 +231,34 @@ body.cockpit {
 .tel-item em.warn { color: var(--bad); }
 .tel-item em.ok { color: var(--ok); }
 
-/* ── Main layout ── */
-
-.cockpit-body {
-  position: relative;
-  z-index: 1;
-  flex: 1;
+.ops-panels {
   display: grid;
-  grid-template-columns: 1fr 300px;
-  gap: 20px;
-  padding: 20px 28px 12px;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr);
+  gap: 12px;
   min-height: 0;
 }
 
-.cockpit-main {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.ops-pulse {
+  min-height: 220px;
+}
+
+.ops-signals {
+  min-height: 220px;
+}
+
+.ops-signals .signal-feed {
+  flex: 1;
+  max-height: none;
   min-height: 0;
-  min-width: 0;
+  overflow-y: auto;
+}
+
+.life-trend {
+  min-height: 240px;
+}
+
+.fitness-chart {
+  min-height: 200px;
 }
 
 .memory-dashboard {
@@ -190,7 +270,7 @@ body.cockpit {
 .dash-panel {
   display: flex;
   flex-direction: column;
-  min-height: 280px;
+  min-height: 260px;
   background: var(--surface);
   border: 1px solid var(--line-bright);
   overflow: hidden;
@@ -299,21 +379,61 @@ body.cockpit {
 
 .dash-link:hover { color: var(--accent); }
 
-/* ── Module grid (bento) ── */
+/* ── Module groups ── */
+
+.module-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.module-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.module-group-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.module-group-head h2 {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.module-group-head p {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.module-group-meta {
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--muted);
+  white-space: nowrap;
+}
 
 .module-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: repeat(3, minmax(120px, 1fr));
-  gap: 12px;
-  min-height: 520px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  min-height: 0;
 }
 
 .module-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  padding: 18px 18px 16px;
+  min-height: 132px;
+  padding: 14px 14px 12px;
   background: var(--surface);
   border: 1px solid var(--line);
   color: inherit;
@@ -333,23 +453,17 @@ body.cockpit {
   transition: background 0.15s;
 }
 
+.module-card.online::before {
+  background: rgba(61, 154, 106, 0.55);
+}
+
+.module-card.locked::before {
+  background: rgba(107, 114, 128, 0.45);
+}
+
 .module-card:hover {
   border-color: var(--line-bright);
   background: var(--surface-2);
-}
-
-.module-card.hero {
-  grid-column: span 2;
-  grid-row: span 2;
-  padding: 24px;
-}
-
-.module-card.hero::before {
-  background: var(--accent);
-}
-
-.module-card.hero:hover {
-  border-color: var(--accent-glow);
 }
 
 .module-card.locked {
@@ -362,21 +476,11 @@ body.cockpit {
   border-color: var(--line);
 }
 
-.module-card.wide {
-  grid-column: span 2;
-}
-
 .module-icon {
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   color: var(--ink-2);
-  margin-bottom: 14px;
-}
-
-.module-card.hero .module-icon {
-  width: 48px;
-  height: 48px;
-  color: var(--accent);
+  margin-bottom: 10px;
 }
 
 .module-card.online .module-icon {
@@ -412,48 +516,37 @@ body.cockpit {
 }
 
 .module-name {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
-.module-card.hero .module-name {
-  font-size: 28px;
-  letter-spacing: -0.03em;
-  margin-top: 4px;
-}
-
 .module-desc {
-  margin-top: 6px;
+  margin-top: 4px;
   font-size: 12px;
   color: var(--muted);
   line-height: 1.45;
   max-width: 36ch;
-}
-
-.module-card.hero .module-desc {
-  font-size: 13px;
-  margin-top: 10px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .module-metric {
   margin-top: auto;
-  padding-top: 16px;
+  padding-top: 12px;
   display: flex;
   align-items: baseline;
   gap: 8px;
 }
 
 .module-metric strong {
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 600;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
   color: var(--ink);
-}
-
-.module-card.hero .module-metric strong {
-  font-size: 36px;
 }
 
 .module-metric span {
@@ -462,39 +555,23 @@ body.cockpit {
 }
 
 .module-enter {
-  margin-top: auto;
-  padding-top: 14px;
-  font-size: 12px;
+  padding-top: 8px;
+  font-size: 11px;
   font-weight: 600;
   color: var(--accent);
   letter-spacing: 0.02em;
-}
-
-.module-card.hero .module-enter::after {
-  content: ' →';
 }
 
 .module-card.locked .module-enter {
   color: var(--muted);
 }
 
-.module-spark {
-  position: absolute;
-  right: 12px;
-  bottom: 12px;
-  width: 80px;
-  height: 32px;
-  opacity: 0.5;
+.module-card:not(:has(.module-metric)) .module-enter {
+  margin-top: auto;
+  padding-top: 12px;
 }
 
-/* ── Right rail ── */
-
-.cockpit-rail {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-height: 0;
-}
+/* ── Shared panel chrome ── */
 
 .rail-card {
   background: var(--surface);
@@ -502,11 +579,6 @@ body.cockpit {
   display: flex;
   flex-direction: column;
   min-height: 0;
-}
-
-.rail-card:first-child {
-  flex: 1;
-  min-height: 180px;
 }
 
 .rail-head {
@@ -576,59 +648,6 @@ body.cockpit {
   border: 1px solid rgba(196, 92, 92, 0.3);
 }
 
-/* Topology */
-
-.rail-compact .topology {
-  padding: 12px 14px 14px;
-}
-
-.topology svg {
-  width: 100%;
-  height: auto;
-}
-
-.topo-node {
-  fill: var(--surface-2);
-  stroke: var(--line-bright);
-  stroke-width: 1;
-}
-
-.topo-node.core {
-  fill: var(--accent-dim);
-  stroke: var(--accent);
-  stroke-width: 1.5;
-}
-
-.topo-node.live {
-  fill: var(--ok-dim);
-  stroke: var(--ok);
-}
-
-.topo-line {
-  stroke: var(--line-bright);
-  stroke-width: 1;
-}
-
-.topo-line.live {
-  stroke: var(--ok);
-  stroke-dasharray: 4 3;
-  opacity: 0.7;
-}
-
-.topo-labels {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px 10px;
-  margin-top: 10px;
-  font-size: 10px;
-  color: var(--muted);
-  font-family: var(--mono);
-}
-
-.topo-labels .live {
-  color: var(--ok);
-}
-
 /* ── Footer ── */
 
 .cockpit-foot {
@@ -672,7 +691,7 @@ body.cockpit {
 /* ── Responsive ── */
 
 @media (max-width: 1100px) {
-  .cockpit-body {
+  .ops-panels {
     grid-template-columns: 1fr;
   }
 
@@ -680,13 +699,8 @@ body.cockpit {
     grid-template-columns: 1fr 1fr;
   }
 
-  .cockpit-rail {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .rail-card:first-child {
-    grid-column: span 2;
+  .module-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -700,47 +714,34 @@ body.cockpit {
 
   .cockpit-brand { min-width: 0; }
 
-  .telemetry {
-    order: 3;
-    width: 100%;
-  }
-
   .cockpit-body {
     padding: 16px;
+    gap: 20px;
+  }
+
+  .hub-zone {
+    padding: 14px;
+  }
+
+  .zone-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .zone-desc {
+    text-align: left;
+    max-width: none;
   }
 
   .module-grid {
     grid-template-columns: 1fr 1fr;
-    grid-template-rows: auto;
-    min-height: 0;
-  }
-
-  .module-card.hero {
-    grid-column: span 2;
-    grid-row: span 1;
-  }
-
-  .module-card.wide {
-    grid-column: span 2;
-  }
-
-  .cockpit-rail {
-    grid-template-columns: 1fr;
-  }
-
-  .rail-card:first-child {
-    grid-column: span 1;
   }
 }
 
 @media (max-width: 480px) {
-  .module-grid {
+  .module-grid,
+  .memory-dashboard {
     grid-template-columns: 1fr;
-  }
-
-  .module-card.hero,
-  .module-card.wide {
-    grid-column: span 1;
   }
 }
 
@@ -760,7 +761,6 @@ body.cockpit {
   .cockpit-brand strong { font-size: 13px; letter-spacing: 0.08em; }
   .cockpit-brand span { font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 58vw; }
   .cockpit-clock { font-size: 10px; padding-top: 2px; }
-  .telemetry-strip { padding: 12px 14px; }
   .telemetry {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -769,45 +769,25 @@ body.cockpit {
   .tel-item { min-width: 0; padding: 12px; }
   .tel-item strong { font-size: 18px; }
   .cockpit-body {
-    display: block;
     padding: 14px;
+    gap: 16px;
   }
+  .dash-panel { min-height: 220px; }
   .module-grid {
-    min-height: 0;
-    display: grid;
     grid-template-columns: 1fr;
-    grid-template-rows: none;
     gap: 10px;
   }
-  .module-card,
-  .module-card.hero,
-  .module-card.wide {
-    grid-column: auto;
-    grid-row: auto;
-    min-height: 132px;
-    padding: 16px;
+  .module-card {
+    min-height: 120px;
+    padding: 14px;
   }
   .module-card.locked { opacity: 0.42; }
-  .module-card.hero { min-height: 170px; }
-  .module-icon,
-  .module-card.hero .module-icon { width: 34px; height: 34px; margin-bottom: 12px; }
-  .module-name { font-size: 18px; }
-  .module-card.hero .module-name { font-size: 24px; }
-  .module-desc { font-size: 12px; max-width: 100%; }
-  .module-metric { position: static; margin-top: 16px; }
-  .module-enter { margin-top: 12px; }
-  .cockpit-side {
-    display: grid;
-    gap: 12px;
-    margin-top: 14px;
-  }
-  .side-panel { min-height: 0; }
-  .panel-head { min-height: 44px; padding: 12px 14px; }
-  .signal-feed,
-  .data-stream,
-  .budget-list { max-height: none; overflow: visible; }
-  .pulse-chart { height: 190px; }
-  .topology { display: none; }
+  .module-icon { width: 28px; height: 28px; margin-bottom: 8px; }
+  .module-name { font-size: 15px; }
+  .module-desc { max-width: 100%; }
+  .pulse-chart,
+  .fitness-chart { min-height: 180px; height: 190px; }
+  .ops-signals .signal-feed { max-height: 220px; }
   .cockpit-foot {
     flex-wrap: wrap;
     gap: 8px;

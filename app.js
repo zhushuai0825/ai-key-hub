@@ -9,38 +9,59 @@ const tooltip = {
   textStyle: { color: '#e8eaed', fontSize: 11 },
 };
 
-const MODULES = [
+const MODULE_GROUPS = [
   {
-    id: 'aitoken',
-    name: 'AIToken',
-    desc: '厂商 API Key、真实余额、一键复制',
-    icon: 'aitoken.svg',
-    href: '/keys.html',
-    status: 'online',
-    hero: true,
-    metricKey: 'key_count',
-    metricLabel: 'Key',
+    id: 'ai',
+    title: 'AI 与知识',
+    hint: 'Key、知识库、全局搜索',
+    modules: [
+      { id: 'aitoken', name: 'AIToken', desc: '厂商 API Key、真实余额、一键复制', icon: 'aitoken.svg', href: '/keys.html', status: 'online', metricKey: 'key_count', metricLabel: 'Key' },
+      { id: 'knowledge', name: 'Knowledge', desc: '统一知识库检索与 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
+      { id: 'knowledge-manage', name: '知识库管理', desc: '上传文档、质量检测与重建向量', icon: 'knowledge.svg', href: '/knowledge.html', status: 'online' },
+      { id: 'search', name: 'Global Search', desc: '跨账本、健康、知识库与企微搜索', icon: 'knowledge.svg', href: '/global-search.html', status: 'online' },
+      { id: 'gateway', name: 'Gateway', desc: '统一模型路由、限流与故障切换', icon: 'gateway.svg', status: 'planned' },
+      { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },
+    ],
   },
-  { id: 'gateway', name: 'Gateway', desc: '统一模型路由、限流与故障切换', icon: 'gateway.svg', status: 'planned' },
-  { id: 'agent', name: 'Agent Hub', desc: '多 Agent 编排与工具链调度', icon: 'agent.svg', status: 'planned' },
-  { id: 'knowledge', name: 'Knowledge', desc: '选择知识库，检索上下文并进行 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
-  { id: 'search', name: 'Global Search', desc: '搜索账本、健康、知识库、记忆、提醒与企微消息', icon: 'knowledge.svg', href: '/global-search.html', status: 'online' },
-  { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
-  { id: 'finance', name: 'Finance', desc: '账本流水、分类统计、预算与纠错', icon: 'cost.svg', href: '/finance.html', status: 'online' },
-  { id: 'profile', name: 'Profile', desc: '个人画像、长期记忆和数据偏好', icon: 'agent.svg', href: '/profile.html', status: 'online' },
-  { id: 'tasks', name: 'Task Center', desc: '提醒任务、重复提醒、完成与暂停', icon: 'tasks.svg', href: '/tasks.html', status: 'online', metricKey: 'pending_tasks', metricLabel: 'tasks' },
-  { id: 'notifications', name: 'Notifications', desc: '日报、周报、备份、重试和系统异常通知订阅', icon: 'tasks.svg', href: '/notifications.html', status: 'online' },
-  { id: 'wecom', name: 'WeCom Inbox', desc: '企微消息识别状态、失败原因与关联记录', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online' },
-  { id: 'wechat-diagnostics', name: 'WeCom Diagnostics', desc: '回调、上传链接、媒体失败与主动推送诊断', icon: 'monitor.svg', href: '/wechat-diagnostics.html', status: 'online' },
-  { id: 'fitlog', name: 'FitLog', desc: '体重、饮食、运动记录与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
-  { id: 'timeline', name: 'Timeline', desc: '账本、健康、知识库、提醒和审计统一动态', icon: 'audit.svg', href: '/timeline.html', status: 'online' },
-  { id: 'monitor', name: 'Monitor', desc: '服务健康、Chroma、企微、OCR 和网关状态', icon: 'monitor.svg', href: '/monitor.html', status: 'online', wide: true },
-  { id: 'events', name: 'System Events', desc: '备份、重试、推送和恢复导入事件中心', icon: 'audit.svg', href: '/events.html', status: 'online' },
-  { id: 'config', name: 'Config Center', desc: '环境变量、企微、OCR、网关和知识库配置状态', icon: 'gateway.svg', href: '/config.html', status: 'online' },
-  { id: 'backup', name: 'Backup', desc: '数据导出、备份和恢复入口', icon: 'audit.svg', href: '/backup.html', status: 'online' },
-  { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },
-  { id: 'audit', name: 'Audit Log', desc: '操作审计与合规留痕', icon: 'audit.svg', href: '/timeline.html?type=audit', status: 'online' },
+  {
+    id: 'life',
+    title: '生活助手',
+    hint: '数据、账本、健康、提醒、画像',
+    modules: [
+      { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
+      { id: 'finance', name: 'Finance', desc: '账本流水、分类统计与纠错', icon: 'cost.svg', href: '/finance.html', status: 'online' },
+      { id: 'fitlog', name: 'FitLog', desc: '体重、饮食、运动与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
+      { id: 'tasks', name: 'Task Center', desc: '提醒任务、重复提醒、完成与暂停', icon: 'tasks.svg', href: '/tasks.html', status: 'online', metricKey: 'pending_tasks', metricLabel: 'tasks' },
+      { id: 'profile', name: 'Profile', desc: '个人画像与长期记忆', icon: 'agent.svg', href: '/profile.html', status: 'online' },
+      { id: 'notifications', name: 'Notifications', desc: '日报、周报与系统通知订阅', icon: 'tasks.svg', href: '/notifications.html', status: 'online' },
+    ],
+  },
+  {
+    id: 'wecom',
+    title: '企业微信',
+    hint: '消息处理与链路诊断',
+    modules: [
+      { id: 'wecom', name: 'WeCom Inbox', desc: '消息识别、失败原因与关联记录', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online' },
+      { id: 'wechat-diagnostics', name: 'WeCom Diagnostics', desc: '回调、上传、媒体与推送诊断', icon: 'monitor.svg', href: '/wechat-diagnostics.html', status: 'online' },
+    ],
+  },
+  {
+    id: 'ops',
+    title: '运维与审计',
+    hint: '监控、事件、配置、备份',
+    modules: [
+      { id: 'monitor', name: 'Monitor', desc: '服务健康、Chroma、企微、OCR 状态', icon: 'monitor.svg', href: '/monitor.html', status: 'online' },
+      { id: 'events', name: 'System Events', desc: '备份、重试、推送与恢复事件', icon: 'audit.svg', href: '/events.html', status: 'online' },
+      { id: 'timeline', name: 'Timeline', desc: '账本、健康、知识库与审计动态', icon: 'audit.svg', href: '/timeline.html', status: 'online' },
+      { id: 'audit', name: 'Audit Log', desc: '系统任务与管理操作记录', icon: 'audit.svg', href: '/timeline.html?type=audit', status: 'online' },
+      { id: 'config', name: 'Config Center', desc: '环境变量与集成配置状态', icon: 'gateway.svg', href: '/config.html', status: 'online' },
+      { id: 'backup', name: 'Backup', desc: '数据导出、备份与恢复', icon: 'audit.svg', href: '/backup.html', status: 'online' },
+      { id: 'agent', name: 'Agent Hub', desc: '多 Agent 编排与工具链调度', icon: 'agent.svg', status: 'planned' },
+    ],
+  },
 ];
+
+const MODULES = MODULE_GROUPS.flatMap((group) => group.modules);
 
 let stats = { count: 0, key_count: 0, total_balance: 0, abnormal_keys: 0, today_calls: 0, today_cost: 0, avg_latency: 0 };
 let providers = [];
@@ -51,6 +72,7 @@ let pulseChart;
 let fitnessSummary = null;
 let fitnessChart;
 let knowledgeSummary = null;
+let cacheSummary = null;
 let dashboardMemory = null;
 
 function escapeHtml(value = '') {
@@ -199,22 +221,37 @@ function renderModuleCard(m) {
   const metric = m.metricKey && stats[m.metricKey] != null
     ? `<div class="module-metric"><strong>${fmtNum(stats[m.metricKey])}</strong><span>${m.metricLabel || ''}</span></div>`
     : '';
-  const classes = ['module-card', m.hero ? 'hero' : '', m.wide ? 'wide' : '', isOnline ? 'online' : 'locked'].filter(Boolean).join(' ');
+  const classes = ['module-card', isOnline ? 'online' : 'locked'].filter(Boolean).join(' ');
   return `
     <${Tag} class="${classes}" ${isOnline ? `href="${m.href}"` : ''} ${!isOnline ? 'aria-disabled="true"' : ''}>
       <div class="module-top">
-        <img class="module-icon" src="./assets/icons/${m.icon}" alt="" width="48" height="48" />
+        <img class="module-icon" src="./assets/icons/${m.icon}" alt="" width="40" height="40" />
         <span class="module-status ${m.status}">${isOnline ? '在线' : '未接入'}</span>
       </div>
       <div class="module-name">${m.name}</div>
       <p class="module-desc">${m.desc}</p>
       ${metric}
-      <div class="module-enter">${isOnline ? '进入模块' : '暂无真实数据'}</div>
+      <div class="module-enter">${isOnline ? '进入' : '规划中'}</div>
     </${Tag}>`;
 }
 
 function renderModules() {
-  $('#moduleGrid').innerHTML = MODULES.map(renderModuleCard).join('');
+  const root = $('#moduleGroups');
+  if (!root) return;
+  root.innerHTML = MODULE_GROUPS.map((group) => {
+    const online = group.modules.filter((m) => m.status === 'online').length;
+    return `
+      <section class="module-group" data-group="${group.id}">
+        <header class="module-group-head">
+          <div>
+            <h2>${group.title}</h2>
+            <p>${group.hint}</p>
+          </div>
+          <span class="module-group-meta">${online}/${group.modules.length} 在线</span>
+        </header>
+        <div class="module-grid">${group.modules.map(renderModuleCard).join('')}</div>
+      </section>`;
+  }).join('');
   const online = MODULES.filter((m) => m.status === 'online').length;
   $('#nodeStatus').textContent = `${MODULES.length} modules · ${online} online`;
 }
@@ -262,10 +299,23 @@ function renderPulseChart() {
   const series = buildUsageSeries(usageSeries);
   pulseChart.setOption({
     tooltip,
-    grid: { top: 18, right: 10, bottom: 24, left: 28 },
-    xAxis: { type: 'category', data: series.labels, axisLabel: axisStyle, axisLine: { lineStyle: gridLine }, axisTick: { show: false } },
-    yAxis: { type: 'value', axisLabel: axisStyle, splitLine: { lineStyle: gridLine } },
-    series: [{ type: 'line', smooth: true, symbol: 'none', data: series.values, lineStyle: { color: '#f4f5f6', width: 2 }, areaStyle: { color: 'rgba(255,255,255,0.06)' } }],
+    grid: { top: 18, right: 12, bottom: 28, left: 36 },
+    xAxis: {
+      type: 'category',
+      data: series.labels,
+      axisLabel: { ...axisStyle, interval: 3 },
+      axisLine: { lineStyle: gridLine },
+      axisTick: { show: false },
+    },
+    yAxis: { type: 'value', axisLabel: axisStyle, splitLine: { lineStyle: gridLine }, minInterval: 1 },
+    series: [{
+      type: 'line',
+      smooth: true,
+      symbol: 'none',
+      data: series.values,
+      lineStyle: { color: '#d4924a', width: 2 },
+      areaStyle: { color: 'rgba(212,146,74,0.12)' },
+    }],
   });
 }
 

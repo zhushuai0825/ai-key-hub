@@ -326,6 +326,7 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_action_time ON audit_logs(action, created_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_time ON audit_logs(entity_type, entity_id, created_at DESC)');
   await migratePlainApiKeysToEncrypted();
+  await ensurePrimaryKnowledgeBase();
 }
 
 function categoryCode(name = '') {
@@ -1597,18 +1598,65 @@ async function downloadWechatWorkMedia(mediaId) {
   };
 }
 
-async function ensureWechatDefaultKnowledgeBase() {
+async function ensurePrimaryKnowledgeBase() {
+  const preferredNames = ['知识库', '微信上传资料', '测试知识库'];
+  let primary = null;
   if (WECHAT_DEFAULT_KB_ID) {
-    const current = await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [WECHAT_DEFAULT_KB_ID]);
-    if (current.rowCount) return current.rows[0];
+    const byId = await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [WECHAT_DEFAULT_KB_ID]);
+    if (byId.rowCount) primary = byId.rows[0];
   }
-  const existing = await pool.query("SELECT * FROM knowledge_bases WHERE name='微信上传资料' ORDER BY id LIMIT 1");
-  if (existing.rowCount) return existing.rows[0];
-  const created = await pool.query(
-    `INSERT INTO knowledge_bases (name, description, category, status)
-     VALUES ('微信上传资料','企业微信上传的文档会自动进入这里','general','active') RETURNING *`
+  if (!primary) {
+    for (const name of preferredNames) {
+      const found = await pool.query('SELECT * FROM knowledge_bases WHERE name=$1 ORDER BY id LIMIT 1', [name]);
+      if (found.rowCount) {
+        primary = found.rows[0];
+        break;
+      }
+    }
+  }
+  if (!primary) {
+    const any = await pool.query('SELECT * FROM knowledge_bases ORDER BY id LIMIT 1');
+    if (any.rowCount) primary = any.rows[0];
+  }
+  if (!primary) {
+    const created = await pool.query(
+      `INSERT INTO knowledge_bases (name, description, category, status)
+       VALUES ('知识库','全部文档统一存放在这里','general','active') RETURNING *`
+    );
+    primary = created.rows[0];
+  } else if (primary.name !== '知识库' || primary.description !== '全部文档统一存放在这里') {
+    const renamed = await pool.query(
+      `UPDATE knowledge_bases
+       SET name='知识库', description='全部文档统一存放在这里', category='general', status='active', updated_at=now()
+       WHERE id=$1 RETURNING *`,
+      [primary.id]
+    );
+    primary = renamed.rows[0];
+  }
+
+  const others = await pool.query('SELECT id, name FROM knowledge_bases WHERE id<>$1 ORDER BY id', [primary.id]);
+  for (const other of others.rows) {
+    await pool.query('UPDATE knowledge_documents SET kb_id=$1, updated_at=now() WHERE kb_id=$2', [primary.id, other.id]);
+    await pool.query('UPDATE knowledge_chunks SET kb_id=$1 WHERE kb_id=$2', [primary.id, other.id]);
+    await pool.query('UPDATE knowledge_queries SET kb_id=$1 WHERE kb_id=$2', [primary.id, other.id]);
+    await pool.query('UPDATE assistant_answer_cache SET kb_id=$1 WHERE kb_id=$2', [primary.id, other.id]).catch(() => null);
+    await pool.query('UPDATE wechat_user_profiles SET default_kb_id=$1, updated_at=now() WHERE default_kb_id=$2', [primary.id, other.id]);
+    await pool.query('DELETE FROM knowledge_bases WHERE id=$1', [other.id]);
+    console.log(`[knowledge] merged "${other.name}" (#${other.id}) into primary #${primary.id}`);
+  }
+
+  await pool.query(
+    `UPDATE wechat_user_profiles
+     SET default_kb_id=$1, updated_at=now()
+     WHERE default_kb_id IS NULL OR default_kb_id<>$1`,
+    [primary.id]
   );
-  return created.rows[0];
+  resetKnowledgeChunkCountCache();
+  return primary;
+}
+
+async function ensureWechatDefaultKnowledgeBase() {
+  return ensurePrimaryKnowledgeBase();
 }
 
 async function getWechatUserProfile(fromUser) {
@@ -1633,39 +1681,16 @@ async function ensureWechatUserProfile(fromUser, data = {}) {
   return result.rows[0];
 }
 
-async function resolveUserKnowledgeBase(fromUser) {
-  const profile = await getWechatUserProfile(fromUser);
-  if (profile?.default_kb_id) {
-    const kb = await pool.query('SELECT * FROM knowledge_bases WHERE id=$1', [profile.default_kb_id]);
-    if (kb.rowCount) return kb.rows[0];
-  }
-  return ensureWechatDefaultKnowledgeBase();
+async function resolveUserKnowledgeBase(_fromUser) {
+  return ensurePrimaryKnowledgeBase();
 }
 
-async function findKnowledgeBaseByName(name) {
-  const clean = String(name || '').trim();
-  if (!clean) return null;
-  const exact = await pool.query('SELECT * FROM knowledge_bases WHERE name=$1 ORDER BY id LIMIT 1', [clean]);
-  if (exact.rowCount) return exact.rows[0];
-  const fuzzy = await pool.query(
-    'SELECT * FROM knowledge_bases WHERE name ILIKE $1 ORDER BY id LIMIT 1',
-    [`%${clean.replace(/[%_]/g, '')}%`]
-  );
-  return fuzzy.rows[0] || null;
+async function findKnowledgeBaseByName(_name) {
+  return ensurePrimaryKnowledgeBase();
 }
 
-async function findOrCreateKnowledgeBaseByName(name) {
-  const clean = String(name || '').trim();
-  if (!clean) return ensureWechatDefaultKnowledgeBase();
-  const existing = await findKnowledgeBaseByName(clean);
-  if (existing) return existing;
-  const baseName = clean.endsWith('知识库') ? clean : `${clean}知识库`;
-  const created = await pool.query(
-    `INSERT INTO knowledge_bases (name, description, category, status)
-     VALUES ($1, $2, 'general', 'active') RETURNING *`,
-    [baseName, '企业微信指令自动创建']
-  );
-  return created.rows[0];
+async function findOrCreateKnowledgeBaseByName(_name) {
+  return ensurePrimaryKnowledgeBase();
 }
 
 function parseKnowledgeTargetIntent(text) {
@@ -1683,12 +1708,12 @@ async function rememberNextKnowledgeUploadTarget(fromUser, content) {
   if (!fromUser) return null;
   const parsed = parseKnowledgeTargetIntent(content);
   if (!parsed) return null;
-  const kb = parsed.target ? await findOrCreateKnowledgeBaseByName(parsed.target) : await resolveUserKnowledgeBase(fromUser);
+  const kb = await ensurePrimaryKnowledgeBase();
   const uploadToken = crypto.randomBytes(18).toString('hex');
   const memory = await pool.query(
     `INSERT INTO assistant_memories (from_user, category, content, importance, source, pinned)
      VALUES ($1,'knowledge_upload_target',$2,4,'wechat',false) RETURNING *`,
-    [fromUser, JSON.stringify({ kb_id: kb.id, kb_name: kb.name, requested: parsed.target || '默认知识库', upload_token: uploadToken, expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString() })]
+    [fromUser, JSON.stringify({ kb_id: kb.id, kb_name: kb.name, requested: '知识库', upload_token: uploadToken, expires_at: new Date(Date.now() + 30 * 60 * 1000).toISOString() })]
   );
   return { kb, memory: memory.rows[0], upload_token: uploadToken };
 }
@@ -4133,16 +4158,18 @@ async function handleApi(req, res, url) {
     const result = await pool.query('DELETE FROM knowledge_categories WHERE id=$1', [Number(categoryMatch[1])]);
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
+  if (url.pathname === '/api/knowledge/primary' && req.method === 'GET') {
+    return sendJson(res, 200, await ensurePrimaryKnowledgeBase());
+  }
   if (url.pathname === '/api/knowledge/bases' && req.method === 'POST') {
-    const data = await jsonBody(req);
-    const result = await pool.query(
-      `INSERT INTO knowledge_bases (name, description, category, status) VALUES ($1,$2,$3,'active') RETURNING *`,
-      [data.name, data.description || '', data.category || 'general']
-    );
-    return sendJson(res, 201, result.rows[0]);
+    return sendJson(res, 200, await ensurePrimaryKnowledgeBase());
   }
   const kbMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)$/);
   if (kbMatch && req.method === 'DELETE') {
+    const primary = await ensurePrimaryKnowledgeBase();
+    if (Number(kbMatch[1]) === Number(primary.id)) {
+      return sendJson(res, 400, { error: '唯一知识库不能删除' });
+    }
     const deleted = await deleteKnowledgeBase(Number(kbMatch[1]));
     return sendJson(res, 200, { deleted });
   }

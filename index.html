@@ -22,28 +22,59 @@
       <time id="clock" class="cockpit-clock">--</time>
     </header>
 
-    <section class="telemetry-strip" aria-label="系统遥测">
-      <div class="telemetry" id="telemetry"></div>
-    </section>
-
     <main class="cockpit-body">
-      <div class="cockpit-main">
-        <section class="memory-dashboard" aria-label="助手数据大屏">
-          <article class="dash-panel dash-panel-cache">
-            <header class="dash-head">
-              <h2>缓存命中</h2>
-              <span class="dash-meta" id="cacheHitMeta">0 次命中</span>
+      <!-- ① 系统运维：Key / 调用 / 费用 / 预警 -->
+      <section class="hub-zone hub-zone-ops" aria-labelledby="zoneOpsTitle">
+        <header class="zone-head">
+          <div>
+            <p class="zone-kicker">01 · 系统运维</p>
+            <h1 id="zoneOpsTitle">模型与调用</h1>
+          </div>
+          <p class="zone-desc">厂商 Key、今日调用费用与余额预警</p>
+        </header>
+
+        <div class="telemetry-strip" aria-label="系统遥测">
+          <div class="telemetry" id="telemetry"></div>
+        </div>
+
+        <div class="ops-panels">
+          <article class="rail-card ops-pulse">
+            <header class="rail-head">
+              <h2>调用 Pulse</h2>
+              <span class="rail-meta">近 24h · 次</span>
             </header>
-            <div id="cacheHitFeed" class="dash-feed"></div>
-            <a class="dash-link" href="/assistant-cache.html">查看全部</a>
+            <div id="pulseChart" class="pulse-chart"></div>
           </article>
 
+          <article class="rail-card ops-signals">
+            <header class="rail-head">
+              <h2>系统预警</h2>
+              <span class="signal-count" id="alertCount">0</span>
+            </header>
+            <div id="signalFeed" class="signal-feed"></div>
+            <a class="dash-link" href="/keys.html">前往 Key 管理</a>
+          </article>
+        </div>
+      </section>
+
+      <!-- ② 生活助手：待办 / 健康 / 记账 / 缓存 -->
+      <section class="hub-zone hub-zone-life" aria-labelledby="zoneLifeTitle">
+        <header class="zone-head">
+          <div>
+            <p class="zone-kicker">02 · 生活助手</p>
+            <h1 id="zoneLifeTitle">今日动态</h1>
+          </div>
+          <p class="zone-desc">企微与网页录入的待办、健康、账本与问答缓存</p>
+        </header>
+
+        <div class="memory-dashboard" aria-label="生活助手数据">
           <article class="dash-panel dash-panel-tasks">
             <header class="dash-head">
               <h2>今日待办</h2>
               <span class="dash-meta" id="tasksMeta">0 项</span>
             </header>
             <div id="tasksFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/tasks.html">提醒中心</a>
           </article>
 
           <article class="dash-panel dash-panel-lifestyle">
@@ -61,69 +92,44 @@
               <span class="dash-meta" id="financeMonthMeta">本月 --</span>
             </header>
             <div id="financeFeed" class="dash-feed"></div>
-            <a class="dash-link" href="/assistant-cache.html">查看全部</a>
+            <a class="dash-link" href="/finance.html">账本</a>
           </article>
-        </section>
 
-        <section class="module-grid" id="moduleGrid" aria-label="功能模块"></section>
-      </div>
+          <article class="dash-panel dash-panel-cache">
+            <header class="dash-head">
+              <h2>问答缓存</h2>
+              <span class="dash-meta" id="cacheHitMeta">0 次命中</span>
+            </header>
+            <div id="cacheHitFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/assistant-cache.html">我的数据</a>
+          </article>
+        </div>
 
-      <aside class="cockpit-rail">
-        <section class="rail-card">
-          <header class="rail-head">
-            <h2>调用 Pulse</h2>
-            <span class="rail-meta">近 24h · 万次</span>
-          </header>
-          <div id="pulseChart" class="pulse-chart"></div>
-        </section>
-
-        <section class="rail-card">
-          <header class="rail-head">
-            <h2>信号</h2>
-            <span class="signal-count" id="alertCount">0</span>
-          </header>
-          <div id="signalFeed" class="signal-feed"></div>
-        </section>
-
-        <section class="rail-card">
+        <article class="rail-card life-trend">
           <header class="rail-head">
             <h2>健康趋势</h2>
-            <span class="rail-meta">最近 30 天</span>
+            <span class="rail-meta">最近 30 天 · 体重 / 摄入 / 运动 / 睡眠</span>
           </header>
-          <div id="fitnessChart" class="pulse-chart"></div>
-        </section>
+          <div id="fitnessChart" class="pulse-chart fitness-chart"></div>
+        </article>
+      </section>
 
-        <section class="rail-card rail-compact">
-          <header class="rail-head"><h2>拓扑</h2></header>
-          <div class="topology" id="topology" aria-hidden="true">
-            <svg viewBox="0 0 280 120" fill="none">
-              <circle class="topo-node core" cx="140" cy="60" r="18"/>
-              <circle class="topo-node" cx="50" cy="30" r="10"/>
-              <circle class="topo-node" cx="230" cy="30" r="10"/>
-              <circle class="topo-node" cx="50" cy="90" r="10"/>
-              <circle class="topo-node" cx="230" cy="90" r="10"/>
-              <circle class="topo-node live" cx="140" cy="18" r="8"/>
-              <line class="topo-line" x1="140" y1="42" x2="50" y2="30"/>
-              <line class="topo-line" x1="140" y1="42" x2="230" y2="30"/>
-              <line class="topo-line" x1="140" y1="78" x2="50" y2="90"/>
-              <line class="topo-line" x1="140" y1="78" x2="230" y2="90"/>
-              <line class="topo-line live" x1="140" y1="42" x2="140" y2="26"/>
-            </svg>
-            <div class="topo-labels">
-              <span class="live">AIToken</span>
-              <span>Gateway</span>
-              <span>Agent</span>
-              <span>Knowledge</span>
-              <span>Tasks</span>
-            </div>
+      <!-- ③ 功能入口：按用途分组 -->
+      <section class="hub-zone hub-zone-modules" aria-labelledby="zoneModulesTitle">
+        <header class="zone-head">
+          <div>
+            <p class="zone-kicker">03 · 功能入口</p>
+            <h1 id="zoneModulesTitle">模块导航</h1>
           </div>
-        </section>
-      </aside>
+          <p class="zone-desc">按用途分组，避免和上方数据区混在一起</p>
+        </header>
+        <div id="moduleGroups" class="module-groups"></div>
+      </section>
     </main>
 
     <footer class="cockpit-foot">
       <span class="sys-ok"><i></i>SYS ONLINE</span>
-      <span id="nodeStatus">8 modules · 1 online</span>
+      <span id="nodeStatus">--</span>
       <span class="foot-meta">v0.2 · internal</span>
     </footer>
   </div>

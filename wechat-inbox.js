@@ -2,7 +2,6 @@ const $ = (selector) => document.querySelector(selector);
 let inbox = { summary: {}, intents: [], rows: [] };
 let rules = [];
 let profiles = [];
-let knowledgeBases = [];
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<> '\"]/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', ' ': ' ', "'": '&#39;', '"': '&quot;' }[char]));
@@ -177,17 +176,16 @@ function renderRules() {
 
 function renderProfiles() {
   $('#profileCount').textContent = `${profiles.length} 人`;
-  $('#profileKbSelect').innerHTML = '<option value="">默认知识库</option>' + knowledgeBases.map((kb) => `<option value="${kb.id}">${escapeHtml(kb.name)}</option>`).join('');
   $('#profileList').innerHTML = profiles.length ? profiles.map((profile) => `
     <button type="button" class="rule-row ${profile.enabled ? '' : 'disabled'}">
       <span>${escapeHtml(profile.display_name || profile.from_user)}</span>
-      <code>${escapeHtml(profile.from_user)} · ${escapeHtml(profile.default_kb_name || '默认知识库')} · ${escapeHtml(profile.daily_report_time)}</code>
+      <code>${escapeHtml(profile.from_user)} · ${escapeHtml(profile.daily_report_time)}</code>
       <strong>${profile.enabled ? '开' : '关'}</strong>
       <em class="rule-actions">
         <i data-profile-toggle="${escapeHtml(profile.from_user)}" data-enabled="${profile.enabled ? '1' : '0'}">${profile.enabled ? '停用' : '启用'}</i>
         <i data-profile-delete="${escapeHtml(profile.from_user)}">删除</i>
       </em>
-    </button>`).join('') : '<div class="empty-state">暂无用户配置。绑定后可指定昵称、默认知识库和日报时间。</div>';
+    </button>`).join('') : '<div class="empty-state">暂无用户配置。绑定后可指定昵称和日报时间。</div>';
   document.querySelectorAll('[data-profile-toggle]').forEach((button) => {
     button.onclick = async (event) => {
       event.stopPropagation();
@@ -334,10 +332,7 @@ async function loadRules() {
 }
 
 async function loadProfiles() {
-  [profiles, knowledgeBases] = await Promise.all([
-    api('/api/wechat/user-profiles'),
-    api('/api/knowledge/bases'),
-  ]);
+  profiles = await api('/api/wechat/user-profiles');
   renderProfiles();
 }
 
@@ -376,7 +371,6 @@ $('#profileForm').onsubmit = async (event) => {
   event.preventDefault();
   try {
     const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
-    if (!payload.default_kb_id) delete payload.default_kb_id;
     await apiWrite('/api/wechat/user-profiles', { method: 'POST', body: JSON.stringify(payload) });
     event.currentTarget.reset();
     toast('用户配置已保存');

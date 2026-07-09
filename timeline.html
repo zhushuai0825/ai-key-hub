@@ -10,7 +10,7 @@
 <body class="module knowledge-page timeline-page">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>Timeline</strong><span>账本、健康、知识库、提醒、报告、企微消息与审计统一时间线</span></div>
+    <div class="module-title"><strong>Timeline</strong><span>你的操作与系统任务，按时间倒序</span></div>
     <button class="btn" id="refreshBtn" type="button">刷新</button>
   </header>
   <main class="timeline-shell">
@@ -25,7 +25,7 @@
           <option value="wechat">企微消息</option>
           <option value="task">提醒</option>
           <option value="report">日报周报</option>
-          <option value="audit">审计</option>
+          <option value="audit">系统与操作</option>
         </select>
         <select name="limit">
           <option value="80">最近 80 条</option>
@@ -34,9 +34,10 @@
         </select>
         <button class="btn btn-solid" type="submit">查看</button>
       </form>
+      <p class="timeline-hint" id="timelineHint">账本、健康、知识库、提醒、报告、企微消息与系统操作，按时间倒序。</p>
     </section>
     <section class="kb-panel timeline-list-panel">
-      <div class="panel-head"><h2>全部动态</h2><span id="updatedAt">--</span></div>
+      <div class="panel-head"><h2 id="listTitle">全部动态</h2><span id="updatedAt">--</span></div>
       <div id="timelineList" class="timeline-list"></div>
     </section>
   </main>
