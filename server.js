@@ -3110,17 +3110,17 @@ async function listSystemEvents(url) {
   const [rows, summary] = await Promise.all([
     pool.query(`
       SELECT id, actor, action, entity_type, entity_id, detail, created_at,
-             COALESCE(detail->>'level','info') level
+             COALESCE(detail->>'level','info') AS "level"
       FROM audit_logs
       ${where}
       ORDER BY created_at DESC
       LIMIT $${params.length}`, params),
     pool.query(`
-      SELECT COALESCE(detail->>'level','info') level, COUNT(*)::int count
+      SELECT COALESCE(detail->>'level','info') AS "level", COUNT(*)::int count
       FROM audit_logs
       WHERE created_at >= now() - interval '7 days'
         AND (entity_type IN ('system_event','backup','wechat_retry','wechat_push') OR action LIKE 'backup.%' OR action LIKE 'wechat.retry%' OR action LIKE 'wechat.push%')
-      GROUP BY level`),
+      GROUP BY COALESCE(detail->>'level','info')`),
   ]);
   return { summary: summary.rows, rows: rows.rows.map((row) => ({ ...row, href: systemEventHref(row) })) };
 }
