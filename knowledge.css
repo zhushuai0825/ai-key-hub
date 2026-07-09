@@ -23,6 +23,76 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .chat-reply span { display: block; margin-bottom: 6px; color: var(--muted); font-size: 11px; letter-spacing: .04em; }
 .chat-reply p { margin: 0; color: var(--ink-2); line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
 .chat-log-item .timeline-title strong { white-space: normal; }
+
+/* Compact log pages: system / audit / chat */
+.log-shell { width: min(1280px, calc(100% - 44px)); margin: 16px auto 24px; display: grid; gap: 12px; }
+.log-toolbar-panel { max-height: none; overflow: visible; }
+.log-list-panel { max-height: calc(100vh - 170px); overflow: auto; }
+.log-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.log-filter input,
+.log-filter select {
+  height: 34px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #0c0f14;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: none;
+  min-width: 0;
+}
+.log-filter input { flex: 1 1 220px; }
+.log-filter select { flex: 0 0 auto; min-width: 96px; }
+.log-filter .btn {
+  height: 34px;
+  min-height: 34px;
+  padding: 0 14px;
+  flex: 0 0 auto;
+}
+.log-filter input:focus,
+.log-filter select:focus { border-color: var(--accent); }
+.log-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: 4px;
+}
+.log-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.03);
+  color: var(--muted);
+  font-size: 11px;
+}
+.log-stat em { font-style: normal; }
+.log-stat b { color: var(--ink); font-family: var(--mono); font-size: 12px; }
+.log-stat.ok b { color: var(--ok); }
+.log-stat.warn b { color: var(--warn); }
+.log-stat.bad b { color: var(--bad); }
+.log-count {
+  margin-left: auto;
+  color: var(--muted);
+  font: 12px/1 var(--mono);
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .log-shell { width: 100%; margin: 0; padding: 12px; }
+  .log-list-panel { max-height: none; }
+  .log-filter { gap: 8px; }
+  .log-filter input,
+  .log-filter select,
+  .log-filter .btn { width: 100%; flex: 1 1 100%; }
+  .log-count { margin-left: 0; width: 100%; }
+}
 .base-form input, .base-form select, .doc-form input, .search-form input, .category-form input, .doc-form textarea, .ask-form textarea { width: 100%; padding: 10px 11px; color: var(--ink); background: #0c0f14; border: 1px solid var(--line); border-radius: var(--radius); outline: none; }
 .base-form input:focus, .base-form select:focus, .doc-form input:focus, .search-form input:focus, .category-form input:focus, .doc-form textarea:focus, .ask-form textarea:focus { border-color: var(--accent); }
 .doc-form textarea { min-height: 250px; resize: vertical; }

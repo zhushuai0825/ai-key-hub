@@ -7,43 +7,34 @@
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page">
+<body class="module knowledge-page log-page">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
     <div class="module-title">
       <strong>审计日志</strong>
-      <span>谁在网页里做了什么：改 Key、纠错、删除、导入等</span>
+      <span>网页管理操作记录</span>
     </div>
     <button class="btn" id="refreshBtn" type="button">刷新</button>
   </header>
 
-  <main class="config-shell">
-    <section class="kb-panel">
-      <div class="panel-head">
-        <h2>说明</h2>
-        <span>不含企微聊天原文</span>
-      </div>
-      <p class="timeline-hint" style="padding-top:14px">
-        这里记录<strong>管理操作</strong>。企微发的消息请看「企微消息」或 WeCom Inbox；
-        备份/重试/推送等自动任务请看「系统日志」。
-      </p>
-      <form id="filterForm" class="doc-form">
-        <div class="form-grid">
-          <label>关键词
-            <input name="q" placeholder="例如 api_key / finance / wechat_message / 用户名" />
-          </label>
-          <label>数量
-            <input name="limit" type="number" min="20" max="300" value="120" />
-          </label>
-        </div>
+  <main class="log-shell">
+    <section class="kb-panel log-toolbar-panel">
+      <form id="filterForm" class="log-filter">
+        <input name="q" placeholder="搜索操作 / 用户 / api_key / finance" />
+        <select name="limit">
+          <option value="60">60 条</option>
+          <option value="120" selected>120 条</option>
+          <option value="200">200 条</option>
+        </select>
         <button class="btn btn-solid" type="submit">查询</button>
+        <span class="log-count" id="auditCount">0 条</span>
       </form>
     </section>
 
-    <section class="kb-panel">
+    <section class="kb-panel log-list-panel">
       <div class="panel-head">
         <h2>操作记录</h2>
-        <span id="auditCount">0 条</span>
+        <span>不含企微聊天原文</span>
       </div>
       <div id="auditList" class="timeline-list compact">
         <div class="empty-state">正在加载…</div>

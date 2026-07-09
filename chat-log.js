@@ -73,16 +73,13 @@ function relationText(row) {
 
 function renderSummary(summary = {}) {
   const items = [
-    ['今日/24h', summary.last_24h || 0],
-    ['已回复', summary.replied || 0],
-    ['已记录', summary.recorded || 0],
-    ['失败', summary.failed || 0],
+    ['24h', summary.last_24h || 0, ''],
+    ['已回复', summary.replied || 0, 'ok'],
+    ['已记录', summary.recorded || 0, 'ok'],
+    ['失败', summary.failed || 0, summary.failed ? 'bad' : ''],
   ];
-  $('#summaryGrid').innerHTML = items.map(([label, count]) => `
-    <article class="monitor-card">
-      <div><strong>${escapeHtml(label)}</strong><span class="state-pill ${label === '失败' && count ? 'bad' : 'ok'}">${count}</span></div>
-      <p>企微消息统计</p>
-    </article>`).join('');
+  $('#summaryGrid').innerHTML = items.map(([label, count, tone]) => `
+    <span class="log-stat ${tone}"><em>${escapeHtml(label)}</em><b>${count}</b></span>`).join('');
 }
 
 function renderRows(rows = []) {

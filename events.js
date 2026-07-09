@@ -43,10 +43,7 @@ function queryString() {
 function renderSummary(summary = []) {
   const map = Object.fromEntries(summary.map((item) => [item.level, item.count]));
   $('#summaryGrid').innerHTML = ['error', 'warn', 'info'].map((level) => `
-    <article class="monitor-card">
-      <div><strong>${escapeHtml(levelLabel(level))}</strong><span class="state-pill ${levelClass(level)}">${map[level] || 0}</span></div>
-      <p>最近 7 天 ${escapeHtml(level)} 事件</p>
-    </article>`).join('');
+    <span class="log-stat ${levelClass(level)}"><em>${escapeHtml(levelLabel(level))}</em><b>${map[level] || 0}</b></span>`).join('');
 }
 
 function eventActionButtons(row) {
