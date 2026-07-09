@@ -53,6 +53,7 @@ const MODULE_GROUPS = [
     modules: [
       { id: 'events', name: '系统日志', desc: '备份、失败重试、推送等自动任务记录', icon: 'audit.svg', href: '/events.html', status: 'online' },
       { id: 'audit', name: '审计日志', desc: '网页管理操作：改 Key、纠错、删除、导入', icon: 'audit.svg', href: '/audit.html', status: 'online' },
+      { id: 'chat-log', name: '对话日志', desc: '企微发过的消息与系统回复，如「你好」', icon: 'tasks.svg', href: '/chat-log.html', status: 'online' },
       { id: 'monitor', name: '系统监控', desc: '数据库、Chroma、企微、OCR、网关健康', icon: 'monitor.svg', href: '/monitor.html', status: 'online' },
       { id: 'config', name: '配置中心', desc: '环境变量与集成配置是否已设置', icon: 'gateway.svg', href: '/config.html', status: 'online' },
       { id: 'backup', name: '备份恢复', desc: '导出、本地备份与导入恢复', icon: 'audit.svg', href: '/backup.html', status: 'online' },
