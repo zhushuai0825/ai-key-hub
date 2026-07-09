@@ -263,10 +263,10 @@ function render() {
   const type = $('#filterForm').type.value;
   $('#timelineCount').textContent = `${rows.length} 条`;
   $('#updatedAt').textContent = formatTime(new Date());
-  $('#listTitle').textContent = type === 'audit' ? '系统与操作记录' : type ? `${typeMeta(type).label}动态` : '全部动态';
+  $('#listTitle').textContent = type === 'audit' ? '管理操作摘要' : type ? `${typeMeta(type).label}动态` : '全部动态';
   $('#timelineHint').textContent = type === 'audit'
-    ? '这里主要是系统任务和管理操作（备份、重试、改 Key、纠错）。企微原文请看「企微消息」筛选，或打开 WeCom Inbox。'
-    : '账本、健康、知识库、提醒、报告、企微消息与系统操作，按时间倒序。';
+    ? '这里是时间线里的操作摘要。完整系统日志看「系统日志」，完整管理操作看「审计日志」；企微原文看「企微消息」。'
+    : '账本、健康、知识库、提醒、报告、企微消息与管理操作摘要，按时间倒序。';
 
   $('#timelineList').innerHTML = rows.length ? rows.map((row) => {
     const meta = typeMeta(row.type);

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>审计日志 · 管理操作记录</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title">
+      <strong>审计日志</strong>
+      <span>谁在网页里做了什么：改 Key、纠错、删除、导入等</span>
+    </div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+
+  <main class="config-shell">
+    <section class="kb-panel">
+      <div class="panel-head">
+        <h2>说明</h2>
+        <span>不含企微聊天原文</span>
+      </div>
+      <p class="timeline-hint" style="padding-top:14px">
+        这里记录<strong>管理操作</strong>。企微发的消息请看「企微消息」或 WeCom Inbox；
+        备份/重试/推送等自动任务请看「系统日志」。
+      </p>
+      <form id="filterForm" class="doc-form">
+        <div class="form-grid">
+          <label>关键词
+            <input name="q" placeholder="例如 api_key / finance / wechat_message / 用户名" />
+          </label>
+          <label>数量
+            <input name="limit" type="number" min="20" max="300" value="120" />
+          </label>
+        </div>
+        <button class="btn btn-solid" type="submit">查询</button>
+      </form>
+    </section>
+
+    <section class="kb-panel">
+      <div class="panel-head">
+        <h2>操作记录</h2>
+        <span id="auditCount">0 条</span>
+      </div>
+      <div id="auditList" class="timeline-list compact">
+        <div class="empty-state">正在加载…</div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./audit.js"></script>
+</body>
+</html>
