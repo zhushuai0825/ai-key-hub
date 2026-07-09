@@ -49,7 +49,12 @@ function intentLabel(intent) {
   if (intent.startsWith('memory')) return '记忆';
   if (intent.startsWith('chat')) return '聊天';
   if (intent.startsWith('report')) return '报告';
+  if (intent.startsWith('control')) return '修正';
   return intent;
+}
+
+function correctionLabel(status) {
+  return { none: '', corrected: '已纠错', undone: '已撤销' }[status] || status || '';
 }
 
 function relationText(row) {
@@ -220,9 +225,10 @@ function renderRows() {
             <span class="status-pill">${escapeHtml(intentLabel(row.intent))}</span>
             <span class="status-pill">${escapeHtml(row.msg_type)}</span>
             ${mediaLabel(row) ? `<span class="status-pill">${escapeHtml(mediaLabel(row))}</span>` : ''}
+            ${correctionLabel(row.correction_status) ? `<span class="status-pill warn">${escapeHtml(correctionLabel(row.correction_status))}</span>` : ''}
           </div>
         </div>
-        <div class="meta">${formatTime(row.received_at)} · ${escapeHtml(row.from_user || '未知用户')} · ${escapeHtml(row.intent || 'unknown')}</div>
+        <div class="meta">#${row.id} · ${formatTime(row.received_at)} · ${escapeHtml(row.from_user || '未知用户')} · ${escapeHtml(row.intent || 'unknown')}${row.retry_count ? ` · 重试 ${row.retry_count} 次` : ''}</div>
         ${row.raw_payload?.pending_media_id ? `<div class="inbox-relations"><span>补充说明：已关联 ${escapeHtml(row.raw_payload.pending_media_type || '媒体')} #${escapeHtml(row.raw_payload.pending_media_id)}</span></div>` : ''}
         ${row.media_error ? `<p class="error-text">${escapeHtml(row.media_error)}</p>` : ''}
         ${relations.length ? `<div class="inbox-relations">${relations.map((item) => `<span>${escapeHtml(item)}</span>`).join('')}</div>` : '<div class="inbox-relations muted"><span>未关联业务记录</span></div>'}
@@ -234,6 +240,10 @@ function renderRows() {
         </details>
         <div class="row-actions inbox-actions">
           <button type="button" data-reprocess="${row.id}" ${row.msg_type !== 'text' ? 'disabled' : ''}>重新处理</button>
+          <button type="button" data-undo="${row.id}" ${relations.length ? '' : 'disabled'}>撤销</button>
+          <button type="button" data-correct-category="${row.id}" ${row.finance_entry_id ? '' : 'disabled'}>改分类</button>
+          <button type="button" data-correct-direction="${row.id}" ${row.finance_entry_id ? '' : 'disabled'}>改方向</button>
+          <button type="button" data-save-memory="${row.id}">存为记忆</button>
           <button class="danger-btn" type="button" data-delete-links="${row.id}" ${relations.length ? '' : 'disabled'}>删除关联记录</button>
         </div>
       </article>`;
@@ -254,6 +264,48 @@ function renderRows() {
       try {
         await apiWrite(`/api/wechat/inbox/${button.dataset.deleteLinks}/links`, { method: 'DELETE' });
         toast('关联记录已删除');
+        await loadInbox();
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-undo]').forEach((button) => {
+    button.onclick = async () => {
+      if (!confirm('撤销这条消息写入的账本/健康/知识库/提醒记录？')) return;
+      try {
+        await apiWrite(`/api/wechat/inbox/${button.dataset.undo}/undo`, { method: 'POST' });
+        toast('已撤销关联记录');
+        await loadInbox();
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-correct-category]').forEach((button) => {
+    button.onclick = async () => {
+      const value = prompt('改成哪个分类？例如 餐饮、交通、项目/工具、收入');
+      if (!value) return;
+      try {
+        await apiWrite(`/api/wechat/inbox/${button.dataset.correctCategory}/correct`, { method: 'POST', body: JSON.stringify({ action: 'finance_category', value }) });
+        toast('分类已修改，并已学习规则');
+        await loadInbox();
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-save-memory]').forEach((button) => {
+    button.onclick = async () => {
+      const value = prompt('保存成长期记忆的内容');
+      if (!value) return;
+      try {
+        await apiWrite(`/api/wechat/inbox/${button.dataset.saveMemory}/correct`, { method: 'POST', body: JSON.stringify({ action: 'save_memory', category: 'general', value }) });
+        toast('已保存为长期记忆');
+      } catch (error) { toast(error.message); }
+    };
+  });
+  document.querySelectorAll('[data-correct-direction]').forEach((button) => {
+    button.onclick = async () => {
+      const value = prompt('改成收入还是支出？', '支出');
+      if (!value) return;
+      try {
+        await apiWrite(`/api/wechat/inbox/${button.dataset.correctDirection}/correct`, { method: 'POST', body: JSON.stringify({ action: 'finance_direction', value: value.includes('收') ? 'income' : 'expense' }) });
+        toast('方向已修改');
         await loadInbox();
       } catch (error) { toast(error.message); }
     };
@@ -294,6 +346,19 @@ $('#filterForm').onsubmit = (event) => {
   loadInbox().catch((error) => toast(error.message));
 };
 $('#refreshBtn').onclick = () => loadInbox().catch((error) => toast(error.message));
+
+const retryBtn = document.createElement('button');
+retryBtn.type = 'button';
+retryBtn.className = 'btn';
+retryBtn.textContent = '重试失败消息';
+retryBtn.onclick = async () => {
+  try {
+    const result = await apiWrite('/api/wechat/inbox/retry-failed', { method: 'POST', body: JSON.stringify({ limit: 10, notify: false }) });
+    toast(`已处理 ${result.processed || 0} 条失败消息`);
+    await loadInbox();
+  } catch (error) { toast(error.message); }
+};
+$('#refreshBtn').insertAdjacentElement('afterend', retryBtn);
 
 $('#ruleForm').onsubmit = async (event) => {
   event.preventDefault();

@@ -2,7 +2,7 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createReadStream, existsSync } from 'node:fs';
-import { mkdir, writeFile, readFile as readLocalFile } from 'node:fs/promises';
+import { mkdir, writeFile, readFile as readLocalFile, readdir, unlink, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -48,6 +48,14 @@ const KEY_ENCRYPTION_SECRET = process.env.KEY_ENCRYPTION_SECRET || '';
 const GATEWAY_TIMEOUT_MS = Number(process.env.GATEWAY_TIMEOUT_MS || 30000);
 const GATEWAY_RETRY_COUNT = Number(process.env.GATEWAY_RETRY_COUNT || 1);
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
+const BACKUP_DIR = process.env.BACKUP_DIR || path.join(__dirname, 'backups');
+const AUTO_BACKUP_ENABLED = process.env.AUTO_BACKUP_ENABLED !== 'false';
+const AUTO_BACKUP_INTERVAL_MS = Number(process.env.AUTO_BACKUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
+const AUTO_BACKUP_KEEP = Number(process.env.AUTO_BACKUP_KEEP || 20);
+const WECHAT_FAILED_RETRY_ENABLED = process.env.WECHAT_FAILED_RETRY_ENABLED !== 'false';
+const WECHAT_FAILED_RETRY_MS = Number(process.env.WECHAT_FAILED_RETRY_MS || 5 * 60 * 1000);
+const WECHAT_FAILED_RETRY_NOTIFY = process.env.WECHAT_FAILED_RETRY_NOTIFY === 'true';
+const WECHAT_ADMIN_USER = process.env.WECHAT_ADMIN_USER || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
 const chroma = new ChromaClient({ path: CHROMA_URL });
 
@@ -116,6 +124,63 @@ async function migratePlainApiKeysToEncrypted() {
   }
 }
 
+const DEFAULT_NOTIFICATION_SUBSCRIPTIONS = [
+  { notification_type: 'daily_report', title: '每日总结', description: '每天发送健康、账本、任务摘要', send_time: '21:30', enabled: true },
+  { notification_type: 'weekly_report', title: '每周总结', description: '每周发送阶段性总结', send_time: '09:00', enabled: true },
+  { notification_type: 'task_reminder', title: '任务提醒', description: '到期提醒任务主动推送', send_time: '', enabled: true },
+  { notification_type: 'backup_success', title: '备份成功', description: '自动备份成功后通知管理员', send_time: '', enabled: false },
+  { notification_type: 'backup_failed', title: '备份失败', description: '自动备份失败后通知管理员', send_time: '', enabled: true },
+  { notification_type: 'wechat_retry_failed', title: '企微失败消息', description: '消息多次重试失败后通知管理员', send_time: '', enabled: true },
+  { notification_type: 'system_error', title: '系统异常', description: '推送失败、服务异常等系统事件', send_time: '', enabled: true },
+];
+
+async function ensureDefaultNotificationSubscriptions() {
+  for (const item of DEFAULT_NOTIFICATION_SUBSCRIPTIONS) {
+    await pool.query(
+      `INSERT INTO notification_subscriptions (notification_type,title,description,to_user,send_time,enabled)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (notification_type) DO NOTHING`,
+      [item.notification_type, item.title, item.description, WECHAT_ADMIN_USER, item.send_time, item.enabled]
+    );
+  }
+}
+
+async function listNotificationSubscriptions() {
+  await ensureDefaultNotificationSubscriptions();
+  const [notifications, reports] = await Promise.all([
+    pool.query('SELECT * FROM notification_subscriptions ORDER BY enabled DESC, notification_type ASC'),
+    pool.query('SELECT * FROM assistant_report_subscriptions ORDER BY enabled DESC, report_type ASC, from_user ASC'),
+  ]);
+  return { notifications: notifications.rows, report_subscriptions: reports.rows };
+}
+
+async function updateNotificationSubscription(type, data = {}) {
+  await ensureDefaultNotificationSubscriptions();
+  const result = await pool.query(
+    `UPDATE notification_subscriptions
+     SET to_user=COALESCE($1,to_user), send_time=COALESCE($2,send_time), enabled=COALESCE($3,enabled), quiet_hours=COALESCE($4,quiet_hours), updated_at=now()
+     WHERE notification_type=$5 RETURNING *`,
+    [data.to_user === undefined ? null : String(data.to_user || ''), data.send_time === undefined ? null : String(data.send_time || ''), data.enabled === undefined ? null : Boolean(data.enabled), data.quiet_hours === undefined ? null : String(data.quiet_hours || ''), type]
+  );
+  return result.rows[0] || null;
+}
+
+async function notificationEnabled(type) {
+  await ensureDefaultNotificationSubscriptions();
+  const result = await pool.query('SELECT * FROM notification_subscriptions WHERE notification_type=$1 AND enabled=true LIMIT 1', [type]);
+  return result.rows[0] || null;
+}
+
+async function notifyBySubscription(type, content, { fallbackUser = WECHAT_ADMIN_USER } = {}) {
+  const sub = await notificationEnabled(type);
+  if (!sub) return { skipped: true, reason: 'notification disabled', type };
+  const toUser = sub.to_user || fallbackUser;
+  if (!toUser) return { skipped: true, reason: 'missing to_user', type };
+  const sent = await sendWechatWorkTextMessage(toUser, content);
+  await pool.query('UPDATE notification_subscriptions SET last_sent_at=now(), updated_at=now() WHERE notification_type=$1', [type]);
+  return { ok: true, type, to_user: toUser, sent };
+}
+
 function actorFromReq(req) {
   const header = req.headers.authorization || '';
   if (!header.startsWith('Basic ')) return 'system';
@@ -143,6 +208,10 @@ async function auditLog(req, { action, entityType = '', entityId = '', detail = 
   ).catch((error) => console.error('[audit]', error.message));
 }
 
+async function systemEvent(action, { entityType = 'system_event', entityId = '', level = 'info', detail = {} } = {}) {
+  await auditLog(null, { action, entityType, entityId, actor: 'system', detail: { level, ...detail } });
+}
+
 async function initDb() {
   const sql = await readFile(path.join(__dirname, 'db/schema.sql'), 'utf8');
   await pool.query(sql);
@@ -163,6 +232,10 @@ async function initDb() {
   await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS media_id TEXT');
   await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS media_status TEXT');
   await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS media_error TEXT');
+  await pool.query("ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS correction_status TEXT NOT NULL DEFAULT 'none'");
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS retry_count INTEGER NOT NULL DEFAULT 0');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ');
+  await pool.query('ALTER TABLE wechat_messages ADD COLUMN IF NOT EXISTS last_error TEXT');
   await pool.query("DELETE FROM api_keys WHERE api_key LIKE 'sk-demo-%' OR remark ILIKE '%演示%'");
   await pool.query(`
     INSERT INTO knowledge_categories (code, name) VALUES
@@ -180,6 +253,21 @@ async function initDb() {
   await pool.query('ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS weekday INTEGER');
   await pool.query('ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS enabled BOOLEAN NOT NULL DEFAULT true');
   await pool.query('ALTER TABLE assistant_report_subscriptions ADD COLUMN IF NOT EXISTS last_sent_at TIMESTAMPTZ');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS notification_subscriptions (
+      id SERIAL PRIMARY KEY,
+      notification_type TEXT UNIQUE NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      channel TEXT NOT NULL DEFAULT 'wechat_work',
+      to_user TEXT NOT NULL DEFAULT '',
+      send_time TEXT NOT NULL DEFAULT '',
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      quiet_hours TEXT NOT NULL DEFAULT '',
+      last_sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
   await pool.query("ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS goal_type TEXT NOT NULL DEFAULT 'weight'");
   await pool.query('ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS target_value NUMERIC(12, 2) NOT NULL DEFAULT 0');
   await pool.query("ALTER TABLE assistant_goals ADD COLUMN IF NOT EXISTS unit TEXT NOT NULL DEFAULT ''");
@@ -219,7 +307,9 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_reports_user_type ON assistant_reports(from_user, report_type, created_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_messages_status_time ON wechat_messages(parse_status, received_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_messages_intent_time ON wechat_messages(intent, received_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_messages_retry ON wechat_messages(parse_status, next_retry_at) WHERE parse_status=$$failed$$');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_report_subscriptions_due ON assistant_report_subscriptions(enabled, report_type, send_time)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_enabled ON notification_subscriptions(enabled, notification_type)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_goals_user_type ON assistant_goals(from_user, goal_type, enabled)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_assistant_rules_lookup ON assistant_rules(rule_type, enabled, priority)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_pending_media_user_status ON pending_media_messages(from_user, status, expires_at DESC)');
@@ -426,6 +516,258 @@ async function buildRecentWechatContext(fromUser, limit = 8) {
   return result.rows.reverse().map((row) => `- #${row.id} 用户：${row.content || '[非文本]'}；处理：${row.intent}/${row.parse_status}；回复：${String(row.reply_text || '').slice(0, 80)}`).join('\n');
 }
 
+function likeQuery(text) {
+  return `%${String(text || '').trim().replace(/[%_]/g, '')}%`;
+}
+
+async function globalSearch(query, { fromUser = null, kbId = null, limit = 6 } = {}) {
+  const clean = String(query || '').trim();
+  const like = likeQuery(clean);
+  const safeLimit = Math.min(20, Math.max(3, Number(limit || 6)));
+  const broad = !clean || /这个月|本月|最近|趋势|总结|分析|花.*多|消费|体重|睡眠|运动|任务|提醒/.test(clean);
+  const [knowledge, finance, fitness, memories, tasks, wechat, reports] = await Promise.all([
+    clean ? searchKnowledge(kbId, clean, safeLimit).catch(() => []) : Promise.resolve([]),
+    pool.query(`
+      SELECT id, direction, amount, category, title, note, occurred_at
+      FROM finance_entries
+      WHERE ($2::text IS NULL OR source_user=$2 OR source_user IS NULL)
+        AND ($4::boolean OR title ILIKE $1 OR note ILIKE $1 OR category ILIKE $1 OR raw_message ILIKE $1)
+        AND ($4::boolean=false OR occurred_at >= now() - interval '90 days')
+      ORDER BY occurred_at DESC LIMIT $3`, [like, fromUser || null, safeLimit, broad]),
+    pool.query(`
+      SELECT id, entry_type, recorded_at, weight_kg, meal_type, food_text, workout_type, duration_min, sleep_hours, note
+      FROM fitness_entries
+      WHERE ($2::text IS NULL OR source_user=$2 OR source_user IS NULL)
+        AND ($4::boolean OR entry_type ILIKE $1 OR meal_type ILIKE $1 OR food_text ILIKE $1 OR workout_type ILIKE $1 OR note ILIKE $1)
+        AND ($4::boolean=false OR recorded_at >= now() - interval '90 days')
+      ORDER BY recorded_at DESC LIMIT $3`, [like, fromUser || null, safeLimit, broad]),
+    pool.query(`
+      SELECT id, category, content, importance, pinned, updated_at
+      FROM assistant_memories
+      WHERE ($2::text IS NULL OR from_user=$2 OR from_user IS NULL)
+        AND category <> 'knowledge_upload_target'
+        AND ($4::boolean OR content ILIKE $1 OR category ILIKE $1)
+      ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT $3`, [like, fromUser || null, safeLimit, broad]),
+    pool.query(`
+      SELECT id, title, note, status, remind_at, recurrence, created_at
+      FROM assistant_tasks
+      WHERE ($2::text IS NULL OR from_user=$2 OR from_user IS NULL)
+        AND ($4::boolean OR title ILIKE $1 OR note ILIKE $1 OR status ILIKE $1)
+      ORDER BY COALESCE(remind_at, created_at) DESC LIMIT $3`, [like, fromUser || null, safeLimit, broad]),
+    pool.query(`
+      SELECT id, content, intent, parse_status, reply_text, received_at
+      FROM wechat_messages
+      WHERE ($2::text IS NULL OR from_user=$2)
+        AND ($4::boolean OR content ILIKE $1 OR intent ILIKE $1 OR reply_text ILIKE $1)
+      ORDER BY received_at DESC LIMIT $3`, [like, fromUser || null, safeLimit, broad]),
+    pool.query(`
+      SELECT id, report_type, title, content, created_at
+      FROM assistant_reports
+      WHERE ($2::text IS NULL OR from_user=$2 OR from_user IS NULL)
+        AND ($4::boolean OR title ILIKE $1 OR content ILIKE $1 OR report_type ILIKE $1)
+      ORDER BY created_at DESC LIMIT $3`, [like, fromUser || null, safeLimit, broad]),
+  ]);
+  const groups = {
+    knowledge: knowledge.map((row) => ({ type: 'knowledge', id: row.chunk_id || row.id, title: row.document_title || row.filename || '知识片段', preview: row.content, time: row.created_at, meta: `chunk ${row.chunk_index}` })),
+    finance: finance.rows.map((row) => ({ type: 'finance', id: row.id, title: `${row.direction === 'income' ? '收入' : '支出'} ¥${Number(row.amount).toFixed(2)} ${row.title}`, preview: `${row.category} ${row.note || ''}`.trim(), time: row.occurred_at, meta: row.category })),
+    fitness: fitness.rows.map((row) => ({ type: 'fitness', id: row.id, title: formatFitnessContextRow(row), preview: row.note || row.food_text || '', time: row.recorded_at, meta: row.entry_type })),
+    memories: memories.rows.map((row) => ({ type: 'memory', id: row.id, title: row.content, preview: `重要度 ${row.importance}`, time: row.updated_at, meta: row.category })),
+    tasks: tasks.rows.map((row) => ({ type: 'task', id: row.id, title: row.title, preview: row.note || '', time: row.remind_at || row.created_at, meta: `${row.status}/${row.recurrence}` })),
+    wechat: wechat.rows.map((row) => ({ type: 'wechat', id: row.id, title: row.content || row.intent, preview: row.reply_text || '', time: row.received_at, meta: `${row.intent}/${row.parse_status}` })),
+    reports: reports.rows.map((row) => ({ type: 'report', id: row.id, title: row.title, preview: String(row.content || '').slice(0, 240), time: row.created_at, meta: row.report_type })),
+  };
+  return { query: clean, groups, items: Object.values(groups).flat().sort((a, b) => new Date(b.time || 0) - new Date(a.time || 0)) };
+}
+
+function formatGlobalSearchContext(bundle, maxItems = 14) {
+  const items = (bundle?.items || []).slice(0, maxItems);
+  if (!items.length) return '暂无全局搜索结果';
+  return items.map((item, index) => `【全局${index + 1}/${item.type}】${item.title}\n${String(item.preview || '').slice(0, 260)}\n${item.meta || ''}`).join('\n\n');
+}
+
+async function buildPersonalProfile(fromUser = null) {
+  const [memories, finance, fitness, tasks, reports] = await Promise.all([
+    pool.query(`SELECT category, content, importance, pinned, updated_at FROM assistant_memories WHERE ($1::text IS NULL OR from_user=$1 OR from_user IS NULL) AND category <> 'knowledge_upload_target' ORDER BY pinned DESC, importance DESC, updated_at DESC LIMIT 60`, [fromUser || null]),
+    pool.query(`SELECT category, direction, COUNT(*)::int count, COALESCE(SUM(amount),0)::float amount FROM finance_entries WHERE ($1::text IS NULL OR source_user=$1 OR source_user IS NULL) GROUP BY category,direction ORDER BY amount DESC LIMIT 20`, [fromUser || null]),
+    pool.query(`SELECT entry_type, COUNT(*)::int count, MAX(recorded_at) latest FROM fitness_entries WHERE ($1::text IS NULL OR source_user=$1 OR source_user IS NULL) GROUP BY entry_type`, [fromUser || null]),
+    pool.query(`SELECT status, COUNT(*)::int count FROM assistant_tasks WHERE ($1::text IS NULL OR from_user=$1 OR from_user IS NULL) GROUP BY status`, [fromUser || null]),
+    pool.query(`SELECT report_type, title, created_at FROM assistant_reports WHERE ($1::text IS NULL OR from_user=$1 OR from_user IS NULL) ORDER BY created_at DESC LIMIT 5`, [fromUser || null]),
+  ]);
+  const lines = [];
+  if (memories.rows.length) lines.push('长期记忆：', ...memories.rows.slice(0, 12).map((m) => `- [${m.category}/重要度${m.importance}] ${m.content}`));
+  if (finance.rows.length) lines.push('消费/收入画像：', ...finance.rows.slice(0, 10).map((f) => `- ${f.direction === 'income' ? '收入' : '支出'} ${f.category}: ${f.count} 笔，¥${Number(f.amount).toFixed(2)}`));
+  if (fitness.rows.length) lines.push('健康记录画像：', ...fitness.rows.map((f) => `- ${f.entry_type}: ${f.count} 条，最近 ${formatShanghaiDateTime(f.latest)}`));
+  if (tasks.rows.length) lines.push('任务状态：', ...tasks.rows.map((t) => `- ${t.status}: ${t.count} 条`));
+  return { from_user: fromUser, summary: lines.join('\n') || '暂无足够数据生成画像', memories: memories.rows, finance: finance.rows, fitness: fitness.rows, tasks: tasks.rows, reports: reports.rows };
+}
+
+async function deepseekGlobalAnswer(question, bundle, profile) {
+  const apiKey = await deepseekApiKey();
+  const context = formatGlobalSearchContext(bundle, 18);
+  if (!apiKey) return `暂未配置 AI。已找到 ${bundle.items.length} 条相关数据。\n\n${context}`;
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        { role: 'system', content: '你是个人数据中枢助手。根据全局搜索结果和个人画像回答问题。优先跨账本、健康、知识库、任务、企业微信消息、报告做综合分析；能计算趋势就给结论和依据；必须说明引用了哪些类型的数据，不要编造未提供的事实。回答适合手机阅读，先给结论，再给依据和建议。' },
+        { role: 'user', content: `问题：${question}\n\n【个人画像】\n${profile?.summary || '暂无'}\n\n【全局搜索结果】\n${context}` },
+      ],
+      temperature: 0.35,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek global answer failed: ${response.status}`);
+  return body?.choices?.[0]?.message?.content || '没有生成回答。';
+}
+
+const BACKUP_TABLES = ['providers','api_keys','models','usage_logs','fitness_entries','fitness_ai_reports','knowledge_bases','knowledge_categories','knowledge_documents','knowledge_chunks','knowledge_queries','finance_entries','wechat_messages','assistant_answer_cache','assistant_memories','assistant_tasks','assistant_reports','assistant_report_subscriptions','assistant_goals','assistant_rules','pending_media_messages','wechat_user_profiles','audit_logs'];
+
+async function exportBackup() {
+  const data = {};
+  for (const table of BACKUP_TABLES) data[table] = (await pool.query(`SELECT * FROM ${table} ORDER BY id ASC`)).rows;
+  return { exported_at: new Date().toISOString(), version: 1, tables: data };
+}
+
+async function previewBackupImport(bundle = {}) {
+  const tables = bundle.tables || {};
+  const result = { exported_at: bundle.exported_at || null, version: bundle.version || null, tables: {}, warnings: [] };
+  for (const table of BACKUP_TABLES) {
+    const rows = Array.isArray(tables[table]) ? tables[table] : [];
+    let existing = 0;
+    let conflicts = 0;
+    if (rows.length) {
+      existing = Number((await pool.query(`SELECT COUNT(*)::int count FROM ${table}`)).rows[0].count || 0);
+      const ids = rows.map((row) => Number(row.id)).filter(Boolean);
+      if (ids.length) conflicts = Number((await pool.query(`SELECT COUNT(*)::int count FROM ${table} WHERE id=ANY($1::int[])`, [ids])).rows[0].count || 0);
+    }
+    result.tables[table] = { incoming: rows.length, existing, conflicts, insertable: Math.max(0, rows.length - conflicts) };
+  }
+  if (!bundle.tables || typeof bundle.tables !== 'object') result.warnings.push('备份文件缺少 tables 字段');
+  return result;
+}
+
+async function importBackup(bundle = {}, { mode = 'skip' } = {}) {
+  const tables = bundle.tables || {};
+  if (!tables || typeof tables !== 'object') throw new Error('无效备份文件：缺少 tables');
+  const client = await pool.connect();
+  const summary = {};
+  try {
+    await client.query('BEGIN');
+    for (const table of BACKUP_TABLES) {
+      const rows = Array.isArray(tables[table]) ? tables[table] : [];
+      let inserted = 0;
+      let skipped = 0;
+      let replaced = 0;
+      for (const row of rows) {
+        const columns = Object.keys(row).filter((key) => row[key] !== undefined);
+        if (!columns.length) continue;
+        const placeholders = columns.map((_, index) => `$${index + 1}`).join(',');
+        const values = columns.map((key) => row[key]);
+        const updateColumns = columns.filter((key) => key !== 'id');
+        const conflictSql = mode === 'replace' && updateColumns.length
+          ? `DO UPDATE SET ${updateColumns.map((key) => `"${key}"=EXCLUDED."${key}"`).join(',')}`
+          : 'DO NOTHING';
+        const sql = `INSERT INTO ${table} (${columns.map((key) => `"${key}"`).join(',')}) VALUES (${placeholders}) ON CONFLICT (id) ${conflictSql}`;
+        const saved = await client.query(sql, values);
+        if (saved.rowCount) inserted += 1;
+        else skipped += 1;
+        if (mode === 'replace' && saved.rowCount && row.id) replaced += 1;
+      }
+      const maxId = await client.query(`SELECT COALESCE(MAX(id),0)::int max_id FROM ${table}`);
+      await client.query(`SELECT setval(pg_get_serial_sequence('${table}','id'), GREATEST($1, 1), true)`, [maxId.rows[0].max_id]);
+      summary[table] = { incoming: rows.length, inserted, skipped, replaced };
+    }
+    await client.query('COMMIT');
+    return { ok: true, mode, summary };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function listLocalBackups() {
+  await mkdir(BACKUP_DIR, { recursive: true });
+  const files = await readdir(BACKUP_DIR).catch(() => []);
+  const rows = [];
+  for (const file of files.filter((name) => name.endsWith('.json'))) {
+    const filePath = path.join(BACKUP_DIR, file);
+    const info = await stat(filePath).catch(() => null);
+    if (info) rows.push({ file, path: filePath, size: info.size, created_at: info.birthtime, updated_at: info.mtime });
+  }
+  return rows.sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at));
+}
+
+async function pruneLocalBackups() {
+  const backups = await listLocalBackups();
+  const keep = Math.max(1, AUTO_BACKUP_KEEP || 20);
+  const removed = [];
+  for (const backup of backups.slice(keep)) {
+    await unlink(backup.path).catch(() => null);
+    removed.push(backup.file);
+  }
+  return removed;
+}
+
+async function createLocalBackup({ reason = 'manual', notify = false } = {}) {
+  const backup = await exportBackup();
+  await mkdir(BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const file = `ai-key-hub-${reason}-${stamp}.json`;
+  const filePath = path.join(BACKUP_DIR, file);
+  await writeFile(filePath, JSON.stringify(backup, null, 2));
+  const info = await stat(filePath);
+  const removed = await pruneLocalBackups();
+  const summary = { ok: true, file, path: filePath, size: info.size, tables: summarizeBackupTables(backup), removed };
+  if (notify) {
+    await notifyBySubscription('backup_success', `自动备份完成：${file}\n大小：${Math.round(info.size / 1024)}KB\n保留：${AUTO_BACKUP_KEEP} 份`).catch((error) => console.error('[backup] notify failed:', error.message));
+  }
+  return summary;
+}
+
+function summarizeBackupTables(backup) {
+  return Object.fromEntries(Object.entries(backup.tables || {}).map(([table, rows]) => [table, Array.isArray(rows) ? rows.length : 0]));
+}
+
+let lastAutoBackup = null;
+let lastFailedRetry = null;
+
+async function runAutoBackup(reason = 'auto') {
+  if (!AUTO_BACKUP_ENABLED) return { skipped: true, reason: 'auto backup disabled' };
+  try {
+    lastAutoBackup = await createLocalBackup({ reason, notify: reason === 'auto' });
+    await systemEvent('backup.auto_success', { entityType: 'backup', entityId: lastAutoBackup.file, level: 'info', detail: { reason, size: lastAutoBackup.size, removed: lastAutoBackup.removed?.length || 0 } });
+    console.log(`[backup] ${lastAutoBackup.file}`);
+    return lastAutoBackup;
+  } catch (error) {
+    lastAutoBackup = { ok: false, error: error.message, checked_at: new Date().toISOString() };
+    console.error('[backup] auto failed:', error.message);
+    await systemEvent('backup.auto_failed', { entityType: 'backup', level: 'error', detail: { reason, error: error.message } });
+    await notifyBySubscription('backup_failed', `自动备份失败：${error.message}`).catch(() => {});
+    return lastAutoBackup;
+  }
+}
+
+async function runFailedWechatRetry(reason = 'auto') {
+  if (!WECHAT_FAILED_RETRY_ENABLED) return { skipped: true, reason: 'failed retry disabled' };
+  try {
+    lastFailedRetry = await retryFailedWechatMessages({ limit: 10, notify: WECHAT_FAILED_RETRY_NOTIFY });
+    lastFailedRetry.checked_at = new Date().toISOString();
+    await systemEvent('wechat.retry_checked', { entityType: 'wechat_retry', level: lastFailedRetry.rows?.some((row) => !row.ok) ? 'warn' : 'info', detail: { reason, processed: lastFailedRetry.processed, failed: lastFailedRetry.rows?.filter((row) => !row.ok).length || 0 } });
+    if (lastFailedRetry.processed) console.log(`[wechat] retry ${lastFailedRetry.processed} failed messages`);
+    return lastFailedRetry;
+  } catch (error) {
+    lastFailedRetry = { ok: false, error: error.message, checked_at: new Date().toISOString(), reason };
+    console.error('[wechat] retry failed:', error.message);
+    await systemEvent('wechat.retry_failed', { entityType: 'wechat_retry', level: 'error', detail: { reason, error: error.message } });
+    await notifyBySubscription('system_error', `企业微信失败消息重试异常：${error.message}`).catch(() => {});
+    return lastFailedRetry;
+  }
+}
+
 function compactAssistantContext({ userContext = '', memoryContext = '', knowledgeSources = [], recentContext = '', understood = null, error = null } = {}) {
   const knowledge = knowledgeSources.map((item, index) => ({
     index: index + 1,
@@ -525,7 +867,7 @@ ${kbContext}`,
   return safeJsonFromAi(body?.choices?.[0]?.message?.content || '{}');
 }
 
-async function deepseekWechatAssistant(question, userContext, knowledgeSources) {
+async function deepseekWechatAssistant(question, userContext, knowledgeSources, globalContext = '') {
   const apiKey = await deepseekApiKey();
   if (!apiKey) {
     return userContext
@@ -547,7 +889,7 @@ async function deepseekWechatAssistant(question, userContext, knowledgeSources) 
         },
         {
           role: 'user',
-          content: `用户问题：${question}\n\n【用户个人记录】\n${userContext || '暂无'}\n\n【知识库资料】\n${kbContext}`,
+          content: `用户问题：${question}\n\n【用户个人记录】\n${userContext || '暂无'}\n\n【知识库资料】\n${kbContext}\n\n【全局搜索结果：账本/健康/记忆/提醒/企微/报告】\n${globalContext || '暂无'}`,
         },
       ],
       temperature: 0.4,
@@ -618,12 +960,14 @@ async function handleWechatChat(content, fromUser) {
   }
   const lightContext = !previewTopic && !looksLikeQuery(content);
   const searchKb = await shouldSearchKnowledge(content, previewTopic);
-  const [userContext, knowledgeSources] = await Promise.all([
+  const [userContext, knowledgeSources, globalBundle] = await Promise.all([
     buildWechatUserContext(fromUser, { light: lightContext }),
     searchKb ? searchKnowledge(kbId, content, 5) : Promise.resolve([]),
+    globalSearch(content, { fromUser, kbId, limit: 5 }),
   ]);
   const topic = classifyUsefulTopic(content, knowledgeSources);
-  const answer = await deepseekWechatAssistant(content, userContext, knowledgeSources);
+  const globalContext = formatGlobalSearchContext(globalBundle);
+  const answer = await deepseekWechatAssistant(content, userContext, knowledgeSources, globalContext);
   const reply = truncateWechatReply(answer);
   if (topic) {
     await saveAssistantCache({
@@ -843,7 +1187,7 @@ async function invalidateAssistantCacheForUser(fromUser) {
     WHERE channel='wechat' AND from_user=$1 AND pinned=false AND topic IN ('fitness', 'finance')`, [fromUser]);
 }
 
-async function deepseekKnowledgeAnswer(question, sources) {
+async function deepseekKnowledgeAnswer(question, sources, globalContext = '') {
   const apiKey = await deepseekApiKey();
   if (!apiKey) throw new Error('DeepSeek Key not configured');
   const context = sources.map((item, index) => `【资料${index + 1}】${item.content}`).join('\n\n');
@@ -853,8 +1197,8 @@ async function deepseekKnowledgeAnswer(question, sources) {
     body: JSON.stringify({
       model: 'deepseek-chat',
       messages: [
-        { role: 'system', content: '你是知识库问答助手。只能根据提供资料回答；资料不足时明确说明。回答要简洁，并列出引用资料编号。' },
-        { role: 'user', content: `问题：${question}\n\n资料：\n${context}` },
+        { role: 'system', content: '你是个人数据中枢问答助手。优先根据知识库资料回答，也可以结合全局搜索到的账本、健康、记忆、提醒和企微消息。资料不足时明确说明。回答要简洁，并列出引用资料编号或全局来源。' },
+        { role: 'user', content: `问题：${question}\n\n知识库资料：\n${context}\n\n全局搜索结果：\n${globalContext || '暂无'}` },
       ],
       temperature: 0.2,
     }),
@@ -1060,7 +1404,11 @@ async function sendWechatWorkTextMessage(toUser, content) {
     }),
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok || body.errcode) throw new Error(body.errmsg || `企业微信发消息失败：${response.status}`);
+  if (!response.ok || body.errcode) {
+    await systemEvent('wechat.push_failed', { entityType: 'wechat_push', entityId: toUser, level: 'error', detail: { to_user: toUser, errcode: body.errcode, errmsg: body.errmsg || `HTTP ${response.status}` } });
+    throw new Error(body.errmsg || `企业微信发消息失败：${response.status}`);
+  }
+  await systemEvent('wechat.push_success', { entityType: 'wechat_push', entityId: toUser, level: 'info', detail: { to_user: toUser, msgtype: 'text' } });
   return body;
 }
 
@@ -1647,6 +1995,39 @@ async function saveAssistantMemory({ fromUser, category = 'general', content, im
   return result.rows[0];
 }
 
+async function upsertProfileMemory({ fromUser, category, content, importance = 3, source = 'profile_auto' }) {
+  const clean = String(content || '').trim();
+  if (!clean) return null;
+  const existing = await pool.query(
+    `SELECT id FROM assistant_memories
+     WHERE COALESCE(from_user,'')=COALESCE($1,'') AND category=$2 AND content=$3
+     LIMIT 1`,
+    [fromUser || null, category, clean]
+  );
+  if (existing.rowCount) {
+    const updated = await pool.query('UPDATE assistant_memories SET importance=GREATEST(importance,$1), source=$2, updated_at=now() WHERE id=$3 RETURNING *', [importance, source, existing.rows[0].id]);
+    return updated.rows[0];
+  }
+  return saveAssistantMemory({ fromUser, category, content: clean, importance, source });
+}
+
+async function autoUpdatePersonalProfile({ fromUser, financeEntry, fitnessEntry, tasks = [], memories = [], content = '' } = {}) {
+  const writes = [];
+  if (financeEntry) {
+    writes.push(upsertProfileMemory({ fromUser, category: 'finance_profile', content: `常用消费分类：${financeEntry.category}`, importance: 3 }));
+    if (Number(financeEntry.amount || 0) >= 100) writes.push(upsertProfileMemory({ fromUser, category: 'finance_profile', content: `较大${financeEntry.direction === 'income' ? '收入' : '支出'}关注：${financeEntry.title} ¥${Number(financeEntry.amount).toFixed(2)}`, importance: 4 }));
+  }
+  if (fitnessEntry) {
+    if (fitnessEntry.entry_type === 'weight' && fitnessEntry.weight_kg) writes.push(upsertProfileMemory({ fromUser, category: 'fitness_profile', content: `最近体重记录：${Number(fitnessEntry.weight_kg).toFixed(1)}kg`, importance: 4 }));
+    if (fitnessEntry.entry_type === 'sleep' && fitnessEntry.sleep_hours) writes.push(upsertProfileMemory({ fromUser, category: 'fitness_profile', content: `睡眠记录习惯：${Number(fitnessEntry.sleep_hours).toFixed(1)}小时`, importance: 3 }));
+    if (fitnessEntry.entry_type === 'workout' && fitnessEntry.workout_type) writes.push(upsertProfileMemory({ fromUser, category: 'fitness_profile', content: `常见运动类型：${fitnessEntry.workout_type}`, importance: 3 }));
+  }
+  for (const task of tasks || []) writes.push(upsertProfileMemory({ fromUser, category: 'task_profile', content: `关注事项：${task.title}`, importance: 3 }));
+  if (/服务器|项目|代码|部署|github|GitHub|知识库/.test(content)) writes.push(upsertProfileMemory({ fromUser, category: 'work_profile', content: `近期关注项目/工具：${String(content).slice(0, 80)}`, importance: 3 }));
+  if (memories?.length) writes.push(upsertProfileMemory({ fromUser, category: 'memory_profile', content: `主动沉淀过长期记忆 ${memories.length} 条`, importance: 2 }));
+  await Promise.all(writes);
+}
+
 function shanghaiTimestampOrNull(value) {
   const text = String(value || '').trim();
   if (!text) return null;
@@ -1973,6 +2354,77 @@ function actionReplySuffix(executed) {
   return parts.length ? `\n\n${parts.join('，')}。` : '';
 }
 
+function buildWechatConfirmation({ messageId, intent, status, financeEntry, fitnessEntry, knowledgeDocument, tasks = [], memories = [] } = {}) {
+  if (!['recorded', 'processing'].includes(status)) return '';
+  const lines = [];
+  if (financeEntry) lines.push(`账本：${financeEntry.direction === 'income' ? '收入' : '支出'} ¥${Number(financeEntry.amount).toFixed(2)}，${financeEntry.category}，${financeEntry.title}`);
+  if (fitnessEntry) lines.push(`健康：${formatFitnessContextRow(fitnessEntry)}`);
+  if (knowledgeDocument) lines.push(`知识库：${knowledgeDocument.title || knowledgeDocument.filename || `文档 #${knowledgeDocument.id}`}`);
+  for (const task of tasks || []) lines.push(`提醒：${task.title}${task.remind_at ? `，${formatShanghaiDateTime(new Date(task.remind_at))}` : ''}`);
+  if (memories?.length) lines.push(`记忆：${memories.length} 条`);
+  if (!lines.length) return '';
+  const idText = messageId ? `#${messageId}` : '这条消息';
+  return `\n\n确认：已写入 ${lines.join('；')}。\n可回复“撤销${idText}”“改${idText}分类为餐饮”“把${idText}存为记忆：内容”进行修正。`;
+}
+
+function parseWechatControlCommand(text = '') {
+  const clean = String(text || '').trim();
+  let match = clean.match(/^(?:撤销|删除)(?:消息)?#?(\d+)?$/);
+  if (match) return { type: 'undo', messageId: match[1] ? Number(match[1]) : null };
+  match = clean.match(/^改(?:消息)?#?(\d+)?(?:的)?分类(?:为|成)(.+)$/);
+  if (match) return { type: 'finance_category', messageId: match[1] ? Number(match[1]) : null, value: match[2].trim() };
+  match = clean.match(/^改(?:消息)?#?(\d+)?(?:的)?方向(?:为|成)(收入|支出)$/);
+  if (match) return { type: 'finance_direction', messageId: match[1] ? Number(match[1]) : null, value: match[2] === '收入' ? 'income' : 'expense' };
+  match = clean.match(/^把(?:消息)?#?(\d+)?存为记忆[:：](.+)$/);
+  if (match) return { type: 'save_memory', messageId: match[1] ? Number(match[1]) : null, value: match[2].trim() };
+  return null;
+}
+
+async function latestActionableWechatMessage(fromUser) {
+  const result = await pool.query(`
+    SELECT * FROM wechat_messages
+    WHERE from_user=$1 AND parse_status IN ('recorded','processing')
+      AND (finance_entry_id IS NOT NULL OR fitness_entry_id IS NOT NULL OR knowledge_document_id IS NOT NULL
+        OR EXISTS (SELECT 1 FROM assistant_tasks t WHERE t.source_message_id=wechat_messages.id))
+    ORDER BY received_at DESC, id DESC
+    LIMIT 1`, [fromUser || null]);
+  return result.rows[0] || null;
+}
+
+async function resolveControlTarget(command, fromUser) {
+  if (command.messageId) return getWechatInboxRow(command.messageId);
+  const latest = await latestActionableWechatMessage(fromUser);
+  return latest ? getWechatInboxRow(latest.id) : null;
+}
+
+async function applyWechatControlCommand(command, fromUser) {
+  const row = await resolveControlTarget(command, fromUser);
+  if (!row) return { ok: false, reply: '没有找到可操作的上一条记录，请带上消息编号，例如“撤销#12”。' };
+  if (command.type === 'undo') {
+    const deleted = await deleteWechatMessageLinks(row);
+    await pool.query("UPDATE wechat_messages SET correction_status='undone', reply_text=reply_text || $1 WHERE id=$2", [`\n已撤销关联记录：${deleted.map((item) => item.type).join('、') || '无'}。`, row.id]);
+    return { ok: true, reply: `已撤销 #${row.id} 的关联记录。`, row: await getWechatInboxRow(row.id) };
+  }
+  if (command.type === 'finance_category' && row.finance_entry_id) {
+    await pool.query('UPDATE finance_entries SET category=$1 WHERE id=$2', [command.value || '未分类', row.finance_entry_id]);
+    const pattern = learnPatternFromText(row.content || row.finance_title || '');
+    if (pattern) await saveAssistantRule({ fromUser: row.from_user, ruleType: 'finance_category', pattern, value: command.value || '未分类', source: 'wechat_correction' });
+    await pool.query("UPDATE wechat_messages SET correction_status='corrected' WHERE id=$1", [row.id]);
+    return { ok: true, reply: `已把 #${row.id} 的账本分类改为：${command.value}，并学习为规则。`, row: await getWechatInboxRow(row.id) };
+  }
+  if (command.type === 'finance_direction' && row.finance_entry_id) {
+    await pool.query('UPDATE finance_entries SET direction=$1 WHERE id=$2', [command.value === 'income' ? 'income' : 'expense', row.finance_entry_id]);
+    await pool.query("UPDATE wechat_messages SET correction_status='corrected' WHERE id=$1", [row.id]);
+    return { ok: true, reply: `已把 #${row.id} 的账本方向改为：${command.value === 'income' ? '收入' : '支出'}。`, row: await getWechatInboxRow(row.id) };
+  }
+  if (command.type === 'save_memory') {
+    await saveAssistantMemory({ fromUser: row.from_user, category: 'general', content: command.value || row.content, importance: 3, source: 'wechat_correction' });
+    await pool.query("UPDATE wechat_messages SET correction_status='corrected' WHERE id=$1", [row.id]);
+    return { ok: true, reply: `已把 #${row.id} 保存为长期记忆。`, row: await getWechatInboxRow(row.id) };
+  }
+  return { ok: false, reply: `#${row.id} 不支持这个修正，可能没有关联账本记录。` };
+}
+
 function isKnowledgeUploadIntent(text) {
   return Boolean(parseKnowledgeTargetIntent(text)) || /^(存入|保存到?|上传到?)\s*知识库/.test(String(text || '').trim());
 }
@@ -2055,13 +2507,23 @@ async function recognizeImageTextWithVision({ buffer, contentType, hint = '' }) 
   return text;
 }
 
-async function recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, intent, status, reply, sourceMsgType = null, mediaId = null, mediaStatus = null, mediaError = null }) {
+async function recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, tasks = [], memories = [], intent, status, reply, sourceMsgType = null, mediaId = null, mediaStatus = null, mediaError = null }) {
   const message = await pool.query(
     `INSERT INTO wechat_messages (from_user, to_user, msg_type, content, raw_payload, finance_entry_id, fitness_entry_id, knowledge_document_id, intent, parse_status, reply_text, source_msg_type, media_id, media_status, media_error)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
     [from_user || null, to_user || null, msg_type || 'text', content || '', JSON.stringify(raw_payload), financeEntry?.id || null, fitnessEntry?.id || null, knowledgeDocument?.id || null, intent, status, reply, sourceMsgType, mediaId, mediaStatus, mediaError]
   );
-  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, knowledge_document: knowledgeDocument, reply };
+  const messageId = message.rows[0].id;
+  if (tasks?.length) await pool.query('UPDATE assistant_tasks SET source_message_id=$1 WHERE id=ANY($2::int[])', [messageId, tasks.map((task) => task.id)]);
+  if (memories?.length) await pool.query('UPDATE assistant_memories SET source_message_id=$1 WHERE id=ANY($2::int[])', [messageId, memories.map((memory) => memory.id)]);
+  if (status === 'recorded') await autoUpdatePersonalProfile({ fromUser: from_user, financeEntry, fitnessEntry, tasks, memories, content }).catch((error) => console.error('[profile_auto]', error.message));
+  const confirmation = buildWechatConfirmation({ messageId, intent, status, financeEntry, fitnessEntry, knowledgeDocument, tasks, memories });
+  const finalReply = truncateWechatReply(`${reply || ''}${confirmation}`);
+  if (finalReply !== reply) {
+    const updated = await pool.query('UPDATE wechat_messages SET reply_text=$1 WHERE id=$2 RETURNING *', [finalReply, messageId]);
+    message.rows[0] = updated.rows[0];
+  }
+  return { message: message.rows[0], finance_entry: financeEntry, fitness_entry: fitnessEntry, knowledge_document: knowledgeDocument, tasks, memories, reply: finalReply };
 }
 
 async function processWechatFileUploadAsync(payload) {
@@ -2165,11 +2627,19 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
   let financeEntry = null;
   let fitnessEntry = null;
   let knowledgeDocument = null;
+  let tasks = [];
+  let memories = [];
   let intent = 'unknown';
   let status = 'ignored';
   let reply = '你好，我是你的助手。可以记录体重/消费/运动/睡眠，也可以问我「这个月花了多少」「最近体重趋势」或知识库问题。';
   let assistantContext = null;
-  if (msg_type === 'file' && raw_payload.media_id) {
+  const controlCommand = msg_type === 'text' ? parseWechatControlCommand(content) : null;
+  if (controlCommand) {
+    const controlled = await applyWechatControlCommand(controlCommand, from_user);
+    intent = controlled.ok ? `control.${controlCommand.type}` : 'control.failed';
+    status = controlled.ok ? 'recorded' : 'failed';
+    reply = controlled.reply;
+  } else if (msg_type === 'file' && raw_payload.media_id) {
     intent = 'knowledge.upload_pending';
     status = 'processing';
     reply = '收到文件，正在写入知识库，请稍候…';
@@ -2221,6 +2691,8 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         financeEntry = executed.financeEntry;
         fitnessEntry = executed.fitnessEntry;
         knowledgeDocument = executed.knowledgeDocuments?.[0]?.document || null;
+        tasks = executed.tasks || [];
+        memories = executed.memories || [];
         intent = executed.intents[0] || 'chat.assistant';
         status = executed.intents.length ? 'recorded' : 'replied';
         reply = truncateWechatReply(`${understood.reply || '已处理。'}${actionReplySuffix(executed)}`);
@@ -2254,7 +2726,7 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
     }
   }
   if (assistantContext) raw_payload = { ...raw_payload, assistant_context: assistantContext };
-  return recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, intent, status, reply, sourceMsgType, mediaId, mediaStatus, mediaError });
+  return recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, tasks, memories, intent, status, reply, sourceMsgType, mediaId, mediaStatus, mediaError });
 }
 
 async function createFitnessReport(entry) {
@@ -2619,9 +3091,55 @@ async function listTimeline(url) {
   return result.rows;
 }
 
+async function listSystemEvents(url) {
+  const level = url.searchParams.get('level') || '';
+  const q = url.searchParams.get('q') || '';
+  const limit = Math.min(300, Math.max(20, Number(url.searchParams.get('limit') || 120)));
+  const params = [];
+  const filters = [`(entity_type IN ('system_event','backup','wechat_retry','wechat_push') OR action LIKE 'backup.%' OR action LIKE 'wechat.retry%' OR action LIKE 'wechat.push%')`];
+  if (level) {
+    params.push(level);
+    filters.push(`detail->>'level'=$${params.length}`);
+  }
+  if (q) {
+    params.push(`%${q}%`);
+    filters.push(`(action ILIKE $${params.length} OR entity_type ILIKE $${params.length} OR entity_id ILIKE $${params.length} OR detail::text ILIKE $${params.length})`);
+  }
+  params.push(limit);
+  const where = `WHERE ${filters.join(' AND ')}`;
+  const [rows, summary] = await Promise.all([
+    pool.query(`
+      SELECT id, actor, action, entity_type, entity_id, detail, created_at,
+             COALESCE(detail->>'level','info') level
+      FROM audit_logs
+      ${where}
+      ORDER BY created_at DESC
+      LIMIT $${params.length}`, params),
+    pool.query(`
+      SELECT COALESCE(detail->>'level','info') level, COUNT(*)::int count
+      FROM audit_logs
+      WHERE created_at >= now() - interval '7 days'
+        AND (entity_type IN ('system_event','backup','wechat_retry','wechat_push') OR action LIKE 'backup.%' OR action LIKE 'wechat.retry%' OR action LIKE 'wechat.push%')
+      GROUP BY level`),
+  ]);
+  return { summary: summary.rows, rows: rows.rows.map((row) => ({ ...row, href: systemEventHref(row) })) };
+}
+
+function systemEventHref(row = {}) {
+  const action = String(row.action || '');
+  const entityType = String(row.entity_type || '');
+  const entityId = String(row.entity_id || '');
+  if (entityType === 'backup' || action.startsWith('backup.')) return '/backup.html';
+  if (entityType === 'wechat_retry' || action.startsWith('wechat.retry')) return '/wechat-inbox.html?status=failed';
+  if (entityType === 'wechat_push' || action.startsWith('wechat.push')) return '/wechat-diagnostics.html';
+  if (entityType === 'wechat_message' && entityId) return `/wechat-inbox.html?q=${encodeURIComponent(`#${entityId}`)}`;
+  if (entityType === 'assistant_memory' && entityId) return `/profile.html?memory=${encodeURIComponent(entityId)}`;
+  return '/monitor.html';
+}
+
 async function systemStatus() {
   const started = Date.now();
-  const status = {
+ const status = {
     ok: true,
     checked_at: new Date().toISOString(),
     app: { port: PORT, auth_enabled: Boolean(AUTH_USER && AUTH_PASSWORD) },
@@ -2637,19 +3155,51 @@ async function systemStatus() {
     },
     ocr: { configured: Boolean(OCR_API_KEY && OCR_BASE_URL && OCR_MODEL), base_url: Boolean(OCR_BASE_URL), model: OCR_MODEL || '' },
     gateway: { enabled: Boolean(GATEWAY_TOKEN), timeout_ms: GATEWAY_TIMEOUT_MS, retry_count: GATEWAY_RETRY_COUNT },
+    backup: { enabled: AUTO_BACKUP_ENABLED, dir: BACKUP_DIR, interval_ms: AUTO_BACKUP_INTERVAL_MS, keep: AUTO_BACKUP_KEEP, last: lastAutoBackup },
   };
   try {
     const db = await pool.query('SELECT now() now');
-    const [errors, gateway, audits] = await Promise.all([
+    const [errors, gateway, audits, uploadFailures, retryQueue, backups, recentProblems, duplicateDocs, recentUploads] = await Promise.all([
       pool.query("SELECT COUNT(*)::int count FROM wechat_messages WHERE parse_status IN ('failed','needs_clarification') AND received_at >= now() - interval '24 hours'"),
       pool.query("SELECT COUNT(*)::int calls, COUNT(*) FILTER (WHERE status='failed')::int failed FROM usage_logs WHERE created_at >= now() - interval '24 hours'"),
       pool.query('SELECT action, actor, entity_type, entity_id, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 20'),
+      pool.query("SELECT COUNT(*)::int count FROM wechat_messages WHERE intent ILIKE 'knowledge.upload%' AND parse_status='failed' AND received_at >= now() - interval '24 hours'"),
+      pool.query("SELECT COUNT(*)::int count FROM wechat_messages WHERE parse_status='failed' AND COALESCE(retry_count,0)<3"),
+      listLocalBackups().catch(() => []),
+      pool.query(`
+        SELECT id, from_user, msg_type, intent, parse_status, media_status, media_error, reply_text, received_at
+        FROM wechat_messages
+        WHERE parse_status='failed' OR media_error IS NOT NULL
+        ORDER BY received_at DESC, id DESC
+        LIMIT 20`),
+      pool.query(`
+        SELECT kb_id, title, filename, COUNT(*)::int count, MAX(created_at) latest
+        FROM knowledge_documents
+        GROUP BY kb_id, title, filename
+        HAVING COUNT(*) > 1
+        ORDER BY latest DESC
+        LIMIT 20`),
+      pool.query(`
+        SELECT id, title, filename, source_type, status, error_message, created_at
+        FROM knowledge_documents
+        WHERE source_channel='wechat' OR source_type ILIKE 'wechat%'
+        ORDER BY created_at DESC
+        LIMIT 20`),
     ]);
     status.database = { ok: true, now: db.rows[0].now };
     status.wechat.recent_problem_messages = errors.rows[0].count;
+    status.wechat.upload_failures_24h = uploadFailures.rows[0].count;
+    status.wechat.retry_queue = retryQueue.rows[0].count;
+    status.wechat.failed_retry = { enabled: WECHAT_FAILED_RETRY_ENABLED, interval_ms: WECHAT_FAILED_RETRY_MS, notify: WECHAT_FAILED_RETRY_NOTIFY, last: lastFailedRetry };
+    status.backup.files = backups.slice(0, 10);
     status.gateway.last_24h_calls = gateway.rows[0].calls;
     status.gateway.last_24h_failed = gateway.rows[0].failed;
     status.recent_audits = audits.rows;
+    status.recent_problems = recentProblems.rows;
+    status.knowledge = {
+      duplicate_documents: duplicateDocs.rows,
+      recent_uploads: recentUploads.rows,
+    };
   } catch (error) {
     status.ok = false;
     status.database = { ok: false, error: error.message };
@@ -2665,6 +3215,43 @@ async function systemStatus() {
   status.ok = status.ok && status.database.ok && status.chroma.ok;
   status.latency_ms = Date.now() - started;
   return status;
+}
+
+async function appConfigStatus() {
+  const kb = WECHAT_DEFAULT_KB_ID ? await pool.query('SELECT id,name FROM knowledge_bases WHERE id=$1', [WECHAT_DEFAULT_KB_ID]).catch(() => ({ rows: [] })) : { rows: [] };
+  const notificationStats = await pool.query(`SELECT COUNT(*)::int total, COUNT(*) FILTER (WHERE enabled=true)::int enabled, COUNT(*) FILTER (WHERE COALESCE(to_user,'')<>'')::int configured_users FROM notification_subscriptions`).catch(() => ({ rows: [{ total: 0, enabled: 0, configured_users: 0 }] }));
+  return {
+    app: { port: PORT, public_base_url: PUBLIC_BASE_URL || '', auth_enabled: Boolean(AUTH_USER && AUTH_PASSWORD), key_encryption: Boolean(KEY_ENCRYPTION_SECRET) },
+    wechat: { corp_id: Boolean(WECHAT_WORK_CORP_ID), token: Boolean(WECHAT_WORK_TOKEN), aes_key: Boolean(WECHAT_WORK_ENCODING_AES_KEY), secret: Boolean(WECHAT_WORK_SECRET), agent_id: WECHAT_WORK_AGENT_ID || null, default_kb_id: WECHAT_DEFAULT_KB_ID || null, default_kb_name: kb.rows[0]?.name || '' },
+    ocr: { configured: Boolean(OCR_API_KEY && OCR_BASE_URL && OCR_MODEL), base_url: OCR_BASE_URL ? '[configured]' : '', model: OCR_MODEL || '' },
+    gateway: { token_enabled: Boolean(GATEWAY_TOKEN), timeout_ms: GATEWAY_TIMEOUT_MS, retry_count: GATEWAY_RETRY_COUNT },
+    assistant: { task_poll_ms: ASSISTANT_TASK_POLL_MS, cache_ttl_wechat: ASSISTANT_CACHE_TTL_WECHAT, cache_ttl_web: ASSISTANT_CACHE_TTL_WEB, failed_retry_enabled: WECHAT_FAILED_RETRY_ENABLED, failed_retry_ms: WECHAT_FAILED_RETRY_MS },
+    backup: { enabled: AUTO_BACKUP_ENABLED, dir: BACKUP_DIR ? '[configured]' : '', interval_ms: AUTO_BACKUP_INTERVAL_MS, keep: AUTO_BACKUP_KEEP, admin_notify_user: Boolean(WECHAT_ADMIN_USER) },
+    notifications: notificationStats.rows[0],
+    knowledge: { collection: KNOWLEDGE_COLLECTION, embedding: getEmbeddingStatus(), chroma_url: CHROMA_URL ? '[configured]' : '' },
+  };
+}
+
+async function wechatDiagnostics() {
+  const [messages, pendingTargets, pendingMedia, profiles, uploads, failedPushTasks] = await Promise.all([
+    pool.query(`
+      SELECT id, from_user, msg_type, content, intent, parse_status, media_status, media_error, reply_text, received_at
+      FROM wechat_messages ORDER BY received_at DESC, id DESC LIMIT 80`),
+    pool.query(`SELECT id, from_user, content, created_at FROM assistant_memories WHERE category='knowledge_upload_target' ORDER BY created_at DESC LIMIT 20`),
+    pool.query(`SELECT id, from_user, msg_type, media_id, status, content_hint, created_at, expires_at FROM pending_media_messages ORDER BY created_at DESC LIMIT 20`),
+    pool.query('SELECT from_user, display_name, default_kb_id, enabled, updated_at FROM wechat_user_profiles ORDER BY updated_at DESC LIMIT 50'),
+    pool.query(`SELECT id, title, filename, status, error_message, source_user, created_at FROM knowledge_documents WHERE source_channel='wechat' OR source_type ILIKE 'wechat%' ORDER BY created_at DESC LIMIT 40`),
+    pool.query("SELECT id, from_user, title, remind_at, last_notified_at, status FROM assistant_tasks WHERE remind_at IS NOT NULL ORDER BY updated_at DESC LIMIT 30"),
+  ]);
+  const summary = {
+    total_messages: messages.rowCount,
+    file_messages: messages.rows.filter((row) => row.msg_type === 'file').length,
+    failed_messages: messages.rows.filter((row) => row.parse_status === 'failed').length,
+    pending_upload_targets: pendingTargets.rowCount,
+    pending_media: pendingMedia.rowCount,
+    upload_records: uploads.rowCount,
+  };
+  return { summary, messages: messages.rows, pending_targets: pendingTargets.rows, pending_media: pendingMedia.rows, profiles: profiles.rows, uploads: uploads.rows, reminder_pushes: failedPushTasks.rows };
 }
 
 async function listWechatInbox(url) {
@@ -2849,6 +3436,38 @@ async function reprocessWechatMessage(messageId) {
   return getWechatInboxRow(original.id);
 }
 
+async function retryFailedWechatMessages({ limit = 10, notify = false } = {}) {
+  const result = await pool.query(`
+    SELECT * FROM wechat_messages
+    WHERE parse_status='failed'
+      AND msg_type='text'
+      AND COALESCE(retry_count,0) < 3
+      AND (next_retry_at IS NULL OR next_retry_at <= now())
+    ORDER BY received_at ASC
+    LIMIT $1`, [Math.min(50, Math.max(1, Number(limit || 10)))]);
+  const rows = [];
+  for (const row of result.rows) {
+    try {
+      const reprocessed = await reprocessWechatMessage(row.id);
+      await pool.query("UPDATE wechat_messages SET retry_count=COALESCE(retry_count,0)+1, next_retry_at=NULL, last_error=NULL WHERE id=$1", [row.id]);
+      rows.push({ id: row.id, ok: true, status: reprocessed.parse_status, intent: reprocessed.intent });
+      if (notify && row.from_user) await notifyBySubscription('wechat_retry_failed', `之前失败的消息 #${row.id} 已重新处理：${reprocessed.reply_text || reprocessed.intent}`, { fallbackUser: row.from_user }).catch(() => {});
+    } catch (error) {
+      const retryCount = Number(row.retry_count || 0) + 1;
+      const minutes = Math.min(60, 5 * retryCount);
+      await pool.query(
+        `UPDATE wechat_messages
+         SET retry_count=$1, next_retry_at=now()+($2 || ' minutes')::interval, last_error=$3
+         WHERE id=$4`,
+        [retryCount, String(minutes), error.message, row.id]
+      );
+      rows.push({ id: row.id, ok: false, retry_count: retryCount, error: error.message });
+      if (notify && retryCount >= 3) await notifyBySubscription('wechat_retry_failed', `消息 #${row.id} 多次处理失败，已进入待处理队列。原因：${error.message}`, { fallbackUser: row.from_user }).catch(() => {});
+    }
+  }
+  return { processed: rows.length, rows };
+}
+
 async function handleApi(req, res, url) {
   if (url.pathname === '/api/health') {
     const [chromaOk, embedding] = await Promise.all([
@@ -2996,10 +3615,35 @@ async function handleApi(req, res, url) {
     return sendJson(res, 201, { kb, document: doc.rows[0], processed });
   }
   if (url.pathname === '/api/finance/entries' && req.method === 'GET') {
-    const result = await pool.query('SELECT * FROM finance_entries ORDER BY occurred_at DESC, id DESC LIMIT 100');
+    const q = url.searchParams.get('q');
+    const category = url.searchParams.get('category');
+    const direction = url.searchParams.get('direction');
+    const result = await pool.query(`
+      SELECT * FROM finance_entries
+      WHERE ($1::text IS NULL OR title ILIKE '%'||$1||'%' OR note ILIKE '%'||$1||'%' OR category ILIKE '%'||$1||'%' OR raw_message ILIKE '%'||$1||'%')
+        AND ($2::text IS NULL OR category=$2)
+        AND ($3::text IS NULL OR direction=$3)
+      ORDER BY occurred_at DESC, id DESC LIMIT 300`, [q || null, category || null, direction || null]);
     return sendJson(res, 200, result.rows);
   }
+  if (url.pathname === '/api/finance/summary' && req.method === 'GET') {
+    const [month, categories, trend] = await Promise.all([
+      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE direction='expense'),0)::float expense, COALESCE(SUM(amount) FILTER (WHERE direction='income'),0)::float income FROM finance_entries WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`),
+      pool.query(`SELECT category, direction, COUNT(*)::int count, COALESCE(SUM(amount),0)::float amount FROM finance_entries WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai' GROUP BY category,direction ORDER BY amount DESC LIMIT 20`),
+      pool.query(`SELECT (occurred_at AT TIME ZONE 'Asia/Shanghai')::date record_day, COALESCE(SUM(amount) FILTER (WHERE direction='expense'),0)::float expense, COALESCE(SUM(amount) FILTER (WHERE direction='income'),0)::float income FROM finance_entries WHERE occurred_at >= now() - interval '30 days' GROUP BY record_day ORDER BY record_day ASC`),
+    ]);
+    return sendJson(res, 200, { month: { ...month.rows[0], balance: Number(month.rows[0].income || 0) - Number(month.rows[0].expense || 0) }, categories: categories.rows, trend: trend.rows });
+  }
   const financeEntryMatch = url.pathname.match(/^\/api\/finance\/entries\/(\d+)$/);
+  if (financeEntryMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(`
+      UPDATE finance_entries
+      SET direction=COALESCE($1,direction), amount=COALESCE($2,amount), category=COALESCE($3,category), title=COALESCE($4,title), note=COALESCE($5,note), occurred_at=COALESCE(CASE WHEN $6::text IS NULL THEN NULL ELSE $6::timestamp AT TIME ZONE 'Asia/Shanghai' END, occurred_at)
+      WHERE id=$7 RETURNING *`, [data.direction || null, data.amount === undefined ? null : numberOrNull(data.amount), data.category || null, data.title || null, data.note === undefined ? null : String(data.note || ''), data.occurred_at || null, Number(financeEntryMatch[1])]);
+    await auditLog(req, { action: 'finance.update', entityType: 'finance_entry', entityId: financeEntryMatch[1], detail: data });
+    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
+  }
   if (financeEntryMatch && req.method === 'DELETE') {
     await pool.query('UPDATE wechat_messages SET finance_entry_id=NULL WHERE finance_entry_id=$1', [Number(financeEntryMatch[1])]);
     const result = await pool.query('DELETE FROM finance_entries WHERE id=$1', [Number(financeEntryMatch[1])]);
@@ -3028,6 +3672,38 @@ async function handleApi(req, res, url) {
     } catch (error) {
       return sendJson(res, 400, { error: error.message });
     }
+  }
+  const inboxCorrectMatch = url.pathname.match(/^\/api\/wechat\/inbox\/(\d+)\/correct$/);
+  if (inboxCorrectMatch && req.method === 'POST') {
+    const messageId = Number(inboxCorrectMatch[1]);
+    const data = await jsonBody(req);
+    const row = await getWechatInboxRow(messageId);
+    if (!row) return sendJson(res, 404, { error: 'message not found' });
+    let result = null;
+    if (data.action === 'finance_category' && row.finance_entry_id) {
+      result = await pool.query('UPDATE finance_entries SET category=$1 WHERE id=$2 RETURNING *', [data.value || '未分类', row.finance_entry_id]);
+      const pattern = learnPatternFromText(row.content || row.finance_title || '');
+      if (pattern) await saveAssistantRule({ fromUser: row.from_user, ruleType: 'finance_category', pattern, value: data.value || '未分类', source: 'manual_correction' });
+    } else if (data.action === 'finance_direction' && row.finance_entry_id) {
+      result = await pool.query('UPDATE finance_entries SET direction=$1 WHERE id=$2 RETURNING *', [data.value === 'income' ? 'income' : 'expense', row.finance_entry_id]);
+    } else if (data.action === 'save_memory') {
+      result = { rows: [await saveAssistantMemory({ fromUser: row.from_user, category: data.category || 'general', content: data.value || row.content, importance: data.importance || 3, source: 'correction' })], rowCount: 1 };
+    } else if (data.action === 'delete_links') {
+      result = { rows: [await deleteWechatMessageLinks(row)], rowCount: 1 };
+    } else {
+      return sendJson(res, 400, { error: 'unsupported correction action or missing linked record' });
+    }
+    await auditLog(req, { action: 'wechat_message.correct', entityType: 'wechat_message', entityId: messageId, detail: data });
+    return sendJson(res, 200, { ok: true, result: result.rows[0], message: await getWechatInboxRow(messageId) });
+  }
+  const inboxUndoMatch = url.pathname.match(/^\/api\/wechat\/inbox\/(\d+)\/undo$/);
+  if (inboxUndoMatch && req.method === 'POST') {
+    const row = await getWechatInboxRow(Number(inboxUndoMatch[1]));
+    if (!row) return sendJson(res, 404, { error: 'message not found' });
+    const deleted = await deleteWechatMessageLinks(row);
+    await pool.query("UPDATE wechat_messages SET correction_status='undone' WHERE id=$1", [row.id]);
+    await auditLog(req, { action: 'wechat_message.undo', entityType: 'wechat_message', entityId: row.id, detail: { deleted } });
+    return sendJson(res, 200, { ok: true, deleted, message: await getWechatInboxRow(row.id) });
   }
   const inboxLinksMatch = url.pathname.match(/^\/api\/wechat\/inbox\/(\d+)\/links$/);
   if (inboxLinksMatch && req.method === 'DELETE') {
@@ -3120,6 +3796,18 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, result.rows);
   }
   if (url.pathname === '/api/system/status' && req.method === 'GET') return sendJson(res, 200, await systemStatus());
+  if (url.pathname === '/api/system/events' && req.method === 'GET') return sendJson(res, 200, await listSystemEvents(url));
+  if (url.pathname === '/api/config/status' && req.method === 'GET') return sendJson(res, 200, await appConfigStatus());
+  if (url.pathname === '/api/wechat/diagnostics' && req.method === 'GET') return sendJson(res, 200, await wechatDiagnostics());
+  if (url.pathname === '/api/notifications' && req.method === 'GET') return sendJson(res, 200, await listNotificationSubscriptions());
+  const notificationMatch = url.pathname.match(/^\/api\/notifications\/([^/]+)$/);
+  if (notificationMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const row = await updateNotificationSubscription(decodeURIComponent(notificationMatch[1]), data);
+    if (!row) return sendJson(res, 404, { error: 'notification not found' });
+    await auditLog(req, { action: 'notification.update', entityType: 'notification_subscription', entityId: row.notification_type, detail: data });
+    return sendJson(res, 200, row);
+  }
   if (url.pathname === '/api/stats') return sendJson(res, 200, await stats());
   if (url.pathname === '/api/balances/refresh' && req.method === 'POST') {
     return sendJson(res, 200, { updated_at: new Date().toISOString(), results: await refreshProviderBalances() });
@@ -3360,6 +4048,12 @@ async function handleApi(req, res, url) {
     const deleted = await deleteKnowledgeBase(Number(kbMatch[1]));
     return sendJson(res, 200, { deleted });
   }
+  if (url.pathname === '/api/wechat/inbox/retry-failed' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const result = await retryFailedWechatMessages({ limit: data.limit || 10, notify: Boolean(data.notify) });
+    await auditLog(req, { action: 'wechat_message.retry_failed', entityType: 'wechat_message', detail: result });
+    return sendJson(res, 200, result);
+  }
   const kbDocsMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/documents$/);
   if (kbDocsMatch && req.method === 'GET') {
     const result = await pool.query(`
@@ -3397,6 +4091,49 @@ async function handleApi(req, res, url) {
     return sendJson(res, 201, { document: doc.rows[0], processed });
   }
   const docMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)$/);
+  if (docMatch && req.method === 'GET') {
+    const docId = Number(docMatch[1]);
+    const [doc, chunks, queries, duplicates] = await Promise.all([
+      pool.query(`
+        SELECT d.*, kb.name kb_name, kb.category kb_category, COUNT(c.id)::int chunk_count
+        FROM knowledge_documents d
+        JOIN knowledge_bases kb ON kb.id=d.kb_id
+        LEFT JOIN knowledge_chunks c ON c.doc_id=d.id
+        WHERE d.id=$1
+        GROUP BY d.id, kb.id`, [docId]),
+      pool.query('SELECT id, chunk_index, content, char_count, embedding_id, created_at FROM knowledge_chunks WHERE doc_id=$1 ORDER BY chunk_index ASC', [docId]),
+      pool.query(`
+        SELECT id, question, answer, sources, created_at
+        FROM knowledge_queries
+        WHERE sources::text LIKE $1
+        ORDER BY created_at DESC
+        LIMIT 30`, [`%"doc_id":${docId}%`]),
+      pool.query(`
+        SELECT id, title, filename, status, created_at
+        FROM knowledge_documents
+        WHERE id<>$1 AND (title=(SELECT title FROM knowledge_documents WHERE id=$1) OR filename=(SELECT filename FROM knowledge_documents WHERE id=$1))
+        ORDER BY created_at DESC`, [docId]),
+    ]);
+    if (!doc.rowCount) return sendJson(res, 404, { error: 'not found' });
+    return sendJson(res, 200, { document: doc.rows[0], chunks: chunks.rows, queries: queries.rows, duplicates: duplicates.rows });
+  }
+  const docReindexMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)\/reindex$/);
+  if (docReindexMatch && req.method === 'POST') {
+    const processed = await processKnowledgeDocument(Number(docReindexMatch[1]));
+    return sendJson(res, 200, processed);
+  }
+  const docDuplicatesMatch = url.pathname.match(/^\/api\/knowledge\/documents\/(\d+)\/duplicates$/);
+  if (docDuplicatesMatch && req.method === 'DELETE') {
+    const docId = Number(docDuplicatesMatch[1]);
+    const docs = await pool.query(`
+      SELECT d2.id
+      FROM knowledge_documents d1
+      JOIN knowledge_documents d2 ON d2.id<>d1.id AND (d2.title=d1.title OR d2.filename=d1.filename)
+      WHERE d1.id=$1
+      ORDER BY d2.created_at DESC`, [docId]);
+    for (const row of docs.rows) await deleteKnowledgeDocument(row.id);
+    return sendJson(res, 200, { deleted: docs.rows.length });
+  }
   if (docMatch && req.method === 'DELETE') {
     const deleted = await deleteKnowledgeDocument(Number(docMatch[1]));
     return sendJson(res, 200, { deleted });
@@ -3405,6 +4142,45 @@ async function handleApi(req, res, url) {
     const data = await jsonBody(req);
     const rows = await searchKnowledge(data.kb_id, data.query || '', Number(data.top_k || 6));
     return sendJson(res, 200, rows);
+  }
+  if (url.pathname === '/api/global-search' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const bundle = await globalSearch(data.query || '', { fromUser: data.from_user || null, kbId: data.kb_id || null, limit: Number(data.limit || 8) });
+    return sendJson(res, 200, bundle);
+  }
+  if (url.pathname === '/api/global-answer' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const bundle = await globalSearch(data.question || data.query || '', { fromUser: data.from_user || null, kbId: data.kb_id || null, limit: Number(data.limit || 10) });
+    const profile = await buildPersonalProfile(data.from_user || null);
+    const answer = await deepseekGlobalAnswer(data.question || data.query || '', bundle, profile);
+    return sendJson(res, 200, { answer, global_results: bundle.items.slice(0, 20), profile_summary: profile.summary });
+  }
+  if (url.pathname === '/api/profile' && req.method === 'GET') {
+    return sendJson(res, 200, await buildPersonalProfile(url.searchParams.get('from_user') || null));
+  }
+  if (url.pathname === '/api/backup/export' && req.method === 'GET') {
+    return sendJson(res, 200, await exportBackup());
+  }
+  if (url.pathname === '/api/backup/files' && req.method === 'GET') {
+    return sendJson(res, 200, await listLocalBackups());
+  }
+  if (url.pathname === '/api/backup/create' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const result = await createLocalBackup({ reason: data.reason || 'manual', notify: Boolean(data.notify) });
+    await auditLog(req, { action: 'backup.create', entityType: 'backup', entityId: result.file, detail: { size: result.size, reason: data.reason || 'manual' } });
+    await systemEvent('backup.manual_success', { entityType: 'backup', entityId: result.file, level: 'info', detail: { size: result.size, reason: data.reason || 'manual' } });
+    return sendJson(res, 201, result);
+  }
+  if (url.pathname === '/api/backup/preview-import' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    return sendJson(res, 200, await previewBackupImport(data));
+  }
+  if (url.pathname === '/api/backup/import' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const result = await importBackup(data.backup || data, { mode: data.mode === 'replace' ? 'replace' : 'skip' });
+    await auditLog(req, { action: 'backup.import', entityType: 'backup', detail: { mode: result.mode, summary: result.summary } });
+    await systemEvent('backup.import_success', { entityType: 'backup', level: 'warn', detail: { mode: result.mode, summary: result.summary } });
+    return sendJson(res, 200, result);
   }
   if (url.pathname === '/api/knowledge/reindex' && req.method === 'POST') {
     const docs = await pool.query(`
@@ -3432,7 +4208,11 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/knowledge/ask' && req.method === 'POST') {
     const data = await jsonBody(req);
     const question = data.question || '';
-    const sources = await searchKnowledge(data.kb_id, question, Number(data.top_k || 6));
+    const [sources, globalBundle] = await Promise.all([
+      searchKnowledge(data.kb_id, question, Number(data.top_k || 6)),
+      globalSearch(question, { kbId: data.kb_id || null, limit: 6 }),
+    ]);
+    const globalContext = formatGlobalSearchContext(globalBundle);
     const topic = classifyUsefulTopic(question, sources);
     if (topic) {
       const cached = await getAssistantCache({
@@ -3456,7 +4236,9 @@ async function handleApi(req, res, url) {
         });
       }
     }
-    const answer = sources.length ? await deepseekKnowledgeAnswer(question, sources) : '知识库里没有检索到相关内容。';
+    const answer = (sources.length || globalBundle.items.length)
+      ? await deepseekKnowledgeAnswer(question, sources, globalContext)
+      : '没有检索到相关内容。';
     if (topic && sources.length) {
       await saveAssistantCache({
         question,
@@ -3474,7 +4256,7 @@ async function handleApi(req, res, url) {
       });
     }
     const saved = await pool.query('INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *', [data.kb_id || null, question, answer, JSON.stringify(sources.slice(0, 6))]);
-    return sendJson(res, 200, { answer, sources, from_cache: false, query: saved.rows[0] });
+    return sendJson(res, 200, { answer, sources, global_results: globalBundle.items.slice(0, 12), from_cache: false, query: saved.rows[0] });
   }
   const historyMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/queries$/);
   if (historyMatch && req.method === 'GET') {
@@ -3543,10 +4325,12 @@ async function handleApi(req, res, url) {
   const taskMatch = url.pathname.match(/^\/api\/assistant\/tasks\/(\d+)$/);
   if (taskMatch && req.method === 'PATCH') {
     const data = await jsonBody(req);
+    const remindAt = data.remind_at === undefined ? null : shanghaiTimestampOrNull(data.remind_at);
     const result = await pool.query(`
       UPDATE assistant_tasks
-      SET status=COALESCE($1,status), completed_at=CASE WHEN $1='done' THEN now() ELSE completed_at END, updated_at=now()
-      WHERE id=$2 RETURNING *`, [data.status || null, Number(taskMatch[1])]);
+      SET title=COALESCE($1,title), note=COALESCE($2,note), remind_at=COALESCE(CASE WHEN $3::text IS NULL THEN NULL ELSE $3::timestamp AT TIME ZONE 'Asia/Shanghai' END, remind_at),
+          recurrence=COALESCE($4,recurrence), status=COALESCE($5,status), completed_at=CASE WHEN $5='done' THEN now() WHEN $5='pending' THEN NULL ELSE completed_at END, updated_at=now()
+      WHERE id=$6 RETURNING *`, [data.title || null, data.note === undefined ? null : String(data.note || ''), remindAt, data.recurrence || null, data.status || null, Number(taskMatch[1])]);
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
   }
   if (taskMatch && req.method === 'DELETE') {
@@ -3647,8 +4431,8 @@ async function handleApi(req, res, url) {
     const data = await jsonBody(req);
     const result = await pool.query(`
       UPDATE assistant_memories
-      SET pinned=COALESCE($1, pinned), importance=COALESCE($2, importance), updated_at=now()
-      WHERE id=$3 RETURNING *`, [data.pinned === undefined ? null : Boolean(data.pinned), data.importance === undefined ? null : Number(data.importance), Number(memoryMatch[1])]);
+      SET pinned=COALESCE($1, pinned), importance=COALESCE($2, importance), category=COALESCE($3, category), content=COALESCE($4, content), updated_at=now()
+      WHERE id=$5 RETURNING *`, [data.pinned === undefined ? null : Boolean(data.pinned), data.importance === undefined ? null : Number(data.importance), data.category || null, data.content === undefined ? null : String(data.content || '').trim(), Number(memoryMatch[1])]);
     if (result.rowCount) await auditLog(req, { action: 'memory.update', entityType: 'assistant_memory', entityId: memoryMatch[1], detail: data });
     return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
   }
@@ -3730,9 +4514,21 @@ http.createServer(async (req, res) => {
   setTimeout(() => {
     processDueAssistantTasks().catch((error) => console.error('[tasks] startup', error.message));
     processDueReportSubscriptions().catch((error) => console.error('[reports] startup', error.message));
+    runFailedWechatRetry('startup').catch((error) => console.error('[wechat] retry startup', error.message));
+    runAutoBackup('startup').catch((error) => console.error('[backup] startup', error.message));
   }, 5000);
   setInterval(() => {
     processDueAssistantTasks().catch((error) => console.error('[tasks] poll', error.message));
     processDueReportSubscriptions().catch((error) => console.error('[reports] poll', error.message));
   }, ASSISTANT_TASK_POLL_MS);
+  if (WECHAT_FAILED_RETRY_ENABLED) {
+    setInterval(() => {
+      runFailedWechatRetry('auto').catch((error) => console.error('[wechat] retry poll', error.message));
+    }, WECHAT_FAILED_RETRY_MS);
+  }
+  if (AUTO_BACKUP_ENABLED) {
+    setInterval(() => {
+      runAutoBackup('auto').catch((error) => console.error('[backup] poll', error.message));
+    }, AUTO_BACKUP_INTERVAL_MS);
+  }
 });

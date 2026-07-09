@@ -73,6 +73,7 @@ function renderResults(rows) {
 
 function renderAnswer(data) {
   const sources = data.sources || [];
+  const globalResults = data.global_results || [];
   $('#answerBox').innerHTML = `
     ${data.from_cache ? '<div class="meta" style="margin-bottom:10px;color:var(--accent)">命中缓存，未重复调用 AI</div>' : ''}
     <div class="answer-text">${escapeHtml(data.answer || '').replace(/\n/g, '<br>')}</div>
@@ -80,6 +81,9 @@ function renderAnswer(data) {
       <strong>引用来源</strong>
       ${sources.length ? sources.map((item, index) => `<p>${index + 1}. ${escapeHtml(item.document_title || item.filename || '文档片段')} · chunk ${item.chunk_index}</p>`).join('') : '<p>没有引用来源。</p>'}
     </div>`;
+  if (globalResults.length) {
+    $('#answerBox').innerHTML += `<div class="source-list"><strong>全局搜索结果</strong>${globalResults.map((item) => `<p>${escapeHtml(item.type)} · ${escapeHtml(item.title)} · ${escapeHtml(item.meta || '')}</p>`).join('')}</div>`;
+  }
 }
 
 function renderQueries() {

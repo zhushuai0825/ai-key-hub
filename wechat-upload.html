@@ -13,6 +13,10 @@
       <div class="panel-head"><h2>上传到知识库</h2><span id="statusText">检查链接中</span></div>
       <form id="uploadTokenForm" class="doc-form">
         <p class="form-hint" id="targetText">正在读取上传目标...</p>
+        <div class="upload-progress" aria-label="上传进度"><span id="progressBar"></span></div>
+        <div class="upload-steps" id="uploadSteps">
+          <span class="active">1 检查链接</span><span>2 上传文件</span><span>3 解析切分</span><span>4 写入完成</span>
+        </div>
         <input name="title" placeholder="文档标题，可空" />
         <input name="file" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv" required />
         <button class="btn btn-solid" type="submit">上传并写入知识库</button>

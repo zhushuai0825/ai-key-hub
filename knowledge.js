@@ -109,9 +109,62 @@ function renderDocs() {
         ${doc.source_note ? `<span>${escapeHtml(doc.source_note)}</span>` : ''}
       </div>
       ${doc.error_message ? `<p class="error-text">${escapeHtml(doc.error_message)}</p>` : ''}
-      <div class="row-actions"><button class="danger-btn" type="button" data-delete-doc="${doc.id}">删除文档</button></div>
+      <div class="row-actions">
+        <button type="button" data-detail-doc="${doc.id}">查看详情</button>
+        <button type="button" data-reindex-doc="${doc.id}">重建向量</button>
+        <button class="danger-btn" type="button" data-delete-doc="${doc.id}">删除文档</button>
+      </div>
     </article>`).join('') : '<div class="empty-state">当前知识库暂无文档。支持粘贴文本，也支持 TXT、MD、PDF、DOCX、JSON、CSV。</div>';
+  document.querySelectorAll('[data-detail-doc]').forEach((button) => { button.onclick = () => loadDocDetail(Number(button.dataset.detailDoc)); });
+  document.querySelectorAll('[data-reindex-doc]').forEach((button) => { button.onclick = () => reindexDoc(Number(button.dataset.reindexDoc)); });
   document.querySelectorAll('[data-delete-doc]').forEach((button) => { button.onclick = () => deleteDoc(Number(button.dataset.deleteDoc)); });
+}
+
+function renderDocDetail(payload) {
+  const doc = payload.document;
+  $('#docDetailMeta').textContent = `#${doc.id} · ${doc.chunk_count || 0} 片段`;
+  $('#docDetail').classList.remove('empty-state');
+  $('#docDetail').innerHTML = `
+    <article class="doc-detail-card">
+      <div class="doc-title-row"><strong>${escapeHtml(doc.title)}</strong><span class="status-pill ${doc.status === 'ready' ? 'ok' : ''}">${escapeHtml(statusLabel(doc.status))}</span></div>
+      <p>${escapeHtml(doc.filename || doc.source_type || '')}</p>
+      <div class="meta">${escapeHtml(doc.kb_name)} · ${formatTime(doc.created_at)} · ${doc.raw_text?.length || 0} 字符</div>
+      ${doc.error_message ? `<p class="error-text">${escapeHtml(doc.error_message)}</p>` : ''}
+      <div class="detail-actions">
+        <button type="button" data-reindex-doc="${doc.id}">重建当前文档向量</button>
+        <button class="danger-btn" type="button" data-delete-duplicates="${doc.id}" ${payload.duplicates.length ? '' : 'disabled'}>删除重复文档 ${payload.duplicates.length}</button>
+      </div>
+    </article>
+    <section class="detail-section"><h3>切分片段</h3>${payload.chunks.length ? payload.chunks.map((chunk) => `
+      <details class="chunk-card"><summary>#${chunk.chunk_index} · ${chunk.char_count} 字符 · ${escapeHtml(chunk.embedding_id || '')}</summary><pre>${escapeHtml(chunk.content)}</pre></details>`).join('') : '<div class="empty-state">暂无切片。</div>'}</section>
+    <section class="detail-section"><h3>重复文档</h3>${payload.duplicates.length ? payload.duplicates.map((dup) => `
+      <div class="mini-row"><strong>#${dup.id} ${escapeHtml(dup.title)}</strong><span>${escapeHtml(statusLabel(dup.status))} · ${formatTime(dup.created_at)}</span></div>`).join('') : '<div class="empty-state">没有发现同名重复文档。</div>'}</section>
+    <section class="detail-section"><h3>相关问答记录</h3>${payload.queries.length ? payload.queries.map((query) => `
+      <details class="query-card"><summary>${escapeHtml(query.question)} · ${formatTime(query.created_at)}</summary><p>${escapeHtml(query.answer)}</p></details>`).join('') : '<div class="empty-state">暂无引用这个文档的问答记录。</div>'}</section>`;
+  $('#docDetail').querySelectorAll('[data-reindex-doc]').forEach((button) => { button.onclick = () => reindexDoc(Number(button.dataset.reindexDoc)); });
+  $('#docDetail').querySelectorAll('[data-delete-duplicates]').forEach((button) => { button.onclick = () => deleteDuplicates(Number(button.dataset.deleteDuplicates)); });
+}
+
+async function loadDocDetail(id) {
+  $('#docDetailMeta').textContent = '加载中';
+  const payload = await api(`/api/knowledge/documents/${id}`);
+  renderDocDetail(payload);
+}
+
+async function reindexDoc(id) {
+  if (!confirm('重新切分并写入向量库？')) return;
+  await api(`/api/knowledge/documents/${id}/reindex`, { method: 'POST' });
+  toast('向量已重建');
+  await loadDocuments();
+  await loadDocDetail(id).catch(() => {});
+}
+
+async function deleteDuplicates(id) {
+  if (!confirm('删除这个文档的同名重复文档？当前文档会保留。')) return;
+  const result = await api(`/api/knowledge/documents/${id}/duplicates`, { method: 'DELETE' });
+  toast(`已删除 ${result.deleted} 个重复文档`);
+  await loadBases();
+  await loadDocDetail(id).catch(() => {});
 }
 
 async function loadBases() {
@@ -122,6 +175,8 @@ async function loadBases() {
   renderBases();
   renderActiveName();
   await loadDocuments();
+  const initialDoc = Number(new URLSearchParams(location.search).get('doc') || 0);
+  if (initialDoc) loadDocDetail(initialDoc).catch((error) => toast(error.message));
 }
 
 async function loadDocuments() {

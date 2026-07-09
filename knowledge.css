@@ -198,3 +198,80 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .upload-token-shell { width: min(680px, calc(100% - 28px)); margin: 32px auto; }
 .upload-token-panel { max-height: none; overflow: visible; }
 .upload-token-page .doc-form input[type="file"] { padding: 13px; border-style: dashed; }
+
+.doc-detail-panel { min-width: 0; }
+.doc-detail { padding: 14px 16px; }
+.doc-detail-card { padding: 14px; border: 1px solid var(--line); background: rgba(255,255,255,.025); }
+.detail-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.detail-section { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 12px; }
+.detail-section h3 { margin: 0 0 10px; font-size: 13px; color: var(--ink); }
+.chunk-card, .query-card { margin-bottom: 8px; border: 1px solid var(--line); background: #0c0f14; }
+.chunk-card summary, .query-card summary { padding: 10px 12px; color: var(--ink-2); cursor: pointer; }
+.chunk-card pre { max-height: 260px; margin: 0; padding: 12px; overflow: auto; border-top: 1px solid var(--line); white-space: pre-wrap; color: var(--ink-2); line-height: 1.65; }
+.query-card p { margin: 0; padding: 12px; border-top: 1px solid var(--line); color: var(--ink-2); line-height: 1.7; }
+.mini-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+.mini-row span { color: var(--muted); font-size: 12px; }
+.upload-progress { height: 8px; overflow: hidden; border: 1px solid var(--line); background: #050608; }
+.upload-progress span { display: block; width: 0; height: 100%; background: #f2f2f2; transition: width .25s ease; }
+.upload-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; color: var(--muted); font-size: 11px; }
+.upload-steps span { padding: 7px 6px; border: 1px solid var(--line); text-align: center; }
+.upload-steps span.active { color: #111; background: #f2f2f2; border-color: #f2f2f2; }
+.monitor-problem-panel, .monitor-upload-panel, .monitor-duplicate-panel { max-height: calc(100vh - 124px); overflow: auto; }
+@media (min-width: 1120px) {
+  .kb-manage-shell { grid-template-columns: 320px minmax(0, .95fr) minmax(360px, .85fr); }
+}
+@media (max-width: 760px) {
+  body.knowledge-page { background: #050608; }
+  .kb-bar { position: sticky; gap: 8px; border-bottom-color: rgba(255,255,255,.18); }
+  .kb-bar .module-title strong { font-size: 17px; }
+  .kb-bar .module-title span { display: block; margin-top: 3px; font-size: 12px; line-height: 1.35; }
+  .base-form, .doc-form, .search-form, .ask-form, .category-form { padding: 12px; }
+  .doc-card, .base-card, .history-card, .monitor-card { border-radius: 0; }
+  .row-actions, .detail-actions { display: grid; grid-template-columns: 1fr; }
+  .row-actions button, .detail-actions button, .btn { min-height: 42px; justify-content: center; }
+  .upload-token-shell { width: 100%; margin: 0; padding: 14px; }
+  .upload-steps { grid-template-columns: 1fr 1fr; }
+  .mini-row { grid-template-columns: 1fr; }
+  .chunk-card pre { max-height: 220px; }
+}
+
+.global-search-shell { width: min(1280px, calc(100% - 44px)); margin: 22px auto 30px; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 14px; align-items: start; }
+.global-search-main, .global-search-side { max-height: calc(100vh - 124px); overflow: auto; }
+.global-search-form textarea { min-height: 150px; }
+.global-result-list { display: grid; gap: 10px; padding: 14px 16px; }
+.global-result-card { padding: 14px; border: 1px solid var(--line); background: rgba(255,255,255,.025); }
+.global-result-card p { margin: 9px 0; color: var(--ink-2); line-height: 1.65; }
+.global-result-card .meta { color: var(--muted); font-size: 12px; }
+@media (max-width: 900px) {
+  .global-search-shell { width: 100%; margin: 0; padding: 14px; display: block; }
+  .global-search-main, .global-search-side { max-height: none; overflow: visible; margin-bottom: 14px; }
+  .global-search-form textarea { min-height: 120px; }
+}
+
+.task-shell, .diagnostics-shell, .config-shell { width: min(1280px, calc(100% - 44px)); margin: 22px auto 30px; display: grid; gap: 14px; align-items: start; }
+.task-shell { grid-template-columns: 360px minmax(0, 1fr); }
+.diagnostics-shell { grid-template-columns: minmax(0, .8fr) minmax(0, 1fr) minmax(0, 1fr); }
+.config-shell { grid-template-columns: 1fr; }
+.task-list { display: grid; gap: 10px; padding: 14px 16px; }
+.task-card { padding: 14px; border: 1px solid var(--line); background: rgba(255,255,255,.025); }
+.task-card p { color: var(--ink-2); line-height: 1.6; }
+.config-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 14px; }
+.config-card p { display: flex; justify-content: space-between; gap: 10px; align-items: center; }
+.config-card b { color: var(--ink); font-weight: 600; }
+@media (max-width: 980px) {
+  .task-shell, .diagnostics-shell, .config-shell { width: 100%; margin: 0; padding: 14px; display: block; }
+  .task-shell > .kb-panel, .diagnostics-shell > .kb-panel, .config-shell > .kb-panel { margin-bottom: 14px; max-height: none; overflow: visible; }
+  .config-grid { grid-template-columns: 1fr; }
+}
+
+.finance-shell, .profile-shell { width: min(1280px, calc(100% - 44px)); margin: 22px auto 30px; display: grid; gap: 14px; align-items: start; }
+.finance-shell { grid-template-columns: 360px minmax(0, 1fr); }
+.profile-shell { grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); }
+.finance-list-panel { max-height: calc(100vh - 124px); overflow: auto; }
+.profile-summary { min-height: 440px; margin: 0; padding: 16px; white-space: pre-wrap; color: var(--ink-2); background: #0c0f14; border-top: 1px solid var(--line); line-height: 1.7; }
+#globalAnswerBox { margin: 14px 16px 0; }
+@media (max-width: 980px) {
+  .finance-shell, .profile-shell { width: 100%; margin: 0; padding: 14px; display: block; }
+  .finance-shell > .kb-panel, .profile-shell > .kb-panel { margin-bottom: 14px; max-height: none; overflow: visible; }
+  .profile-summary { min-height: 260px; }
+}
