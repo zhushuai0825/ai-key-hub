@@ -15,6 +15,9 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .ask-main-panel { min-height: calc(100vh - 124px); }
 .search-panel, .history-panel { max-height: none; }
 .base-form, .doc-form, .search-form, .ask-form, .category-form { display: grid; gap: 10px; padding: 14px 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.form-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+@media (max-width: 760px) { .form-grid { grid-template-columns: 1fr; } }
 .base-form input, .base-form select, .doc-form input, .search-form input, .category-form input, .doc-form textarea, .ask-form textarea { width: 100%; padding: 10px 11px; color: var(--ink); background: #0c0f14; border: 1px solid var(--line); border-radius: var(--radius); outline: none; }
 .base-form input:focus, .base-form select:focus, .doc-form input:focus, .search-form input:focus, .category-form input:focus, .doc-form textarea:focus, .ask-form textarea:focus { border-color: var(--accent); }
 .doc-form textarea { min-height: 250px; resize: vertical; }
