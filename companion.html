@@ -3,74 +3,77 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
   <title>语音陪伴</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module companion-immersive" data-companion="idle">
-  <div class="companion-atmosphere" aria-hidden="true">
-    <i class="companion-blob companion-blob-a"></i>
-    <i class="companion-blob companion-blob-b"></i>
-    <i class="companion-blob companion-blob-c"></i>
-    <i class="companion-grid"></i>
-    <canvas id="particleCanvas" class="companion-particles"></canvas>
-  </div>
+<body class="module companion-immersive" data-companion="idle" data-stage="gate">
+  <div class="companion-atmosphere" aria-hidden="true"></div>
 
-  <header class="companion-top">
-    <a class="companion-back" href="/">← 指挥台</a>
-    <div class="companion-top-actions">
-      <button class="companion-chip" id="muteBtn" type="button" disabled>静音</button>
-      <button class="companion-chip" id="logToggle" type="button">对话 <span id="turnCount">0</span></button>
-      <button class="companion-chip" id="resetBtn" type="button">新会话</button>
-    </div>
-  </header>
-
-  <main class="companion-viewport">
+  <section class="companion-gate" id="gate">
     <p class="companion-brand">VOICE</p>
     <h1 class="companion-title">语音陪伴</h1>
+    <p class="companion-gate-copy">进入后将占满整个屏幕，隐藏浏览器边栏。</p>
+    <button class="companion-primary" id="enterBtn" type="button">进入全屏</button>
+    <a class="companion-gate-back" href="/">返回指挥台</a>
+  </section>
 
-    <div class="companion-core" id="core">
-      <i class="companion-ring ring-1" aria-hidden="true"></i>
-      <i class="companion-ring ring-2" aria-hidden="true"></i>
-      <i class="companion-ring ring-3" aria-hidden="true"></i>
-      <button class="companion-orb" id="orb" type="button" aria-label="开始或结束陪伴">
-        <span class="companion-orb-core"></span>
-        <span class="companion-orb-label" id="orbLabel">开始</span>
-      </button>
-      <div class="companion-wave" id="wave" aria-hidden="true">
-        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+  <div class="companion-stage" id="stage" hidden>
+    <header class="companion-top">
+      <button class="companion-chip" id="exitFsBtn" type="button">退出全屏</button>
+      <div class="companion-top-actions">
+        <button class="companion-chip" id="muteBtn" type="button" disabled>静音</button>
+        <button class="companion-chip" id="logToggle" type="button">对话 <span id="turnCount">0</span></button>
+        <button class="companion-chip" id="resetBtn" type="button">新会话</button>
       </div>
-    </div>
+    </header>
 
-    <div class="companion-live">
-      <strong id="statusLabel">待开始</strong>
-      <p id="statusHint">点中央光球授权麦克风，之后直接说话，说完自动回复。</p>
-      <p class="companion-interim" id="interimText"></p>
-    </div>
+    <main class="companion-viewport">
+      <p class="companion-brand">VOICE</p>
+      <h1 class="companion-title">语音陪伴</h1>
 
-    <div class="companion-cta-row">
-      <button class="companion-primary" id="toggleBtn" type="button">开始陪伴</button>
-      <button class="companion-ghost" id="interruptBtn" type="button" disabled>打断朗读</button>
-    </div>
+      <div class="companion-core" id="core">
+        <i class="companion-ring ring-1" aria-hidden="true"></i>
+        <i class="companion-ring ring-2" aria-hidden="true"></i>
+        <i class="companion-ring ring-3" aria-hidden="true"></i>
+        <button class="companion-orb" id="orb" type="button" aria-label="开始或结束陪伴">
+          <span class="companion-orb-core"></span>
+          <span class="companion-orb-label" id="orbLabel">开始</span>
+        </button>
+        <div class="companion-wave" id="wave" aria-hidden="true">
+          <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        </div>
+      </div>
 
-    <form id="textForm" class="companion-text-form">
-      <input id="textInput" name="text" placeholder="麦克风不可用时，在这里打字…" autocomplete="off" />
-      <button class="companion-ghost" type="submit">发送</button>
-    </form>
-    <p class="companion-compat" id="compatHint"></p>
-  </main>
+      <div class="companion-live">
+        <strong id="statusLabel">待开始</strong>
+        <p id="statusHint">点中央光球授权麦克风，之后直接说话，说完自动回复。</p>
+        <p class="companion-interim" id="interimText"></p>
+      </div>
 
-  <aside class="companion-drawer" id="chatDrawer" aria-hidden="true">
-    <div class="companion-drawer-head">
-      <strong>对话记录</strong>
-      <button class="companion-chip" id="logClose" type="button">关闭</button>
-    </div>
-    <div id="chatLog" class="companion-log"></div>
-  </aside>
-  <div class="companion-drawer-mask" id="drawerMask" hidden></div>
+      <div class="companion-cta-row">
+        <button class="companion-primary" id="toggleBtn" type="button">开始陪伴</button>
+        <button class="companion-ghost" id="interruptBtn" type="button" disabled>打断朗读</button>
+      </div>
+
+      <form id="textForm" class="companion-text-form">
+        <input id="textInput" name="text" placeholder="麦克风不可用时，在这里打字…" autocomplete="off" />
+        <button class="companion-ghost" type="submit">发送</button>
+      </form>
+      <p class="companion-compat" id="compatHint"></p>
+    </main>
+
+    <aside class="companion-drawer" id="chatDrawer" aria-hidden="true">
+      <div class="companion-drawer-head">
+        <strong>对话记录</strong>
+        <button class="companion-chip" id="logClose" type="button">关闭</button>
+      </div>
+      <div id="chatLog" class="companion-log"></div>
+    </aside>
+    <div class="companion-drawer-mask" id="drawerMask" hidden></div>
+  </div>
 
   <div id="toast" class="toast"></div>
   <script src="./companion.js"></script>

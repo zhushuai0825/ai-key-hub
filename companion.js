@@ -365,54 +365,78 @@ $('#textForm')?.addEventListener('submit', (event) => {
   sendTyped();
 });
 
-function initParticles() {
-  const canvas = $('#particleCanvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  let w = 0;
-  let h = 0;
-  let raf = 0;
-  const dots = Array.from({ length: 48 }, () => ({
-    x: Math.random(),
-    y: Math.random(),
-    r: 0.6 + Math.random() * 1.6,
-    vx: (Math.random() - 0.5) * 0.00025,
-    vy: (Math.random() - 0.5) * 0.00025,
-    a: 0.15 + Math.random() * 0.35,
-  }));
-
-  function resize() {
-    w = canvas.width = window.innerWidth * devicePixelRatio;
-    h = canvas.height = window.innerHeight * devicePixelRatio;
-    canvas.style.width = `${window.innerWidth}px`;
-    canvas.style.height = `${window.innerHeight}px`;
-    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
-  }
-
-  function frame() {
-    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
-    const mode = document.body.dataset.companion;
-    const boost = mode === 'listening' || mode === 'speaking' ? 1.6 : 1;
-    for (const d of dots) {
-      d.x += d.vx * boost;
-      d.y += d.vy * boost;
-      if (d.x < 0 || d.x > 1) d.vx *= -1;
-      if (d.y < 0 || d.y > 1) d.vy *= -1;
-      ctx.beginPath();
-      ctx.fillStyle = mode === 'speaking'
-        ? `rgba(120, 210, 200, ${d.a})`
-        : `rgba(224, 163, 90, ${d.a})`;
-      ctx.arc(d.x * window.innerWidth, d.y * window.innerHeight, d.r, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    raf = requestAnimationFrame(frame);
-  }
-
-  resize();
-  window.addEventListener('resize', resize);
-  raf = requestAnimationFrame(frame);
-  return () => cancelAnimationFrame(raf);
+function isFullscreen() {
+  return Boolean(
+    document.fullscreenElement
+    || document.webkitFullscreenElement
+    || document.msFullscreenElement
+  );
 }
+
+async function requestPageFullscreen() {
+  const root = document.documentElement;
+  try {
+    if (root.requestFullscreen) await root.requestFullscreen({ navigationUI: 'hide' });
+    else if (root.webkitRequestFullscreen) root.webkitRequestFullscreen();
+    else if (root.msRequestFullscreen) root.msRequestFullscreen();
+  } catch (_) {
+    /* browsers may reject outside gesture or on iOS */
+  }
+}
+
+async function exitPageFullscreen() {
+  try {
+    if (document.exitFullscreen) await document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    else if (document.msExitFullscreen) document.msExitFullscreen();
+  } catch (_) { /* ignore */ }
+}
+
+function showLiveStage() {
+  document.body.dataset.stage = 'live';
+  const stage = $('#stage');
+  if (stage) stage.hidden = false;
+}
+
+function showGateStage() {
+  document.body.dataset.stage = 'gate';
+  const stage = $('#stage');
+  if (stage) stage.hidden = true;
+  closeDrawer();
+}
+
+async function enterImmersive() {
+  showLiveStage();
+  await requestPageFullscreen();
+  if (!isFullscreen()) {
+    toast('当前浏览器未进入系统全屏，可再点一次「进入全屏」或用 F11');
+  }
+}
+
+async function leaveImmersive() {
+  stopCompanion();
+  if (isFullscreen()) await exitPageFullscreen();
+  showGateStage();
+}
+
+$('#enterBtn')?.addEventListener('click', () => {
+  enterImmersive();
+});
+
+$('#exitFsBtn')?.addEventListener('click', () => {
+  leaveImmersive();
+});
+
+document.addEventListener('fullscreenchange', () => {
+  if (!isFullscreen() && document.body.dataset.stage === 'live') {
+    toast('已退出全屏，点左上角可返回入口');
+  }
+});
+document.addEventListener('webkitfullscreenchange', () => {
+  if (!isFullscreen() && document.body.dataset.stage === 'live') {
+    toast('已退出全屏，点左上角可返回入口');
+  }
+});
 
 (function initCompat() {
   const hints = [];
@@ -422,7 +446,7 @@ function initParticles() {
     setStatus('error', '当前页面不是安全上下文（HTTP），无法开麦克风。可先用下方文字聊天，或配置 HTTPS 后再用语音。');
   }
   if (!synth) hints.push('当前环境不支持语音朗读，仍可文字对话。');
-  $('#compatHint').textContent = hints.join(' ');
+  const hintEl = $('#compatHint');
+  if (hintEl) hintEl.textContent = hints.join(' ');
   if (window.isSecureContext) setStatus('idle', '点中央光球授权麦克风，之后不用按键，直接说话即可。');
-  initParticles();
 })();
