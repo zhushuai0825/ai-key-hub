@@ -55,34 +55,44 @@ function sourceLabel(doc) {
   return doc.source_type || '未知来源';
 }
 
+function shortText(value = '', max = 56) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function renderSummary() {
-  $('#kbSummary').textContent = `${summary?.documents || 0} 文档 · ${summary?.chunks || 0} 向量片段 · 全部资料统一存放`;
+  $('#kbSummary').textContent = `${summary?.documents || 0} 文档 · ${summary?.chunks || 0} 片段`;
   $('#docCount').textContent = `${docs.length} 篇`;
 }
 
 function renderDocs() {
   renderSummary();
-  $('#docList').innerHTML = docs.length ? docs.map((doc) => `
-    <article class="doc-card">
-      <div class="doc-title-row">
-        <strong>${escapeHtml(doc.title)}</strong>
-        <span class="status-pill ${pillClass(doc.status)}">${escapeHtml(statusLabel(doc.status))}</span>
-        <span class="status-pill ${pillClass(doc.quality_status)}">${escapeHtml(qualityLabel(doc.quality_status))}</span>
+  $('#docList').innerHTML = docs.length ? docs.map((doc) => {
+    const meta = [
+      statusLabel(doc.status),
+      qualityLabel(doc.quality_status),
+      sourceLabel(doc),
+      `${doc.chunk_count || 0} 片段`,
+      doc.source_user || '',
+    ].filter(Boolean).join(' · ');
+    return `<article class="log-row tone-${pillClass(doc.status) || pillClass(doc.quality_status) || 'muted'}">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line">
+          <strong title="${escapeHtml(doc.title)}">${escapeHtml(shortText(doc.title, 48))}</strong>
+          <time>${escapeHtml(formatTime(doc.created_at))}</time>
+        </div>
+        <div class="log-meta">
+          <span title="${escapeHtml(meta)}">${escapeHtml(shortText(meta, 90))}</span>
+          <button type="button" class="timeline-link" data-detail-doc="${doc.id}">详情</button>
+          <button type="button" class="timeline-link" data-reindex-doc="${doc.id}">重建</button>
+          <button type="button" class="timeline-link danger" data-delete-doc="${doc.id}">删除</button>
+        </div>
+        ${doc.error_message ? `<p class="error-text">${escapeHtml(doc.error_message)}</p>` : ''}
       </div>
-      <p>${escapeHtml(doc.filename || doc.source_type)} · ${doc.raw_text?.length || 0} 字符 · v${doc.version || 1}</p>
-      <div class="meta">${doc.chunk_count || 0} 向量片段 · ${formatTime(doc.created_at)}</div>
-      <div class="doc-source-row">
-        <span>${escapeHtml(sourceLabel(doc))}</span>
-        ${doc.source_user ? `<span>上传人：${escapeHtml(doc.source_user)}</span>` : ''}
-        ${doc.source_note ? `<span>${escapeHtml(doc.source_note)}</span>` : ''}
-      </div>
-      ${doc.error_message ? `<p class="error-text">${escapeHtml(doc.error_message)}</p>` : ''}
-      <div class="row-actions">
-        <button type="button" data-detail-doc="${doc.id}">查看详情</button>
-        <button type="button" data-reindex-doc="${doc.id}">重建向量</button>
-        <button class="danger-btn" type="button" data-delete-doc="${doc.id}">删除文档</button>
-      </div>
-    </article>`).join('') : '<div class="empty-state">还没有文档。粘贴文本或上传文件即可入库；企微发文件也会进这里。</div>';
+    </article>`;
+  }).join('') : '<div class="empty-state">还没有文档。粘贴文本或上传文件即可入库。</div>';
   document.querySelectorAll('[data-detail-doc]').forEach((button) => { button.onclick = () => loadDocDetail(Number(button.dataset.detailDoc)); });
   document.querySelectorAll('[data-reindex-doc]').forEach((button) => { button.onclick = () => reindexDoc(Number(button.dataset.reindexDoc)); });
   document.querySelectorAll('[data-delete-doc]').forEach((button) => { button.onclick = () => deleteDoc(Number(button.dataset.deleteDoc)); });
@@ -93,25 +103,29 @@ function renderDocDetail(payload) {
   $('#docDetailMeta').textContent = `#${doc.id} · v${doc.version || 1} · ${doc.chunk_count || 0} 片段`;
   $('#docDetail').classList.remove('empty-state');
   $('#docDetail').innerHTML = `
-    <article class="doc-detail-card">
-      <div class="doc-title-row"><strong>${escapeHtml(doc.title)}</strong><span class="status-pill ${pillClass(doc.status)}">${escapeHtml(statusLabel(doc.status))}</span><span class="status-pill ${pillClass(doc.quality_status)}">${escapeHtml(qualityLabel(doc.quality_status))}</span></div>
-      <p>${escapeHtml(doc.filename || doc.source_type || '')}</p>
-      <div class="meta">v${doc.version || 1} · ${formatTime(doc.created_at)} · ${doc.raw_text?.length || 0} 字符</div>
-      ${(doc.quality_issues || []).length ? `<div class="inbox-relations">${doc.quality_issues.map((issue) => `<span>${escapeHtml(issue.type)}：${escapeHtml(issue.message)}</span>`).join('')}</div>` : ''}
+    <div class="detail-compact">
+      <div class="log-line"><strong>${escapeHtml(doc.title)}</strong><span class="status-pill ${pillClass(doc.status)}">${escapeHtml(statusLabel(doc.status))}</span></div>
+      <p class="log-extra">${escapeHtml(doc.filename || doc.source_type || '')} · ${doc.raw_text?.length || 0} 字符 · ${escapeHtml(qualityLabel(doc.quality_status))}</p>
+      ${(doc.quality_issues || []).length ? `<p class="log-extra">${escapeHtml(doc.quality_issues.map((issue) => issue.message).join('；'))}</p>` : ''}
       ${doc.error_message ? `<p class="error-text">${escapeHtml(doc.error_message)}</p>` : ''}
-      <div class="detail-actions">
-        <button type="button" data-reindex-doc="${doc.id}">重建当前文档向量</button>
-        <button type="button" data-quality-doc="${doc.id}">重新检测质量</button>
-        <button class="danger-btn" type="button" data-delete-duplicates="${doc.id}" ${payload.duplicates.length ? '' : 'disabled'}>删除重复文档 ${payload.duplicates.length}</button>
+      <div class="log-action-bar">
+        <button type="button" data-reindex-doc="${doc.id}">重建向量</button>
+        <button type="button" data-quality-doc="${doc.id}">检测质量</button>
+        <button type="button" class="danger" data-delete-duplicates="${doc.id}" ${payload.duplicates.length ? '' : 'disabled'}>删重复 ${payload.duplicates.length}</button>
       </div>
-    </article>
-    <section class="detail-section"><h3>版本记录</h3>${payload.versions?.length ? payload.versions.map((v) => `<div class="mini-row"><strong>#${v.id} v${v.version} ${escapeHtml(v.title)}</strong><span>${escapeHtml(v.version_status)} · ${formatTime(v.created_at)}</span></div>`).join('') : '<div class="empty-state">暂无版本记录。</div>'}</section>
-    <section class="detail-section"><h3>切分片段</h3>${payload.chunks.length ? payload.chunks.map((chunk) => `
-      <details class="chunk-card" id="chunk-${chunk.chunk_index}"><summary>#${chunk.chunk_index} · ${chunk.char_count} 字符</summary><pre>${escapeHtml(chunk.content)}</pre></details>`).join('') : '<div class="empty-state">暂无切片。</div>'}</section>
-    <section class="detail-section"><h3>重复文档</h3>${payload.duplicates.length ? payload.duplicates.map((dup) => `
-      <div class="mini-row"><strong>#${dup.id} ${escapeHtml(dup.title)}</strong><span>${escapeHtml(statusLabel(dup.status))} · ${formatTime(dup.created_at)}</span></div>`).join('') : '<div class="empty-state">没有发现同名重复文档。</div>'}</section>
-    <section class="detail-section"><h3>相关问答记录</h3>${payload.queries.length ? payload.queries.map((query) => `
-      <details class="query-card"><summary>${escapeHtml(query.question)} · ${formatTime(query.created_at)}</summary><p>${escapeHtml(query.answer)}</p></details>`).join('') : '<div class="empty-state">暂无引用这个文档的问答记录。</div>'}</section>`;
+    </div>
+    <details class="log-actions openable"><summary>版本 ${payload.versions?.length || 0}</summary>
+      ${(payload.versions || []).map((v) => `<div class="mini-row"><strong>#${v.id} v${v.version} ${escapeHtml(v.title)}</strong><span>${escapeHtml(v.version_status)} · ${formatTime(v.created_at)}</span></div>`).join('') || '<div class="empty-state">暂无版本</div>'}
+    </details>
+    <details class="log-actions openable"><summary>切片 ${payload.chunks.length}</summary>
+      ${payload.chunks.length ? payload.chunks.map((chunk) => `<details class="chunk-card" id="chunk-${chunk.chunk_index}"><summary>#${chunk.chunk_index} · ${chunk.char_count} 字符</summary><pre>${escapeHtml(chunk.content)}</pre></details>`).join('') : '<div class="empty-state">暂无切片</div>'}
+    </details>
+    <details class="log-actions openable"><summary>重复 ${payload.duplicates.length}</summary>
+      ${payload.duplicates.length ? payload.duplicates.map((dup) => `<div class="mini-row"><strong>#${dup.id} ${escapeHtml(dup.title)}</strong><span>${escapeHtml(statusLabel(dup.status))} · ${formatTime(dup.created_at)}</span></div>`).join('') : '<div class="empty-state">无重复</div>'}
+    </details>
+    <details class="log-actions openable"><summary>问答 ${payload.queries.length}</summary>
+      ${payload.queries.length ? payload.queries.map((query) => `<details class="query-card"><summary>${escapeHtml(shortText(query.question, 40))} · ${formatTime(query.created_at)}</summary><p>${escapeHtml(query.answer)}</p></details>`).join('') : '<div class="empty-state">暂无问答</div>'}
+    </details>`;
   $('#docDetail').querySelectorAll('[data-reindex-doc]').forEach((button) => { button.onclick = () => reindexDoc(Number(button.dataset.reindexDoc)); });
   $('#docDetail').querySelectorAll('[data-quality-doc]').forEach((button) => { button.onclick = () => qualityDoc(Number(button.dataset.qualityDoc)); });
   $('#docDetail').querySelectorAll('[data-delete-duplicates]').forEach((button) => { button.onclick = () => deleteDuplicates(Number(button.dataset.deleteDuplicates)); });
@@ -121,8 +135,20 @@ function renderDocDetail(payload) {
 
 function renderQuality() {
   const counts = Object.fromEntries((quality.summary || []).map((item) => [item.quality_status, item.count]));
-  $('#qualitySummary').innerHTML = ['bad', 'warn', 'ok', 'unchecked'].map((status) => `<article class="monitor-card"><div><strong>${escapeHtml(qualityLabel(status))}</strong><span class="state-pill ${pillClass(status)}">${counts[status] || 0}</span></div><p>${escapeHtml(status)}</p></article>`).join('');
-  $('#qualityList').innerHTML = (quality.documents || []).length ? quality.documents.map((doc) => `<article class="timeline-item"><div class="timeline-mark ${pillClass(doc.quality_status)}">${escapeHtml(qualityLabel(doc.quality_status))}</div><div class="timeline-main"><div class="timeline-title"><strong>${escapeHtml(doc.title)}</strong><time>${formatTime(doc.updated_at)}</time></div><p>${escapeHtml((doc.quality_issues || []).map((i) => i.message).join('；') || doc.status)}</p><div class="row-actions"><button type="button" data-detail-doc="${doc.id}">查看详情</button><button type="button" data-quality-doc="${doc.id}">重新检测</button></div></div></article>`).join('') : '<div class="empty-state">没有检测到质量问题。</div>';
+  $('#qualitySummary').innerHTML = ['bad', 'warn', 'ok', 'unchecked'].map((status) => `
+    <span class="log-stat ${pillClass(status)}"><em>${escapeHtml(qualityLabel(status))}</em><b>${counts[status] || 0}</b></span>`).join('');
+  $('#qualityList').innerHTML = (quality.documents || []).length ? quality.documents.map((doc) => `
+    <article class="log-row tone-${pillClass(doc.quality_status) || 'muted'}">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line"><strong>${escapeHtml(shortText(doc.title, 36))}</strong><time>${formatTime(doc.updated_at)}</time></div>
+        <div class="log-meta">
+          <span>${escapeHtml(shortText((doc.quality_issues || []).map((i) => i.message).join('；') || doc.status, 70))}</span>
+          <button type="button" class="timeline-link" data-detail-doc="${doc.id}">详情</button>
+          <button type="button" class="timeline-link" data-quality-doc="${doc.id}">检测</button>
+        </div>
+      </div>
+    </article>`).join('') : '<div class="empty-state">没有质量问题</div>';
   $('#qualityList').querySelectorAll('[data-detail-doc]').forEach((button) => { button.onclick = () => loadDocDetail(Number(button.dataset.detailDoc)); });
   $('#qualityList').querySelectorAll('[data-quality-doc]').forEach((button) => { button.onclick = () => qualityDoc(Number(button.dataset.qualityDoc)); });
 }
@@ -230,5 +256,13 @@ $('#reindexAllBtn').onclick = async () => {
     await loadDocuments();
   } catch (error) { toast(error.message); }
 };
+
+document.querySelectorAll('.ingest-tab').forEach((tab) => {
+  tab.onclick = () => {
+    const name = tab.dataset.tab;
+    document.querySelectorAll('.ingest-tab').forEach((el) => el.classList.toggle('active', el === tab));
+    document.querySelectorAll('.ingest-pane').forEach((pane) => pane.classList.toggle('active', pane.dataset.pane === name));
+  };
+});
 
 loadPrimary().catch((error) => toast(error.message));

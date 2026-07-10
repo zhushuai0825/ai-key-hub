@@ -1,1 +1,38 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Finance · 账本</title><link rel="stylesheet" href="./theme.css"/><link rel="stylesheet" href="./knowledge.css"/></head><body class="module knowledge-page"><header class="kb-bar"><a class="module-back" href="/">返回指挥台</a><div class="module-title"><strong>Finance</strong><span>收支流水 · 分类统计 · 搜索纠错</span></div><button class="btn" id="refreshBtn">刷新</button></header><main class="finance-shell"><section class="kb-panel"><div class="panel-head"><h2>本月概览</h2><span id="financeUpdated">--</span></div><div id="financeSummary" class="monitor-grid"></div><form id="financeFilter" class="search-form"><input name="q" placeholder="搜索标题、备注、分类"/><select name="direction"><option value="">全部</option><option value="expense">支出</option><option value="income">收入</option></select><button class="btn btn-solid">筛选</button></form></section><section class="kb-panel finance-list-panel"><div class="panel-head"><h2>流水</h2><span id="entryCount">0 条</span></div><div id="financeList" class="task-list"></div></section></main><div id="toast" class="toast"></div><script src="./finance-page.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>账本</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page compact-finance">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>账本</strong><span>收支流水 · 分类统计</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+  <main class="finance-shell">
+    <section class="kb-panel">
+      <div class="panel-head"><h2>本月概览</h2><span id="financeUpdated">--</span></div>
+      <div id="financeSummary" class="log-stats finance-stats"></div>
+      <form id="financeFilter" class="log-filter">
+        <input name="q" placeholder="搜索标题、备注、分类" />
+        <select name="direction">
+          <option value="">全部</option>
+          <option value="expense">支出</option>
+          <option value="income">收入</option>
+        </select>
+        <button class="btn btn-solid" type="submit">筛选</button>
+      </form>
+    </section>
+    <section class="kb-panel finance-list-panel">
+      <div class="panel-head"><h2>流水</h2><span id="entryCount">0 条</span></div>
+      <div id="financeList" class="log-stream"></div>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="./finance-page.js"></script>
+</body>
+</html>

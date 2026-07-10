@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Knowledge Ask · 知识库问答</title>
+  <title>知识库问答</title>
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page ask-only-page">
+<body class="module knowledge-page ask-only-page compact-ask">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>Knowledge Ask</strong><span>检索知识库 · AI 回答</span></div>
+    <div class="module-title"><strong>知识库问答</strong><span>检索 · AI 回答</span></div>
     <a class="btn" href="/knowledge.html">管理文档</a>
   </header>
 
@@ -23,23 +23,31 @@
         </div>
         <span id="askKbName">知识库</span>
       </div>
-      <form id="askForm" class="ask-form ask-large-form">
-        <textarea name="question" placeholder="输入问题，系统会检索知识库后用 DeepSeek 回答"></textarea>
-        <button class="btn btn-solid" type="submit">开始提问</button>
+      <form id="askForm" class="compact-form ask-compact-form">
+        <textarea name="question" placeholder="输入问题，检索知识库后用 DeepSeek 回答"></textarea>
+        <div class="compact-actions">
+          <span class="form-hint">回答会附带引用来源</span>
+          <button class="btn btn-solid" type="submit">提问</button>
+        </div>
       </form>
-      <div id="answerBox" class="answer-box answer-large-box"></div>
+      <div id="answerBox" class="answer-box answer-compact-box"></div>
     </section>
 
     <aside class="kb-side">
       <section class="kb-panel search-panel">
-        <div class="panel-head"><h2>检索测试</h2><span>不调用大模型</span></div>
-        <form id="searchForm" class="search-form"><input name="query" placeholder="先检索知识库内容" /><button class="btn btn-solid" type="submit">搜索</button></form>
-        <div id="searchResults" class="result-list"></div>
+        <div class="panel-head"><h2>检索测试</h2><span>不调大模型</span></div>
+        <form id="searchForm" class="compact-form search-compact-form">
+          <div class="compact-row search-row">
+            <input name="query" placeholder="先检索知识库内容" />
+            <button class="btn btn-solid" type="submit">搜索</button>
+          </div>
+        </form>
+        <div id="searchResults" class="log-stream"></div>
       </section>
 
       <section class="kb-panel history-panel">
         <div class="panel-head"><h2>问答历史</h2><span>最近 30 条</span></div>
-        <div id="queryHistory" class="history-list"></div>
+        <div id="queryHistory" class="log-stream"></div>
       </section>
     </aside>
   </main>

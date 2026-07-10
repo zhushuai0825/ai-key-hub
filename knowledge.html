@@ -3,71 +3,88 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Knowledge Library · 知识库</title>
+  <title>知识库</title>
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page manage-page">
+<body class="module knowledge-page manage-page compact-kb">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>Knowledge Library</strong><span>单一知识库 · 上传文档 · 向量入库</span></div>
-    <a class="btn" href="/knowledge-ask.html">去提问</a>
+    <div class="module-title"><strong>知识库</strong><span>上传文档 · 向量入库</span></div>
+    <div class="kb-bar-actions">
+      <button class="btn" id="reindexAllBtn" type="button">全库重建</button>
+      <a class="btn" href="/knowledge-ask.html">去提问</a>
+    </div>
   </header>
 
   <main class="kb-manage-shell single-kb-shell">
     <section class="kb-panel docs-panel">
       <div class="panel-head">
         <div>
-          <h2>知识库</h2>
+          <h2>入库</h2>
           <p class="panel-sub" id="kbSummary">加载中…</p>
         </div>
-        <button class="btn" id="reindexAllBtn" type="button">全库重建向量</button>
       </div>
 
-      <div class="doc-grid">
-        <form id="textForm" class="doc-form">
-          <h3>粘贴文本</h3>
+      <div class="ingest-tabs" role="tablist">
+        <button type="button" class="ingest-tab active" data-tab="text">粘贴文本</button>
+        <button type="button" class="ingest-tab" data-tab="upload">上传文件</button>
+      </div>
+
+      <form id="textForm" class="compact-form ingest-pane active" data-pane="text">
+        <div class="compact-row">
           <input name="title" placeholder="标题" />
           <select name="version_strategy">
-            <option value="keep">保留旧版并新增</option>
-            <option value="new_version">更新为新版本</option>
+            <option value="keep">保留旧版</option>
+            <option value="new_version">更新版本</option>
             <option value="replace">替换旧文档</option>
           </select>
-          <textarea name="text" placeholder="粘贴文本或 Markdown 内容"></textarea>
+        </div>
+        <textarea name="text" placeholder="粘贴文本或 Markdown"></textarea>
+        <div class="compact-actions">
           <button class="btn btn-solid" type="submit">保存并切分</button>
-        </form>
-        <form id="uploadForm" class="doc-form">
-          <h3>上传文件</h3>
+        </div>
+      </form>
+
+      <form id="uploadForm" class="compact-form ingest-pane" data-pane="upload">
+        <div class="compact-row">
           <input name="title" placeholder="标题，可选" />
           <select name="version_strategy">
-            <option value="keep">保留旧版并新增</option>
-            <option value="new_version">更新为新版本</option>
+            <option value="keep">保留旧版</option>
+            <option value="new_version">更新版本</option>
             <option value="replace">替换旧文档</option>
           </select>
+        </div>
+        <div class="compact-row">
           <input name="note" placeholder="图片/OCR 说明，可选" />
           <input name="file" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv,.png,.jpg,.jpeg,.webp" />
-          <p class="form-hint">支持 TXT / MD / PDF / DOCX / JSON / CSV / 图片。企微上传也会进入这个库。</p>
+        </div>
+        <div class="compact-actions">
+          <span class="form-hint">TXT / MD / PDF / DOCX / JSON / CSV / 图片</span>
           <button class="btn btn-solid" type="submit">上传并入库</button>
-        </form>
-      </div>
+        </div>
+      </form>
 
       <div class="panel-head sub-panel-head">
-        <h2>文档列表</h2>
+        <h2>文档</h2>
         <span id="docCount">0 篇</span>
       </div>
-      <div id="docList" class="doc-list"></div>
+      <div id="docList" class="log-stream"></div>
     </section>
 
     <aside class="kb-side">
       <section class="kb-panel quality-panel">
-        <div class="panel-head"><h2>质量检测</h2><button class="btn" id="refreshQualityBtn" type="button">刷新</button></div>
-        <div id="qualitySummary" class="monitor-grid"></div>
-        <div id="qualityList" class="timeline-list compact"></div>
+        <div class="panel-head">
+          <h2>质量</h2>
+          <button class="btn" id="refreshQualityBtn" type="button">刷新</button>
+        </div>
+        <div id="qualitySummary" class="log-stats quality-stats"></div>
+        <div id="qualityList" class="log-stream"></div>
       </section>
 
       <section class="kb-panel doc-detail-panel">
-        <div class="panel-head"><h2>文档详情</h2><span id="docDetailMeta">未选择</span></div>
-        <div id="docDetail" class="doc-detail empty-state">点击文档的「查看详情」，可看切片、问答记录和重复文档。</div>
+        <div class="panel-head"><h2>详情</h2><span id="docDetailMeta">未选择</span></div>
+        <div id="docDetail" class="doc-detail empty-state">点击文档查看切片、问答和重复项。</div>
       </section>
     </aside>
   </main>

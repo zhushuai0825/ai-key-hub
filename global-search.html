@@ -3,29 +3,32 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Global Search · 全局搜索</title>
+  <title>全局搜索</title>
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page global-search-page">
+<body class="module knowledge-page global-search-page compact-search">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>Global Search</strong><span>搜索账本、健康、知识库、记忆、提醒、企微消息和报告</span></div>
+    <div class="module-title"><strong>全局搜索</strong><span>账本 · 健康 · 知识库 · 提醒 · 企微</span></div>
     <a class="btn" href="/knowledge-ask.html">去提问</a>
   </header>
   <main class="global-search-shell">
     <section class="kb-panel global-search-main">
-      <div class="panel-head"><h2>搜索所有数据</h2><span id="resultCount">0 条</span></div>
-      <form id="globalSearchForm" class="ask-form global-search-form">
-        <textarea name="query" placeholder="输入任意关键词，例如：保密协议、这个月花费、体重、服务器、提醒"></textarea>
-        <div class="row-actions"><button class="btn btn-solid" type="submit">全局搜索</button><button class="btn" id="globalAskBtn" type="button">问全局数据</button></div>
+      <div class="panel-head"><h2>搜索</h2><span id="resultCount">0 条</span></div>
+      <form id="globalSearchForm" class="compact-form">
+        <textarea name="query" placeholder="关键词，例如：保密协议、这个月花费、体重"></textarea>
+        <div class="compact-actions">
+          <button class="btn" id="globalAskBtn" type="button">问全局</button>
+          <button class="btn btn-solid" type="submit">搜索</button>
+        </div>
       </form>
-      <div id="globalAnswerBox" class="answer-large-box"><div class="empty-state">可以先搜索，也可以直接问“我最近为服务器花了多少钱”。</div></div>
-      <div id="globalResultList" class="global-result-list"></div>
+      <div id="globalAnswerBox" class="answer-box answer-compact-box"><div class="empty-state">先搜索，或直接问「我最近为服务器花了多少钱」。</div></div>
+      <div id="globalResultList" class="log-stream"></div>
     </section>
     <section class="kb-panel global-search-side">
-      <div class="panel-head"><h2>搜索范围</h2><span>7 类数据</span></div>
-      <div id="groupSummary" class="monitor-grid"></div>
+      <div class="panel-head"><h2>范围</h2><span>分类计数</span></div>
+      <div id="groupSummary" class="log-stats search-group-stats"></div>
     </section>
   </main>
   <div id="toast" class="toast"></div>

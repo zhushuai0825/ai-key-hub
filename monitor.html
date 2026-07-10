@@ -3,36 +3,36 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Monitor · 系统监控</title>
+  <title>系统监控</title>
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page monitor-page">
+<body class="module knowledge-page monitor-page compact-monitor">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>Monitor</strong><span>数据库、Chroma、企微、OCR、模型网关与审计状态</span></div>
+    <div class="module-title"><strong>系统监控</strong><span>健康状态 · 最近异常</span></div>
     <button class="btn" id="refreshBtn" type="button">刷新</button>
   </header>
-  <main class="monitor-shell">
+  <main class="monitor-shell compact-monitor-shell">
     <section class="kb-panel monitor-health-panel">
       <div class="panel-head"><h2>健康状态</h2><span id="updatedAt">--</span></div>
-      <div id="healthGrid" class="monitor-grid"></div>
+      <div id="healthGrid" class="log-stats health-stats"></div>
     </section>
     <section class="kb-panel monitor-audit-panel">
       <div class="panel-head"><h2>最近操作</h2><a class="btn" href="/audit.html">审计日志</a></div>
-      <div id="auditList" class="timeline-list compact"></div>
+      <div id="auditList" class="log-stream"></div>
     </section>
     <section class="kb-panel monitor-problem-panel">
       <div class="panel-head"><h2>最近失败</h2><span id="problemCount">0 条</span></div>
-      <div id="problemList" class="timeline-list compact"></div>
+      <div id="problemList" class="log-stream"></div>
     </section>
     <section class="kb-panel monitor-upload-panel">
-      <div class="panel-head"><h2>企微上传诊断</h2><span id="uploadCount">0 条</span></div>
-      <div id="uploadList" class="timeline-list compact"></div>
+      <div class="panel-head"><h2>企微上传</h2><span id="uploadCount">0 条</span></div>
+      <div id="uploadList" class="log-stream"></div>
     </section>
     <section class="kb-panel monitor-duplicate-panel">
       <div class="panel-head"><h2>重复文档</h2><span id="duplicateCount">0 组</span></div>
-      <div id="duplicateList" class="timeline-list compact"></div>
+      <div id="duplicateList" class="log-stream"></div>
     </section>
   </main>
   <script src="./monitor.js"></script>

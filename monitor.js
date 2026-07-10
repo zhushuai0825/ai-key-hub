@@ -9,48 +9,60 @@ function formatTime(value) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
-function statePill(ok) {
-  return `<span class="state-pill ${ok ? 'ok' : 'bad'}">${ok ? '正常' : '异常'}</span>`;
+function shortText(value = '', max = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function card(title, ok, lines) {
-  return `<article class="monitor-card">
-    <div><strong>${escapeHtml(title)}</strong>${statePill(ok)}</div>
-    ${lines.map((line) => `<p>${escapeHtml(line)}</p>`).join('')}
-  </article>`;
+function healthStat(title, ok, detail) {
+  return `<span class="log-stat ${ok ? 'ok' : 'bad'}" title="${escapeHtml(detail)}"><em>${escapeHtml(title)}</em><b>${ok ? '正常' : '异常'}</b></span>`;
 }
 
-function timelineRow(mark, title, time, detail) {
-  return `<article class="timeline-item">
-    <div class="timeline-mark">${escapeHtml(mark)}</div>
-    <div class="timeline-main">
-      <div class="timeline-title"><strong>${escapeHtml(title || '--')}</strong><time>${escapeHtml(formatTime(time))}</time></div>
-      <p>${escapeHtml(detail || '')}</p>
+function logRow(tone, title, time, detail) {
+  return `<article class="log-row tone-${tone || 'muted'}">
+    <i class="log-dot" aria-hidden="true"></i>
+    <div class="log-body">
+      <div class="log-line"><strong>${escapeHtml(shortText(title || '--', 48))}</strong><time>${escapeHtml(formatTime(time))}</time></div>
+      <div class="log-meta"><span title="${escapeHtml(detail || '')}">${escapeHtml(shortText(detail || '', 90))}</span></div>
     </div>
   </article>`;
 }
 
 function render(status) {
   $('#updatedAt').textContent = formatTime(status.checked_at);
+  const wechatOk = Object.values(status.wechat || {}).filter((value) => typeof value === 'boolean').every(Boolean);
   $('#healthGrid').innerHTML = [
-    card('数据库', status.database?.ok, [`时间 ${formatTime(status.database?.now)}`, status.database?.error || '连接可用']),
-    card('Chroma 向量库', status.chroma?.ok, [`地址 ${status.chroma?.url || '--'}`, status.chroma?.error || `HTTP ${status.chroma?.status || '--'}`]),
-    card('Embedding', true, [`模式 ${status.embeddings?.use_hash ? 'Hash' : status.embeddings?.model || '--'}`, `维度 ${status.embeddings?.dimension || '--'}`]),
-    card('企业微信', Object.values(status.wechat || {}).filter((value) => typeof value === 'boolean').every(Boolean), [`问题消息 ${status.wechat?.recent_problem_messages || 0}`, `上传失败 ${status.wechat?.upload_failures_24h || 0}`, `Corp ${status.wechat?.corp_id ? '已配' : '未配'} · Agent ${status.wechat?.agent_id ? '已配' : '未配'}`]),
-    card('OCR', status.ocr?.configured, [`模型 ${status.ocr?.model || '--'}`, `Base URL ${status.ocr?.base_url ? '已配' : '未配'}`]),
-    card('模型网关', true, [`24h 调用 ${status.gateway?.last_24h_calls || 0}`, `24h 失败 ${status.gateway?.last_24h_failed || 0}`, `超时 ${status.gateway?.timeout_ms}ms · 重试 ${status.gateway?.retry_count}`]),
-    card('自动备份', status.backup?.enabled, [`保留 ${status.backup?.keep || 0} 份`, `最近备份 ${(status.backup?.files || []).length} 份`, status.backup?.last?.file || status.backup?.last?.error || '暂无运行记录']),
-    card('失败重试', status.wechat?.failed_retry?.enabled, [`待重试 ${status.wechat?.retry_queue || 0} 条`, `间隔 ${Math.round((status.wechat?.failed_retry?.interval_ms || 0) / 1000)} 秒`, status.wechat?.failed_retry?.last?.checked_at ? `上次 ${formatTime(status.wechat.failed_retry.last.checked_at)}` : '暂无运行记录']),
+    healthStat('数据库', status.database?.ok, status.database?.error || `时间 ${formatTime(status.database?.now)}`),
+    healthStat('Chroma', status.chroma?.ok, status.chroma?.error || status.chroma?.url || ''),
+    healthStat('Embedding', true, `${status.embeddings?.use_hash ? 'Hash' : status.embeddings?.model || '--'} · ${status.embeddings?.dimension || '--'}d`),
+    healthStat('企微', wechatOk, `问题 ${status.wechat?.recent_problem_messages || 0} · 上传失败 ${status.wechat?.upload_failures_24h || 0}`),
+    healthStat('OCR', status.ocr?.configured, status.ocr?.model || '--'),
+    healthStat('网关', true, `24h ${status.gateway?.last_24h_calls || 0} 次 · 失败 ${status.gateway?.last_24h_failed || 0}`),
+    healthStat('备份', status.backup?.enabled, status.backup?.last?.file || status.backup?.last?.error || '暂无记录'),
+    healthStat('重试', status.wechat?.failed_retry?.enabled, `队列 ${status.wechat?.retry_queue || 0}`),
   ].join('');
-  $('#auditList').innerHTML = (status.recent_audits || []).length ? status.recent_audits.map((row) => timelineRow('审计', row.action, row.created_at, `${row.actor || 'system'} · ${row.entity_type || ''} ${row.entity_id || ''}`)).join('') : '<div class="empty-state">暂无审计记录</div>';
+
+  $('#auditList').innerHTML = (status.recent_audits || []).length
+    ? status.recent_audits.map((row) => logRow('muted', row.action, row.created_at, `${row.actor || 'system'} · ${row.entity_type || ''} ${row.entity_id || ''}`)).join('')
+    : '<div class="empty-state">暂无审计记录</div>';
+
   $('#problemCount').textContent = `${(status.recent_problems || []).length} 条`;
-  $('#problemList').innerHTML = (status.recent_problems || []).length ? status.recent_problems.map((row) => timelineRow('失败', `${row.intent || row.msg_type} / ${row.parse_status}`, row.received_at, row.media_error || row.reply_text || '')).join('') : '<div class="empty-state">最近没有失败消息。</div>';
+  $('#problemList').innerHTML = (status.recent_problems || []).length
+    ? status.recent_problems.map((row) => logRow('bad', `${row.intent || row.msg_type} / ${row.parse_status}`, row.received_at, row.media_error || row.reply_text || '')).join('')
+    : '<div class="empty-state">最近没有失败消息</div>';
+
   const uploads = status.knowledge?.recent_uploads || [];
   $('#uploadCount').textContent = `${uploads.length} 条`;
-  $('#uploadList').innerHTML = uploads.length ? uploads.map((row) => timelineRow('上传', `${row.title || row.filename}`, row.created_at, `${row.source_type} · ${row.status}${row.error_message ? ` · ${row.error_message}` : ''}`)).join('') : '<div class="empty-state">暂无企微上传记录。</div>';
+  $('#uploadList').innerHTML = uploads.length
+    ? uploads.map((row) => logRow(row.error_message ? 'bad' : 'ok', row.title || row.filename, row.created_at, `${row.source_type} · ${row.status}${row.error_message ? ` · ${row.error_message}` : ''}`)).join('')
+    : '<div class="empty-state">暂无企微上传记录</div>';
+
   const duplicates = status.knowledge?.duplicate_documents || [];
   $('#duplicateCount').textContent = `${duplicates.length} 组`;
-  $('#duplicateList').innerHTML = duplicates.length ? duplicates.map((row) => timelineRow('重复', row.title || row.filename, row.latest, `${row.count} 份 · KB#${row.kb_id}`)).join('') : '<div class="empty-state">没有检测到重复文档。</div>';
+  $('#duplicateList').innerHTML = duplicates.length
+    ? duplicates.map((row) => logRow('warn', row.title || row.filename, row.latest, `${row.count} 份 · KB#${row.kb_id}`)).join('')
+    : '<div class="empty-state">没有检测到重复文档</div>';
 }
 
 async function loadStatus() {

@@ -23,6 +23,12 @@ function formatTime(value) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
+function shortText(value = '', max = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function typeLabel(type) {
   return { knowledge: '知识库', finance: '账本', fitness: '健康', memory: '记忆', task: '提醒', wechat: '企微', report: '报告' }[type] || type;
 }
@@ -32,21 +38,26 @@ function renderBundle(bundle) {
   const items = bundle.items || [];
   $('#resultCount').textContent = `${items.length} 条`;
   const groups = bundle.groups || {};
-  $('#groupSummary').innerHTML = Object.entries(groups).map(([type, rows]) => `
-    <article class="monitor-card"><div><strong>${escapeHtml(typeLabel(type))}</strong><span class="state-pill ok">${rows.length}</span></div><p>${escapeHtml(type)} results</p></article>`).join('');
+  $('#groupSummary').innerHTML = Object.keys(groups).length
+    ? Object.entries(groups).map(([type, rows]) => `<span class="log-stat"><em>${escapeHtml(typeLabel(type))}</em><b>${rows.length}</b></span>`).join('')
+    : '<div class="empty-state">搜索后显示分类计数</div>';
   $('#globalResultList').innerHTML = items.length ? items.map((item) => `
-    <article class="global-result-card type-${escapeHtml(item.type)}">
-      <div class="timeline-title"><strong>${escapeHtml(item.title)}</strong><time>${escapeHtml(formatTime(item.time))}</time></div>
-      <p>${escapeHtml(item.preview || '')}</p>
-      <div class="meta">${escapeHtml(typeLabel(item.type))} · #${escapeHtml(item.id)} · ${escapeHtml(item.meta || '')}</div>
-    </article>`).join('') : '<div class="empty-state">没有找到相关数据。</div>';
+    <article class="log-row tone-muted">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line"><strong title="${escapeHtml(item.title)}">${escapeHtml(shortText(item.title, 44))}</strong><time>${escapeHtml(formatTime(item.time))}</time></div>
+        <div class="log-meta">
+          <span title="${escapeHtml(item.preview || '')}">${escapeHtml(typeLabel(item.type))} · ${escapeHtml(shortText(item.preview || item.meta || '', 70))}</span>
+        </div>
+      </div>
+    </article>`).join('') : '<div class="empty-state">没有找到相关数据</div>';
 }
 
 $('#globalSearchForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const query = new FormData(event.currentTarget).get('query');
   if (!String(query || '').trim()) return toast('请输入搜索内容');
-  $('#globalResultList').innerHTML = '<div class="empty-state">正在搜索所有数据...</div>';
+  $('#globalResultList').innerHTML = '<div class="empty-state">正在搜索…</div>';
   try {
     renderBundle(await api('/api/global-search', { method: 'POST', body: JSON.stringify({ query, limit: 8 }) }));
   } catch (error) {
@@ -57,10 +68,10 @@ $('#globalSearchForm').addEventListener('submit', async (event) => {
 $('#globalAskBtn').addEventListener('click', async () => {
   const query = new FormData($('#globalSearchForm')).get('query');
   if (!String(query || '').trim()) return toast('请输入问题');
-  $('#globalAnswerBox').innerHTML = '<div class="empty-state">正在搜索全局数据并生成回答...</div>';
+  $('#globalAnswerBox').innerHTML = '<div class="empty-state">正在生成回答…</div>';
   try {
     const data = await api('/api/global-answer', { method: 'POST', body: JSON.stringify({ question: query, limit: 10 }) });
-    $('#globalAnswerBox').innerHTML = `<div class="answer-text">${escapeHtml(data.answer || '').replace(/\n/g, '<br>')}</div><div class="source-list"><strong>引用的全局结果</strong>${(data.global_results || []).map((item) => `<p>${escapeHtml(typeLabel(item.type))} · ${escapeHtml(item.title)}</p>`).join('')}</div>`;
+    $('#globalAnswerBox').innerHTML = `<div class="answer-text">${escapeHtml(data.answer || '').replace(/\n/g, '<br>')}</div><div class="source-list"><strong>引用</strong>${(data.global_results || []).map((item) => `<p>${escapeHtml(typeLabel(item.type))} · ${escapeHtml(item.title)}</p>`).join('')}</div>`;
     renderBundle({ items: data.global_results || [], groups: {} });
   } catch (error) {
     toast(error.message);
