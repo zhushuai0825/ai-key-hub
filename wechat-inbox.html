@@ -3,22 +3,28 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>WeCom Inbox · 消息处理台</title>
+  <title>企微处理台</title>
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page inbox-page">
+<body class="module knowledge-page log-page inbox-page">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>WeCom Inbox</strong><span>查看企微消息识别、入库、失败原因与关联记录</span></div>
-    <button class="btn" id="refreshBtn" type="button">刷新</button>
+    <div class="module-title">
+      <strong>企微处理台</strong>
+      <span>识别错了就在这里重处理、改分类、撤销</span>
+    </div>
+    <div class="kb-bar-actions">
+      <a class="btn" href="/chat-log.html">对话日志</a>
+      <button class="btn" id="retryBtn" type="button">重试失败</button>
+      <button class="btn" id="refreshBtn" type="button">刷新</button>
+    </div>
   </header>
 
-  <main class="inbox-shell">
-    <section class="kb-panel inbox-summary-panel">
-      <div class="panel-head"><h2>处理概览</h2><span id="updatedAt">--</span></div>
-      <div class="cache-stats" id="summaryStats"></div>
-      <form id="filterForm" class="search-form inbox-filter-form">
+  <main class="inbox-shell compact-inbox">
+    <section class="kb-panel log-toolbar-panel inbox-main-tools">
+      <form id="filterForm" class="log-filter">
+        <input name="q" placeholder="搜索原文 / 回复 / 用户" />
         <select name="status">
           <option value="">全部状态</option>
           <option value="recorded">已记录</option>
@@ -43,49 +49,54 @@
           <option value="file">文件</option>
           <option value="image">图片</option>
         </select>
-        <input name="q" placeholder="搜索原文、回复、用户" />
-        <button class="btn btn-solid" type="submit">筛选</button>
+        <button class="btn btn-solid" type="submit">查询</button>
+        <div id="summaryStats" class="log-stats"></div>
+        <span class="log-count" id="rowCount">0 条</span>
       </form>
     </section>
 
-    <section class="kb-panel inbox-intent-panel">
-      <div class="panel-head"><h2>意图分布</h2><span id="intentCount">0 类</span></div>
-      <div id="intentList" class="intent-list"></div>
+    <section class="kb-panel inbox-list-panel log-list-panel">
+      <div class="panel-head">
+        <h2>消息处理</h2>
+        <span id="updatedAt">--</span>
+      </div>
+      <div id="messageList" class="log-stream">
+        <div class="empty-state">正在加载…</div>
+      </div>
     </section>
 
-    <section class="kb-panel inbox-rule-panel">
-      <div class="panel-head"><h2>学习规则</h2><span id="ruleCount">0 条</span></div>
-      <form id="ruleForm" class="search-form rule-form">
-        <input name="pattern" placeholder="关键词，如 蜜雪冰城" required />
-        <select name="value">
-          <option value="餐饮">餐饮</option>
-          <option value="交通">交通</option>
-          <option value="项目/工具">项目/工具</option>
-          <option value="健身">健身</option>
-          <option value="收入">收入</option>
-          <option value="未分类">未分类</option>
-        </select>
-        <input name="from_user" placeholder="用户ID，可空" />
-        <button class="btn btn-solid" type="submit">添加</button>
-      </form>
-      <div id="ruleList" class="intent-list"></div>
-    </section>
-
-    <section class="kb-panel inbox-profile-panel">
-      <div class="panel-head"><h2>用户绑定</h2><span id="profileCount">0 人</span></div>
-      <form id="profileForm" class="search-form profile-form">
-        <input name="from_user" placeholder="企业微信用户ID" required />
-        <input name="display_name" placeholder="昵称" />
-        <input name="daily_report_time" type="time" value="21:30" />
-        <button class="btn btn-solid" type="submit">保存用户</button>
-      </form>
-      <div id="profileList" class="intent-list"></div>
-    </section>
-
-    <section class="kb-panel inbox-list-panel">
-      <div class="panel-head"><h2>消息记录</h2><span id="rowCount">0 条</span></div>
-      <div id="messageList" class="history-list"></div>
-    </section>
+    <aside class="inbox-side">
+      <section class="kb-panel">
+        <div class="panel-head"><h2>意图</h2><span id="intentCount">0</span></div>
+        <div id="intentList" class="side-list"></div>
+      </section>
+      <section class="kb-panel">
+        <div class="panel-head"><h2>学习规则</h2><span id="ruleCount">0</span></div>
+        <form id="ruleForm" class="side-form">
+          <input name="pattern" placeholder="关键词，如 蜜雪冰城" required />
+          <select name="value">
+            <option value="餐饮">餐饮</option>
+            <option value="交通">交通</option>
+            <option value="项目/工具">项目/工具</option>
+            <option value="健身">健身</option>
+            <option value="收入">收入</option>
+            <option value="未分类">未分类</option>
+          </select>
+          <button class="btn btn-solid" type="submit">添加</button>
+        </form>
+        <div id="ruleList" class="side-list"></div>
+      </section>
+      <section class="kb-panel">
+        <div class="panel-head"><h2>用户</h2><span id="profileCount">0</span></div>
+        <form id="profileForm" class="side-form">
+          <input name="from_user" placeholder="企微用户ID" required />
+          <input name="display_name" placeholder="昵称" />
+          <input name="daily_report_time" type="time" value="21:30" />
+          <button class="btn btn-solid" type="submit">保存</button>
+        </form>
+        <div id="profileList" class="side-list"></div>
+      </section>
+    </aside>
   </main>
 
   <div id="toast" class="toast"></div>

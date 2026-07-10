@@ -42,7 +42,7 @@ const MODULE_GROUPS = [
     title: '企业微信',
     hint: '消息处理与链路诊断',
     modules: [
-      { id: 'wecom', name: '企微消息', desc: '消息识别、失败原因与关联记录', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online' },
+      { id: 'wecom', name: '企微处理台', desc: '识别错了可重处理、改分类、撤销', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online' },
       { id: 'wechat-diagnostics', name: '企微诊断', desc: '回调、上传、媒体与推送诊断', icon: 'monitor.svg', href: '/wechat-diagnostics.html', status: 'online' },
     ],
   },

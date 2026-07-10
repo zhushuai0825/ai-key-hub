@@ -260,11 +260,73 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .cache-card.expired { opacity: .72; }
 .cache-card-head { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
 .cache-badges { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-.inbox-shell { width: min(1280px, calc(100% - 44px)); margin: 22px auto 30px; display: grid; grid-template-columns: 1fr 320px; gap: 14px; align-items: start; }
-.inbox-summary-panel, .inbox-list-panel { grid-column: 1; }
-.inbox-intent-panel { grid-column: 2; grid-row: 1; }
-.inbox-rule-panel { grid-column: 2; grid-row: 2; }
-.inbox-profile-panel { grid-column: 2; grid-row: 3; }
+.inbox-shell { width: min(1280px, calc(100% - 44px)); margin: 16px auto 24px; display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 12px; align-items: start; }
+.compact-inbox .inbox-main-tools { grid-column: 1 / -1; }
+.compact-inbox .inbox-list-panel { grid-column: 1; grid-row: 2; max-height: calc(100vh - 170px); overflow: auto; }
+.compact-inbox .inbox-side { grid-column: 2; grid-row: 2; display: grid; gap: 12px; align-content: start; }
+.compact-inbox .inbox-side .kb-panel { max-height: none; overflow: visible; }
+.side-form { display: grid; gap: 8px; padding: 10px 12px; }
+.side-form input,
+.side-form select {
+  height: 32px;
+  padding: 0 10px;
+  color: var(--ink);
+  background: #0c0f14;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.side-form .btn { height: 32px; min-height: 32px; }
+.side-list { border-top: 1px solid var(--line); max-height: 220px; overflow: auto; }
+.side-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+  font-size: 12px;
+  cursor: pointer;
+}
+.side-item:hover { background: rgba(255,255,255,.04); }
+.side-item.disabled { opacity: .55; }
+.side-item span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-item strong { font-family: var(--mono); color: var(--muted); }
+.side-item em { display: inline-flex; gap: 6px; flex: 0 0 auto; font-style: normal; }
+.side-item em button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+}
+.log-actions { margin-top: 4px; }
+.log-actions summary {
+  display: inline-flex;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  list-style: none;
+}
+.log-actions summary::-webkit-details-marker { display: none; }
+.log-action-bar { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.log-action-bar button {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: #101318;
+  color: var(--ink-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+.log-action-bar button:disabled { opacity: .35; cursor: not-allowed; }
+.log-action-bar button.danger { color: var(--bad); border-color: rgba(196,92,92,.35); }
+.log-extra { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
 .inbox-filter-form { grid-template-columns: 130px 130px 120px minmax(0, 1fr) auto; }
 .rule-form { grid-template-columns: 1fr 110px; }
 .rule-form input[name="from_user"], .rule-form button { grid-column: 1 / -1; }
@@ -295,8 +357,11 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
   .cache-shell { width: 100%; margin: 0; padding: 14px; display: block; }
   .cache-filter-form { grid-template-columns: 1fr; }
 }
-@media (max-width: 960px) {
-  .inbox-shell { width: 100%; margin: 0; padding: 14px; display: block; }
+@media (max-width: 980px) {
+  .inbox-shell,
+  .compact-inbox { width: 100%; margin: 0; padding: 12px; display: block; }
+  .compact-inbox .inbox-list-panel { max-height: none; margin-bottom: 12px; }
+  .compact-inbox .inbox-side { display: grid; gap: 12px; }
   .inbox-filter-form { grid-template-columns: 1fr; }
 }
 @media (max-width: 760px) {
