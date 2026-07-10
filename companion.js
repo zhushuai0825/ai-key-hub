@@ -36,9 +36,20 @@ function setStatus(mode, hint) {
     paused: '已暂停',
     error: '出错了',
   };
+  const orbLabels = {
+    idle: '开始',
+    listening: '聆听',
+    thinking: '思考',
+    speaking: '回复',
+    paused: '继续',
+    error: '重试',
+  };
   $('#statusLabel').textContent = labels[mode] || mode;
   if (hint) $('#statusHint').textContent = hint;
-  $('#orb').dataset.mode = mode;
+  const orb = $('#orb');
+  if (orb) orb.dataset.mode = mode;
+  const orbLabel = $('#orbLabel');
+  if (orbLabel) orbLabel.textContent = orbLabels[mode] || '开始';
   document.body.dataset.companion = mode;
 }
 
@@ -51,7 +62,19 @@ function appendChat(role, text) {
 }
 
 function updateTurnCount() {
-  $('#turnCount').textContent = `${turns} 轮`;
+  $('#turnCount').textContent = String(turns);
+}
+
+function openDrawer() {
+  $('#chatDrawer').classList.add('open');
+  $('#chatDrawer').setAttribute('aria-hidden', 'false');
+  $('#drawerMask').hidden = false;
+}
+
+function closeDrawer() {
+  $('#chatDrawer').classList.remove('open');
+  $('#chatDrawer').setAttribute('aria-hidden', 'true');
+  $('#drawerMask').hidden = true;
 }
 
 async function api(path, options = {}) {
@@ -279,8 +302,8 @@ function stopCompanion() {
   releaseMic();
   $('#toggleBtn').textContent = '开始陪伴';
   $('#interruptBtn').disabled = true;
-  setStatus('paused', lastError ? `已停止。上次问题：${lastError}` : '已结束。再点「开始陪伴」可继续聊。');
-  $('#interimText').textContent = '…';
+  setStatus('paused', lastError ? `已停止。上次问题：${lastError}` : '已结束。再点中央光球或「开始陪伴」可继续聊。');
+  $('#interimText').textContent = '';
 }
 
 async function sendTyped() {
@@ -298,14 +321,17 @@ async function sendTyped() {
   await handleFinalText(text);
 }
 
-$('#toggleBtn').onclick = () => {
+function toggleCompanion() {
   if (active) stopCompanion();
   else startCompanion();
-};
+}
+
+$('#toggleBtn').onclick = toggleCompanion;
+$('#orb').onclick = toggleCompanion;
 
 $('#muteBtn').onclick = () => {
   muted = !muted;
-  $('#muteBtn').textContent = muted ? '开启朗读' : '静音回复';
+  $('#muteBtn').textContent = muted ? '开朗读' : '静音';
   if (muted) stopSpeaking();
   toast(muted ? '已静音，只显示文字回复' : '已开启语音朗读');
 };
@@ -324,16 +350,69 @@ $('#resetBtn').onclick = async () => {
   try {
     await ensureSession(true);
     toast('已开启新会话');
-    setStatus('idle', '点「开始陪伴」后直接说话即可；麦克风不可用时也可下方打字。');
+    setStatus('idle', '点中央光球授权麦克风，之后直接说话即可；麦克风不可用时也可下方打字。');
   } catch (error) {
     toast(error.message);
   }
 };
 
+$('#logToggle')?.addEventListener('click', openDrawer);
+$('#logClose')?.addEventListener('click', closeDrawer);
+$('#drawerMask')?.addEventListener('click', closeDrawer);
+
 $('#textForm')?.addEventListener('submit', (event) => {
   event.preventDefault();
   sendTyped();
 });
+
+function initParticles() {
+  const canvas = $('#particleCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  let w = 0;
+  let h = 0;
+  let raf = 0;
+  const dots = Array.from({ length: 48 }, () => ({
+    x: Math.random(),
+    y: Math.random(),
+    r: 0.6 + Math.random() * 1.6,
+    vx: (Math.random() - 0.5) * 0.00025,
+    vy: (Math.random() - 0.5) * 0.00025,
+    a: 0.15 + Math.random() * 0.35,
+  }));
+
+  function resize() {
+    w = canvas.width = window.innerWidth * devicePixelRatio;
+    h = canvas.height = window.innerHeight * devicePixelRatio;
+    canvas.style.width = `${window.innerWidth}px`;
+    canvas.style.height = `${window.innerHeight}px`;
+    ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  }
+
+  function frame() {
+    ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    const mode = document.body.dataset.companion;
+    const boost = mode === 'listening' || mode === 'speaking' ? 1.6 : 1;
+    for (const d of dots) {
+      d.x += d.vx * boost;
+      d.y += d.vy * boost;
+      if (d.x < 0 || d.x > 1) d.vx *= -1;
+      if (d.y < 0 || d.y > 1) d.vy *= -1;
+      ctx.beginPath();
+      ctx.fillStyle = mode === 'speaking'
+        ? `rgba(120, 210, 200, ${d.a})`
+        : `rgba(224, 163, 90, ${d.a})`;
+      ctx.arc(d.x * window.innerWidth, d.y * window.innerHeight, d.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    raf = requestAnimationFrame(frame);
+  }
+
+  resize();
+  window.addEventListener('resize', resize);
+  raf = requestAnimationFrame(frame);
+  return () => cancelAnimationFrame(raf);
+}
 
 (function initCompat() {
   const hints = [];
@@ -344,5 +423,6 @@ $('#textForm')?.addEventListener('submit', (event) => {
   }
   if (!synth) hints.push('当前环境不支持语音朗读，仍可文字对话。');
   $('#compatHint').textContent = hints.join(' ');
-  if (window.isSecureContext) setStatus('idle', '点一次「开始陪伴」授权麦克风，之后不用按键。');
+  if (window.isSecureContext) setStatus('idle', '点中央光球授权麦克风，之后不用按键，直接说话即可。');
+  initParticles();
 })();
