@@ -265,4 +265,39 @@ document.querySelectorAll('.ingest-tab').forEach((tab) => {
   };
 });
 
+const fileInput = $('#fileInput');
+const fileName = $('#fileName');
+const fileDrop = $('#fileDrop');
+
+function setFileLabel(file) {
+  if (!fileName) return;
+  fileName.textContent = file?.name || '点击选择文件，或拖到这里';
+  fileDrop?.classList.toggle('has-file', Boolean(file?.name));
+}
+
+fileInput?.addEventListener('change', () => setFileLabel(fileInput.files?.[0]));
+
+['dragenter', 'dragover'].forEach((type) => {
+  fileDrop?.addEventListener(type, (event) => {
+    event.preventDefault();
+    fileDrop.classList.add('dragover');
+  });
+});
+['dragleave', 'drop'].forEach((type) => {
+  fileDrop?.addEventListener(type, (event) => {
+    event.preventDefault();
+    fileDrop.classList.remove('dragover');
+  });
+});
+fileDrop?.addEventListener('drop', (event) => {
+  const file = event.dataTransfer?.files?.[0];
+  if (!file || !fileInput) return;
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  fileInput.files = transfer.files;
+  setFileLabel(file);
+});
+
+$('#uploadForm')?.addEventListener('reset', () => setTimeout(() => setFileLabel(null), 0));
+
 loadPrimary().catch((error) => toast(error.message));

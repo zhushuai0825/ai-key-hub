@@ -24,43 +24,68 @@
           <h2>入库</h2>
           <p class="panel-sub" id="kbSummary">加载中…</p>
         </div>
-      </div>
-
-      <div class="ingest-tabs" role="tablist">
-        <button type="button" class="ingest-tab active" data-tab="text">粘贴文本</button>
-        <button type="button" class="ingest-tab" data-tab="upload">上传文件</button>
-      </div>
-
-      <form id="textForm" class="compact-form ingest-pane active" data-pane="text">
-        <div class="compact-row">
-          <input name="title" placeholder="标题" />
-          <select name="version_strategy">
-            <option value="keep">保留旧版</option>
-            <option value="new_version">更新版本</option>
-            <option value="replace">替换旧文档</option>
-          </select>
+        <div class="ingest-tabs" role="tablist">
+          <button type="button" class="ingest-tab active" data-tab="text">粘贴文本</button>
+          <button type="button" class="ingest-tab" data-tab="upload">上传文件</button>
         </div>
-        <textarea name="text" placeholder="粘贴文本或 Markdown"></textarea>
-        <div class="compact-actions">
+      </div>
+
+      <form id="textForm" class="ingest-form ingest-pane active" data-pane="text">
+        <label class="field">
+          <span>标题</span>
+          <input name="title" placeholder="例如：保密协议" />
+        </label>
+        <label class="field">
+          <span>同名处理</span>
+          <div class="select-wrap">
+            <select name="version_strategy">
+              <option value="keep">保留旧版</option>
+              <option value="new_version">更新版本</option>
+              <option value="replace">替换旧文档</option>
+            </select>
+          </div>
+        </label>
+        <label class="field field-full">
+          <span>内容</span>
+          <textarea name="text" placeholder="粘贴文本或 Markdown"></textarea>
+        </label>
+        <div class="ingest-foot">
+          <p class="form-hint">保存后自动切分并写入向量库</p>
           <button class="btn btn-solid" type="submit">保存并切分</button>
         </div>
       </form>
 
-      <form id="uploadForm" class="compact-form ingest-pane" data-pane="upload">
-        <div class="compact-row">
-          <input name="title" placeholder="标题，可选" />
-          <select name="version_strategy">
-            <option value="keep">保留旧版</option>
-            <option value="new_version">更新版本</option>
-            <option value="replace">替换旧文档</option>
-          </select>
-        </div>
-        <div class="compact-row">
-          <input name="note" placeholder="图片/OCR 说明，可选" />
-          <input name="file" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv,.png,.jpg,.jpeg,.webp" />
-        </div>
-        <div class="compact-actions">
-          <span class="form-hint">TXT / MD / PDF / DOCX / JSON / CSV / 图片</span>
+      <form id="uploadForm" class="ingest-form ingest-pane" data-pane="upload">
+        <label class="field">
+          <span>标题 <em>可选</em></span>
+          <input name="title" placeholder="不填则用文件名" />
+        </label>
+        <label class="field">
+          <span>同名处理</span>
+          <div class="select-wrap">
+            <select name="version_strategy">
+              <option value="keep">保留旧版</option>
+              <option value="new_version">更新版本</option>
+              <option value="replace">替换旧文档</option>
+            </select>
+          </div>
+        </label>
+        <label class="field field-full">
+          <span>说明 <em>图片 OCR 可选</em></span>
+          <input name="note" placeholder="补充说明，帮助识别图片内容" />
+        </label>
+        <label class="field field-full file-field">
+          <span>文件</span>
+          <div class="file-drop" id="fileDrop">
+            <input name="file" id="fileInput" type="file" accept=".txt,.md,.pdf,.docx,.json,.csv,.png,.jpg,.jpeg,.webp" />
+            <div class="file-drop-ui">
+              <strong id="fileName">点击选择文件，或拖到这里</strong>
+              <span>TXT / MD / PDF / DOCX / JSON / CSV / 图片</span>
+            </div>
+          </div>
+        </label>
+        <div class="ingest-foot">
+          <p class="form-hint">上传后自动解析、切分并入库</p>
           <button class="btn btn-solid" type="submit">上传并入库</button>
         </div>
       </form>
