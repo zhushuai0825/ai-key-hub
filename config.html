@@ -1,1 +1,24 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Config Center</title><link rel="stylesheet" href="./theme.css"/><link rel="stylesheet" href="./knowledge.css"/></head><body class="module knowledge-page"><header class="kb-bar"><a class="module-back" href="/">返回指挥台</a><div class="module-title"><strong>Config Center</strong><span>运行配置状态，不展示密钥明文</span></div><button class="btn" id="refreshBtn">刷新</button></header><main class="config-shell"><section class="kb-panel"><div class="panel-head"><h2>配置状态</h2><span id="configUpdated">--</span></div><div id="configGrid" class="config-grid"></div></section></main><script src="./config.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>配置中心</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page compact-config">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>配置中心</strong><span>运行状态，不展示密钥明文</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+  <main class="config-shell">
+    <section class="kb-panel">
+      <div class="panel-head"><h2>配置状态</h2><span id="configUpdated">--</span></div>
+      <div id="configGrid" class="config-grid"></div>
+    </section>
+  </main>
+  <script src="./config.js"></script>
+</body>
+</html>

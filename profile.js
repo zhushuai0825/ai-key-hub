@@ -24,12 +24,14 @@ function formatTime(value) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
+function shortText(value = '', max = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function card(title, rows) {
-  return `<article class="monitor-card"><div><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><span class="state-pill ok">${rows.length}</span></div>${rows.slice(0, 8).map((row) => {
-    const text = typeof row === 'string' ? row : JSON.stringify(row);
-    const short = text.length > 120 ? `${text.slice(0, 120)}…` : text;
-    return `<p title="${escapeHtml(text)}">${escapeHtml(short)}</p>`;
-  }).join('')}</article>`;
+  return `<span class="log-stat" title="${escapeHtml(title)}"><em>${escapeHtml(title)}</em><b>${rows.length}</b></span>`;
 }
 
 function memoryQueryString() {
@@ -43,18 +45,23 @@ function memoryQueryString() {
 function renderMemories(rows = []) {
   currentMemories = rows;
   $('#memoryCount').textContent = `${rows.length} 条`;
-  $('#memoryList').innerHTML = rows.length ? rows.map((memory) => `
-    <article class="history-card" id="memory-${memory.id}">
-      <div class="timeline-title"><strong>${escapeHtml(memory.category)}</strong><time>${escapeHtml(formatTime(memory.updated_at))}</time></div>
-      <p>${escapeHtml(memory.content)}</p>
-      <div class="meta">#${memory.id} · 重要度 ${memory.importance} · ${memory.pinned ? '已置顶' : '未置顶'} · ${escapeHtml(memory.source || '')}</div>
-      <div class="row-actions inbox-actions">
-        <button type="button" data-edit-memory="${memory.id}">编辑</button>
-        <button type="button" data-toggle-pin="${memory.id}" data-pinned="${memory.pinned ? '1' : '0'}">${memory.pinned ? '取消置顶' : '置顶'}</button>
-        <button type="button" data-importance="${memory.id}">重要度</button>
-        <button class="danger-btn" type="button" data-delete-memory="${memory.id}">删除</button>
+  $('#memoryList').innerHTML = rows.length ? rows.map((memory) => {
+    const meta = [`#${memory.id}`, `重要度 ${memory.importance}`, memory.pinned ? '已置顶' : '未置顶', memory.source || ''].filter(Boolean).join(' · ');
+    return `<article class="log-row tone-${memory.pinned ? 'ok' : 'muted'}" id="memory-${memory.id}">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line"><strong title="${escapeHtml(memory.category)}">${escapeHtml(shortText(memory.category, 36))}</strong><time>${escapeHtml(formatTime(memory.updated_at))}</time></div>
+        <div class="log-meta">
+          <span title="${escapeHtml(memory.content || '')}">${escapeHtml(shortText(memory.content, 70))}</span>
+          <button type="button" class="timeline-link" data-edit-memory="${memory.id}">编辑</button>
+          <button type="button" class="timeline-link" data-toggle-pin="${memory.id}" data-pinned="${memory.pinned ? '1' : '0'}">${memory.pinned ? '取消置顶' : '置顶'}</button>
+          <button type="button" class="timeline-link" data-importance="${memory.id}">重要度</button>
+          <button type="button" class="timeline-link danger" data-delete-memory="${memory.id}">删除</button>
+        </div>
+        <p class="log-extra">${escapeHtml(shortText(meta, 90))}</p>
       </div>
-    </article>`).join('') : '<div class="empty-state">没有匹配的长期记忆。</div>';
+    </article>`;
+  }).join('') : '<div class="empty-state">没有匹配的长期记忆</div>';
   bindMemoryActions();
 }
 

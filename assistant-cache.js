@@ -50,19 +50,36 @@ function financeTitle(row) {
   return `${label} ¥${Number(row.amount).toFixed(2)} · ${row.title}`;
 }
 
+function shortText(value = '', max = 72) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+function logRow(tone, title, time, meta, actions = '') {
+  return `<article class="log-row tone-${tone || 'muted'}">
+    <i class="log-dot" aria-hidden="true"></i>
+    <div class="log-body">
+      <div class="log-line"><strong title="${escapeHtml(title)}">${escapeHtml(shortText(title, 44))}</strong><time>${escapeHtml(time)}</time></div>
+      <div class="log-meta"><span title="${escapeHtml(meta)}">${escapeHtml(shortText(meta, 80))}</span>${actions}</div>
+    </div>
+  </article>`;
+}
+
 function renderSummary() {
   const s = memory?.counts || {};
   const month = memory?.month_stats || {};
-  $('#memoryStats').innerHTML = `
-    <div class="cache-stat-card"><strong>${s.fitness || 0}</strong><span>健康记录</span></div>
-    <div class="cache-stat-card"><strong>${s.finance || 0}</strong><span>账本记录</span></div>
-    <div class="cache-stat-card"><strong>¥${Number(month.expense || 0).toFixed(0)}</strong><span>本月支出</span></div>
-    <div class="cache-stat-card"><strong>¥${Number(month.income || 0).toFixed(0)}</strong><span>本月收入</span></div>
-    <div class="cache-stat-card"><strong>${s.memories || 0}</strong><span>长期记忆</span></div>
-    <div class="cache-stat-card"><strong>${s.tasks || 0}</strong><span>待办提醒</span></div>
-    <div class="cache-stat-card"><strong>${s.reports || 0}</strong><span>AI报告</span></div>
-    <div class="cache-stat-card"><strong>${s.useful_cache || 0}</strong><span>有价值问答</span></div>`;
-  $('#memoryUpdatedAt').textContent = `更新于 ${formatTime(new Date().toISOString())}`;
+  $('#memoryStats').innerHTML = [
+    ['健康', s.fitness || 0],
+    ['账本', s.finance || 0],
+    ['本月支出', `¥${Number(month.expense || 0).toFixed(0)}`],
+    ['本月收入', `¥${Number(month.income || 0).toFixed(0)}`],
+    ['记忆', s.memories || 0],
+    ['待办', s.tasks || 0],
+    ['报告', s.reports || 0],
+    ['问答', s.useful_cache || 0],
+  ].map(([label, value]) => `<span class="log-stat"><em>${label}</em><b>${escapeHtml(String(value))}</b></span>`).join('');
+  $('#memoryUpdatedAt').textContent = formatTime(new Date().toISOString());
 }
 
 function memoryCategoryLabel(category) {
@@ -75,22 +92,14 @@ function memoryCategoryLabel(category) {
 function renderLongMemories() {
   const rows = memory?.memories || [];
   $('#longMemoryCount').textContent = `${rows.length} 条`;
-  $('#longMemoryList').innerHTML = rows.length ? rows.map((row) => `
-    <article class="history-card cache-card ${row.pinned ? 'pinned' : ''}">
-      <div class="cache-card-head">
-        <strong>${escapeHtml(row.content)}</strong>
-        <div class="cache-badges">
-          <span class="status-pill ok">${escapeHtml(memoryCategoryLabel(row.category))}</span>
-          <span class="status-pill">重要度 ${row.importance}</span>
-          ${row.pinned ? '<span class="status-pill ok">已固定</span>' : ''}
-        </div>
-      </div>
-      <div class="meta">更新 ${formatTime(row.updated_at)}</div>
-      <div class="row-actions">
-        <button type="button" data-memory-pin="${row.id}" data-pinned="${row.pinned ? '1' : '0'}">${row.pinned ? '取消固定' : '固定记忆'}</button>
-        <button class="danger-btn" type="button" data-memory-delete="${row.id}">删除</button>
-      </div>
-    </article>`).join('') : '<div class="empty-state">还没有长期记忆。你可以在企业微信里说：记住我不喝奶茶、我的目标是体重到68kg、这个项目叫AI助手。</div>';
+  $('#longMemoryList').innerHTML = rows.length ? rows.map((row) => logRow(
+    row.pinned ? 'ok' : 'muted',
+    row.content,
+    formatTime(row.updated_at),
+    `${memoryCategoryLabel(row.category)} · 重要度 ${row.importance}${row.pinned ? ' · 已固定' : ''}`,
+    `<button type="button" class="timeline-link" data-memory-pin="${row.id}" data-pinned="${row.pinned ? '1' : '0'}">${row.pinned ? '取消固定' : '固定'}</button>
+     <button type="button" class="timeline-link danger" data-memory-delete="${row.id}">删除</button>`,
+  )).join('') : '<div class="empty-state">还没有长期记忆</div>';
 
   document.querySelectorAll('[data-memory-pin]').forEach((btn) => {
     btn.onclick = async () => {
@@ -119,13 +128,13 @@ function renderLongMemories() {
 function renderFitness() {
   const rows = memory?.fitness || [];
   $('#fitnessCount').textContent = `${rows.length} 条`;
-  $('#fitnessList').innerHTML = rows.length ? rows.map((row) => `
-    <article class="history-card">
-      <strong>${escapeHtml(fitnessTitle(row))}</strong>
-      <p>${escapeHtml(fitnessDetail(row))}</p>
-      <div class="meta">${formatTime(row.recorded_at)}</div>
-      <div class="row-actions"><button class="danger-btn" type="button" data-fitness-delete="${row.id}">删除</button></div>
-    </article>`).join('') : '<div class="empty-state">还没有健康记录。在企业微信发：体重 72.5、跑步 30 分钟、睡了 7 小时。</div>';
+  $('#fitnessList').innerHTML = rows.length ? rows.map((row) => logRow(
+    'ok',
+    fitnessTitle(row),
+    formatTime(row.recorded_at),
+    fitnessDetail(row),
+    `<button type="button" class="timeline-link danger" data-fitness-delete="${row.id}">删除</button>`,
+  )).join('') : '<div class="empty-state">还没有健康记录</div>';
   document.querySelectorAll('[data-fitness-delete]').forEach((btn) => {
     btn.onclick = async () => {
       const id = Number(btn.dataset.fitnessDelete);
@@ -142,13 +151,13 @@ function renderFitness() {
 function renderFinance() {
   const rows = memory?.finance || [];
   $('#financeCount').textContent = `${rows.length} 条`;
-  $('#financeList').innerHTML = rows.length ? rows.map((row) => `
-    <article class="history-card">
-      <strong>${escapeHtml(financeTitle(row))}</strong>
-      <p>${escapeHtml(row.category || '未分类')}${row.note ? ` · ${escapeHtml(row.note)}` : ''}</p>
-      <div class="meta">${formatTime(row.occurred_at)}</div>
-      <div class="row-actions"><button class="danger-btn" type="button" data-finance-delete="${row.id}">删除</button></div>
-    </article>`).join('') : '<div class="empty-state">还没有账本记录。在企业微信发：买咖啡 18、收入工资 5000。</div>';
+  $('#financeList').innerHTML = rows.length ? rows.map((row) => logRow(
+    row.direction === 'income' ? 'ok' : 'warn',
+    financeTitle(row),
+    formatTime(row.occurred_at),
+    `${row.category || '未分类'}${row.note ? ` · ${row.note}` : ''}`,
+    `<button type="button" class="timeline-link danger" data-finance-delete="${row.id}">删除</button>`,
+  )).join('') : '<div class="empty-state">还没有账本记录</div>';
   document.querySelectorAll('[data-finance-delete]').forEach((btn) => {
     btn.onclick = async () => {
       const id = Number(btn.dataset.financeDelete);
@@ -164,23 +173,14 @@ function renderFinance() {
 
 function renderCache() {
   $('#cacheCount').textContent = `${cacheRows.length} 条`;
-  $('#cacheList').innerHTML = cacheRows.length ? cacheRows.map((row) => `
-    <article class="history-card cache-card ${row.pinned ? 'pinned' : ''}">
-      <div class="cache-card-head">
-        <strong>${escapeHtml(row.question)}</strong>
-        <div class="cache-badges">
-          <span class="status-pill ok">${escapeHtml(topicLabel(row.topic))}</span>
-          ${row.pinned ? '<span class="status-pill ok">已固定</span>' : ''}
-          ${Number(row.hit_count || 0) > 0 ? `<span class="status-pill">命中 ${row.hit_count}</span>` : ''}
-        </div>
-      </div>
-      <p>${escapeHtml(row.answer).replace(/\n/g, '<br>')}</p>
-      <div class="meta">更新 ${formatTime(row.updated_at)}${row.last_hit_at ? ` · 最近命中 ${formatTime(row.last_hit_at)}` : ''}</div>
-      <div class="row-actions">
-        <button type="button" data-pin="${row.id}" data-pinned="${row.pinned ? '1' : '0'}">${row.pinned ? '取消固定' : '固定收藏'}</button>
-        <button class="danger-btn" type="button" data-delete="${row.id}">删除</button>
-      </div>
-    </article>`).join('') : '<div class="empty-state">还没有有价值问答。试试问：我这个月花了多少、最近体重怎么样、知识库里的问题。</div>';
+  $('#cacheList').innerHTML = cacheRows.length ? cacheRows.map((row) => logRow(
+    row.pinned ? 'ok' : 'muted',
+    row.question,
+    formatTime(row.updated_at),
+    `${topicLabel(row.topic)}${row.hit_count ? ` · 命中 ${row.hit_count}` : ''} · ${String(row.answer || '').replace(/\s+/g, ' ')}`,
+    `<button type="button" class="timeline-link" data-pin="${row.id}" data-pinned="${row.pinned ? '1' : '0'}">${row.pinned ? '取消固定' : '固定'}</button>
+     <button type="button" class="timeline-link danger" data-delete="${row.id}">删除</button>`,
+  )).join('') : '<div class="empty-state">还没有有价值问答</div>';
 
   document.querySelectorAll('[data-pin]').forEach((btn) => {
     btn.onclick = async () => {
@@ -221,22 +221,14 @@ function weekdayLabel(value) {
 
 function renderReportSubscriptions() {
   $('#reportSubCount').textContent = `${reportSubscriptions.length} 条`;
-  $('#reportSubList').innerHTML = reportSubscriptions.length ? reportSubscriptions.map((row) => `
-    <article class="history-card cache-card ${row.enabled ? 'pinned' : 'expired'}">
-      <div class="cache-card-head">
-        <strong>${escapeHtml(row.from_user)} · ${escapeHtml(reportTypeLabel(row.report_type))}</strong>
-        <div class="cache-badges">
-          <span class="status-pill ${row.enabled ? 'ok' : ''}">${row.enabled ? '已启用' : '已停用'}</span>
-          <span class="status-pill">${escapeHtml(row.send_time)}</span>
-          ${row.report_type === 'weekly' ? `<span class="status-pill">${escapeHtml(weekdayLabel(row.weekday))}</span>` : ''}
-        </div>
-      </div>
-      <div class="meta">最近推送 ${row.last_sent_at ? formatTime(row.last_sent_at) : '从未'} · 更新 ${formatTime(row.updated_at)}</div>
-      <div class="row-actions">
-        <button type="button" data-report-toggle="${row.id}" data-enabled="${row.enabled ? '1' : '0'}">${row.enabled ? '停用' : '启用'}</button>
-        <button class="danger-btn" type="button" data-report-delete="${row.id}">删除</button>
-      </div>
-    </article>`).join('') : '<div class="empty-state">暂无报告订阅。添加后系统会按时间通过企业微信推送日报或周报。</div>';
+  $('#reportSubList').innerHTML = reportSubscriptions.length ? reportSubscriptions.map((row) => logRow(
+    row.enabled ? 'ok' : 'muted',
+    `${row.from_user} · ${reportTypeLabel(row.report_type)}`,
+    formatTime(row.updated_at),
+    `${row.send_time}${row.report_type === 'weekly' ? ` · ${weekdayLabel(row.weekday)}` : ''} · ${row.enabled ? '已启用' : '已停用'} · 最近 ${row.last_sent_at ? formatTime(row.last_sent_at) : '从未'}`,
+    `<button type="button" class="timeline-link" data-report-toggle="${row.id}" data-enabled="${row.enabled ? '1' : '0'}">${row.enabled ? '停用' : '启用'}</button>
+     <button type="button" class="timeline-link danger" data-report-delete="${row.id}">删除</button>`,
+  )).join('') : '<div class="empty-state">暂无报告订阅</div>';
   document.querySelectorAll('[data-report-toggle]').forEach((button) => {
     button.onclick = async () => {
       const enabled = button.dataset.enabled !== '1';
@@ -265,23 +257,14 @@ function goalTypeLabel(type) {
 
 function renderGoals() {
   $('#goalCount').textContent = `${goals.length} 条`;
-  $('#goalList').innerHTML = goals.length ? goals.map((row) => `
-    <article class="history-card cache-card ${row.enabled ? 'pinned' : 'expired'}">
-      <div class="cache-card-head">
-        <strong>${escapeHtml(row.title)} · ${Number(row.target_value).toFixed(row.goal_type === 'weekly_workout' ? 0 : 1)}${escapeHtml(row.unit || '')}</strong>
-        <div class="cache-badges">
-          <span class="status-pill ${row.enabled ? 'ok' : ''}">${row.enabled ? '启用' : '停用'}</span>
-          <span class="status-pill">${escapeHtml(goalTypeLabel(row.goal_type))}</span>
-          ${row.from_user ? `<span class="status-pill">${escapeHtml(row.from_user)}</span>` : '<span class="status-pill">全局</span>'}
-        </div>
-      </div>
-      ${row.note ? `<p>${escapeHtml(row.note)}</p>` : ''}
-      <div class="meta">更新 ${formatTime(row.updated_at)}</div>
-      <div class="row-actions">
-        <button type="button" data-goal-toggle="${row.id}" data-enabled="${row.enabled ? '1' : '0'}">${row.enabled ? '停用' : '启用'}</button>
-        <button class="danger-btn" type="button" data-goal-delete="${row.id}">删除</button>
-      </div>
-    </article>`).join('') : '<div class="empty-state">暂无目标。可以添加体重、月支出、周运动或睡眠目标，日报/周报会自动对比偏差。</div>';
+  $('#goalList').innerHTML = goals.length ? goals.map((row) => logRow(
+    row.enabled ? 'ok' : 'muted',
+    `${row.title} · ${Number(row.target_value).toFixed(row.goal_type === 'weekly_workout' ? 0 : 1)}${row.unit || ''}`,
+    formatTime(row.updated_at),
+    `${goalTypeLabel(row.goal_type)} · ${row.from_user || '全局'} · ${row.enabled ? '启用' : '停用'}${row.note ? ` · ${row.note}` : ''}`,
+    `<button type="button" class="timeline-link" data-goal-toggle="${row.id}" data-enabled="${row.enabled ? '1' : '0'}">${row.enabled ? '停用' : '启用'}</button>
+     <button type="button" class="timeline-link danger" data-goal-delete="${row.id}">删除</button>`,
+  )).join('') : '<div class="empty-state">暂无目标</div>';
   document.querySelectorAll('[data-goal-toggle]').forEach((button) => {
     button.onclick = async () => {
       const enabled = button.dataset.enabled !== '1';

@@ -17,13 +17,65 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
 .manage-page .docs-panel { min-height: calc(100vh - 124px); }
 .ask-main-panel { min-height: calc(100vh - 124px); }
 .search-panel, .history-panel { max-height: none; }
-.base-form, .doc-form, .search-form, .ask-form, .category-form { display: grid; gap: 10px; padding: 14px 16px; }
-.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.form-grid label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.base-form, .doc-form, .search-form, .ask-form, .category-form { display: grid; gap: 10px; padding: 14px 16px; min-width: 0; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; }
+.form-grid label { display: grid; gap: 6px; min-width: 0; color: var(--muted); font-size: 12px; }
 @media (max-width: 760px) { .form-grid { grid-template-columns: 1fr; } }
 .kb-bar-actions { display: flex; gap: 8px; align-items: center; }
 
-/* Compact log pages: system / audit / chat */
+/* Global dark form controls — prevent native white selects / overflow */
+.knowledge-page input,
+.knowledge-page select,
+.knowledge-page textarea {
+  max-width: 100%;
+  color-scheme: dark;
+}
+.knowledge-page select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: #0c0f14;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-2) 50%),
+    linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% - 2px),
+    calc(100% - 9px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+.knowledge-page select option {
+  color: var(--ink);
+  background: #12161c;
+}
+.base-form input, .base-form select,
+.doc-form input, .doc-form select,
+.search-form input, .search-form select,
+.category-form input, .category-form select,
+.ask-form input, .ask-form select,
+.doc-form textarea, .ask-form textarea {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 10px 11px;
+  color: var(--ink);
+  background-color: #0c0f14;
+  border: 1px solid var(--line-bright);
+  border-radius: var(--radius);
+  outline: none;
+}
+.base-form input:focus, .base-form select:focus,
+.doc-form input:focus, .doc-form select:focus,
+.search-form input:focus, .search-form select:focus,
+.category-form input:focus, .category-form select:focus,
+.ask-form input:focus, .ask-form select:focus,
+.doc-form textarea:focus, .ask-form textarea:focus { border-color: var(--accent); }
+.doc-form textarea { min-height: 160px; resize: vertical; }
+.ask-large-form textarea { min-height: 260px; resize: vertical; font-size: 15px; line-height: 1.75; }
+.doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
+.doc-form { background: var(--surface); overflow: hidden; }
+.doc-form h3 { font-size: 13px; color: var(--ink); }
+.form-hint { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .log-shell { width: min(1280px, calc(100% - 44px)); margin: 16px auto 24px; display: grid; gap: 12px; }
 .log-toolbar-panel { max-height: none; overflow: visible; }
 .log-list-panel { max-height: calc(100vh - 170px); overflow: auto; }
@@ -177,14 +229,6 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
   .log-meta .timeline-link,
   .log-meta button.timeline-link { margin-left: 0; }
 }
-.base-form input, .base-form select, .doc-form input, .search-form input, .category-form input, .doc-form textarea, .ask-form textarea { width: 100%; padding: 10px 11px; color: var(--ink); background: #0c0f14; border: 1px solid var(--line); border-radius: var(--radius); outline: none; }
-.base-form input:focus, .base-form select:focus, .doc-form input:focus, .search-form input:focus, .category-form input:focus, .doc-form textarea:focus, .ask-form textarea:focus { border-color: var(--accent); }
-.doc-form textarea { min-height: 250px; resize: vertical; }
-.ask-large-form textarea { min-height: 260px; resize: vertical; font-size: 15px; line-height: 1.75; }
-.doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); }
-.doc-form { background: var(--surface); }
-.doc-form h3 { font-size: 13px; color: var(--ink); }
-.form-hint { color: var(--muted); font-size: 12px; line-height: 1.6; }
 .base-list, .doc-list, .result-list, .history-list { border-top: 1px solid var(--line); }
 .category-manager { border-top: 1px solid var(--line); }
 .sub-head { display: flex; justify-content: space-between; gap: 10px; align-items: center; padding: 14px 16px 0; }
@@ -650,6 +694,52 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.compact-notify .config-shell,
+.compact-backup .config-shell,
+.compact-profile .profile-shell { margin-top: 16px; gap: 12px; }
+.compact-notify .panel-head,
+.compact-backup .panel-head,
+.compact-profile .panel-head,
+.compact-memory .panel-head { padding: 10px 12px; }
+.notify-form,
+.compact-backup .compact-form { border-bottom: 1px solid var(--line); }
+.compact-backup .compact-form textarea {
+  min-height: 120px;
+  font: 12px/1.5 var(--mono);
+}
+.compact-backup .compact-actions { justify-content: flex-start; flex-wrap: wrap; }
+.compact-backup .danger-btn {
+  height: 32px;
+  min-height: 32px;
+  padding: 0 12px;
+  color: var(--bad);
+  border: 1px solid rgba(196,92,92,.35);
+  background: var(--bad-soft);
+}
+.compact-profile .profile-summary {
+  min-height: 220px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.profile-stats { margin: 0; padding: 10px 12px; }
+.compact-memory .memory-shell { margin-top: 16px; }
+.compact-memory .memory-hint { padding: 0 12px 12px; }
+.compact-memory #memoryStats {
+  margin: 0;
+  padding: 10px 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.compact-memory .compact-form { border-bottom: 1px solid var(--line); }
 
 /* Compact knowledge manage */
 .compact-kb .kb-manage-shell { margin-top: 16px; gap: 12px; }

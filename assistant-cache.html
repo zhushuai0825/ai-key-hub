@@ -3,95 +3,122 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>我的数据 · 助手记忆</title>
+  <title>我的数据</title>
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page memory-page">
+<body class="module knowledge-page memory-page compact-memory">
   <header class="kb-bar">
     <a class="module-back" href="/">返回指挥台</a>
-    <div class="module-title"><strong>我的数据</strong><span>体重 · 账本 · 运动 · 睡眠 · 有价值问答</span></div>
-    <a class="btn" href="/fitness.html">FitLog</a>
+    <div class="module-title"><strong>我的数据</strong><span>健康 · 账本 · 记忆 · 问答</span></div>
+    <div class="kb-bar-actions">
+      <a class="btn" href="/fitness.html">FitLog</a>
+      <button class="btn" id="refreshBtn" type="button">刷新</button>
+    </div>
   </header>
 
   <main class="memory-shell">
     <section class="kb-panel memory-summary-panel">
-      <div class="panel-head"><h2>数据概览</h2><span id="memoryUpdatedAt">--</span></div>
-      <div class="cache-stats" id="memoryStats"></div>
-      <p class="form-hint">这里只展示你真正记录和查询过的有用数据。闲聊（如「你好」）不会进入缓存。</p>
-      <div class="cache-actions">
-        <button class="btn btn-solid" id="refreshBtn" type="button">刷新</button>
-      </div>
+      <div class="panel-head"><h2>概览</h2><span id="memoryUpdatedAt">--</span></div>
+      <div class="log-stats" id="memoryStats"></div>
+      <p class="form-hint memory-hint">只展示真实记录和有价值问答，闲聊不会进缓存。</p>
     </section>
 
     <section class="kb-panel memory-records-panel">
-      <div class="panel-head"><h2>健康记录</h2><span id="fitnessCount">0 条</span></div>
-      <div id="fitnessList" class="history-list"></div>
+      <div class="panel-head"><h2>健康</h2><span id="fitnessCount">0 条</span></div>
+      <div id="fitnessList" class="log-stream"></div>
     </section>
 
     <section class="kb-panel memory-records-panel">
-      <div class="panel-head"><h2>账本记录</h2><span id="financeCount">0 条</span></div>
-      <div id="financeList" class="history-list"></div>
+      <div class="panel-head"><h2>账本</h2><span id="financeCount">0 条</span></div>
+      <div id="financeList" class="log-stream"></div>
     </section>
 
     <section class="kb-panel memory-long-panel">
       <div class="panel-head"><h2>长期记忆</h2><span id="longMemoryCount">0 条</span></div>
-      <div id="longMemoryList" class="history-list"></div>
+      <div id="longMemoryList" class="log-stream"></div>
     </section>
 
     <section class="kb-panel memory-goal-panel">
-      <div class="panel-head"><h2>目标管理</h2><span id="goalCount">0 条</span></div>
-      <form id="goalForm" class="search-form goal-form">
-        <input name="from_user" placeholder="企业微信用户 ID，可空" />
-        <select name="goal_type">
-          <option value="weight">体重目标</option>
-          <option value="monthly_expense">月支出目标</option>
-          <option value="weekly_workout">周运动目标</option>
-          <option value="sleep">睡眠目标</option>
-        </select>
-        <input name="target_value" type="number" step="0.1" placeholder="目标值" required />
-        <input name="title" placeholder="目标名称，可空" />
-        <button class="btn btn-solid" type="submit">添加目标</button>
+      <div class="panel-head"><h2>目标</h2><span id="goalCount">0 条</span></div>
+      <form id="goalForm" class="compact-form">
+        <div class="compact-row">
+          <input name="from_user" placeholder="企微用户 ID，可空" />
+          <div class="select-wrap">
+            <select name="goal_type">
+              <option value="weight">体重目标</option>
+              <option value="monthly_expense">月支出目标</option>
+              <option value="weekly_workout">周运动目标</option>
+              <option value="sleep">睡眠目标</option>
+            </select>
+          </div>
+        </div>
+        <div class="compact-row">
+          <input name="target_value" type="number" step="0.1" placeholder="目标值" required />
+          <input name="title" placeholder="目标名称，可空" />
+        </div>
+        <div class="compact-actions">
+          <span class="form-hint">用于日报/周报对照</span>
+          <button class="btn btn-solid" type="submit">添加</button>
+        </div>
       </form>
-      <div id="goalList" class="history-list"></div>
+      <div id="goalList" class="log-stream"></div>
     </section>
 
     <section class="kb-panel memory-report-panel">
       <div class="panel-head"><h2>报告订阅</h2><span id="reportSubCount">0 条</span></div>
-      <form id="reportSubForm" class="search-form report-sub-form">
-        <input name="from_user" placeholder="企业微信用户 ID" required />
-        <select name="report_type">
-          <option value="daily">日报</option>
-          <option value="weekly">周报</option>
-        </select>
-        <input name="send_time" type="time" value="21:30" required />
-        <select name="weekday">
-          <option value="1">周一</option>
-          <option value="2">周二</option>
-          <option value="3">周三</option>
-          <option value="4">周四</option>
-          <option value="5">周五</option>
-          <option value="6">周六</option>
-          <option value="0">周日</option>
-        </select>
-        <button class="btn btn-solid" type="submit">保存订阅</button>
+      <form id="reportSubForm" class="compact-form">
+        <div class="compact-row">
+          <input name="from_user" placeholder="企微用户 ID" required />
+          <input name="send_time" type="time" value="21:30" required />
+        </div>
+        <div class="compact-row">
+          <div class="select-wrap">
+            <select name="report_type">
+              <option value="daily">日报</option>
+              <option value="weekly">周报</option>
+            </select>
+          </div>
+          <div class="select-wrap">
+            <select name="weekday">
+              <option value="1">周一</option>
+              <option value="2">周二</option>
+              <option value="3">周三</option>
+              <option value="4">周四</option>
+              <option value="5">周五</option>
+              <option value="6">周六</option>
+              <option value="0">周日</option>
+            </select>
+          </div>
+        </div>
+        <div class="compact-actions">
+          <span class="form-hint">也可在通知页管理</span>
+          <button class="btn btn-solid" type="submit">保存</button>
+        </div>
       </form>
-      <div id="reportSubList" class="history-list"></div>
+      <div id="reportSubList" class="log-stream"></div>
     </section>
 
     <section class="kb-panel memory-cache-panel">
       <div class="panel-head"><h2>有价值问答</h2><span id="cacheCount">0 条</span></div>
-      <form id="filterForm" class="search-form cache-filter-form">
-        <select name="topic">
-          <option value="">全部类型</option>
-          <option value="fitness">健康查询</option>
-          <option value="finance">账本查询</option>
-          <option value="knowledge">知识库</option>
-        </select>
-        <input name="q" placeholder="搜索问题" />
-        <button class="btn btn-solid" type="submit">筛选</button>
+      <form id="filterForm" class="compact-form">
+        <div class="compact-row">
+          <div class="select-wrap">
+            <select name="topic">
+              <option value="">全部类型</option>
+              <option value="fitness">健康查询</option>
+              <option value="finance">账本查询</option>
+              <option value="knowledge">知识库</option>
+            </select>
+          </div>
+          <input name="q" placeholder="搜索问题" />
+        </div>
+        <div class="compact-actions">
+          <span class="form-hint">闲聊不会出现在这里</span>
+          <button class="btn btn-solid" type="submit">筛选</button>
+        </div>
       </form>
-      <div id="cacheList" class="history-list"></div>
+      <div id="cacheList" class="log-stream"></div>
     </section>
   </main>
 

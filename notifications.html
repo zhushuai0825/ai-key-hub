@@ -1,1 +1,61 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Notifications · 通知订阅中心</title><link rel="stylesheet" href="./theme.css"/><link rel="stylesheet" href="./knowledge.css"/></head><body class="module knowledge-page"><header class="kb-bar"><a class="module-back" href="/">返回指挥台</a><div class="module-title"><strong>Notifications</strong><span>日报、周报、备份、失败重试与系统异常通知</span></div><button class="btn" id="refreshBtn">刷新</button></header><main class="config-shell"><section class="kb-panel"><div class="panel-head"><h2>系统通知</h2><span id="notificationCount">--</span></div><div id="notificationList" class="history-list"><div class="empty-state">正在加载通知配置...</div></div></section><section class="kb-panel"><div class="panel-head"><h2>日报 / 周报</h2><span id="reportSubCount">--</span></div><form id="reportForm" class="doc-form"><div class="form-grid"><label>企业微信用户<input name="from_user" placeholder="UserID" required/></label><label>类型<select name="report_type"><option value="daily">日报</option><option value="weekly">周报</option></select></label><label>发送时间<input name="send_time" value="21:30" placeholder="HH:mm" required/></label><label>周几<select name="weekday"><option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="0">周日</option></select></label></div><button class="btn" type="submit">保存订阅</button></form><div id="reportSubList" class="history-list"></div></section></main><div id="toast" class="toast"></div><script src="./notifications.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>通知订阅</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page compact-notify">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>通知订阅</strong><span>日报 · 周报 · 备份 · 异常</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+
+  <main class="config-shell notify-shell">
+    <section class="kb-panel">
+      <div class="panel-head"><h2>系统通知</h2><span id="notificationCount">--</span></div>
+      <div id="notificationList" class="log-stream"></div>
+    </section>
+
+    <section class="kb-panel">
+      <div class="panel-head"><h2>日报 / 周报</h2><span id="reportSubCount">--</span></div>
+      <form id="reportForm" class="compact-form notify-form">
+        <div class="compact-row">
+          <input name="from_user" placeholder="企微 UserID" required />
+          <input name="send_time" value="21:30" placeholder="HH:mm" required />
+        </div>
+        <div class="compact-row">
+          <div class="select-wrap">
+            <select name="report_type">
+              <option value="daily">日报</option>
+              <option value="weekly">周报</option>
+            </select>
+          </div>
+          <div class="select-wrap">
+            <select name="weekday">
+              <option value="1">周一</option>
+              <option value="2">周二</option>
+              <option value="3">周三</option>
+              <option value="4">周四</option>
+              <option value="5">周五</option>
+              <option value="6">周六</option>
+              <option value="0">周日</option>
+            </select>
+          </div>
+        </div>
+        <div class="compact-actions">
+          <span class="form-hint">按设定时间推送到企业微信</span>
+          <button class="btn btn-solid" type="submit">保存订阅</button>
+        </div>
+      </form>
+      <div id="reportSubList" class="log-stream"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./notifications.js"></script>
+</body>
+</html>

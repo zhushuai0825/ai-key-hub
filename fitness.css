@@ -43,7 +43,31 @@ body.fitlog { background: var(--bg); color: var(--ink); overflow-x: hidden; }
 .entry-form .wide { grid-column: 1 / -1; }
 .fields { display: contents; }
 .hidden { display: none; }
-.entry-form input, .entry-form select { width: 100%; height: 40px; padding: 0 11px; color: var(--ink); background: #0c0f14; border: 1px solid var(--line); border-radius: var(--radius); outline: none; }
+.entry-form input, .entry-form select {
+  width: 100%;
+  height: 40px;
+  padding: 0 11px;
+  color: var(--ink);
+  background: #0c0f14;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  outline: none;
+  appearance: none;
+  -webkit-appearance: none;
+  color-scheme: dark;
+}
+.entry-form select {
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--ink-2) 50%),
+    linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) calc(50% - 2px),
+    calc(100% - 9px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 28px;
+}
+.entry-form select option { color: var(--ink); background: #12161c; }
 .ai-note { padding: 12px; color: var(--ink-2); background: var(--surface-2); border: 1px dashed var(--line-bright); font-size: 12px; line-height: 1.6; }
 .weight-chart { height: 280px; }
 .advice-box { padding: 16px; }

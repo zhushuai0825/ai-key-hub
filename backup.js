@@ -28,18 +28,38 @@ function formatSize(size = 0) {
   return `${Math.max(1, Math.round(size / 1024))} KB`;
 }
 
+function shortText(value = '', max = 56) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
 function summarizeTables(tables = {}) {
   return Object.fromEntries(Object.entries(tables).map(([name, rows]) => [name, Array.isArray(rows) ? rows.length : rows]));
+}
+
+function setBackupFileLabel(file) {
+  const label = $('#backupFileName');
+  const drop = $('#backupDrop');
+  if (!label) return;
+  label.textContent = file?.name || '点击选择备份 JSON，或拖到这里';
+  drop?.classList.toggle('has-file', Boolean(file?.name));
 }
 
 async function loadBackupFiles() {
   const files = await api('/api/backup/files');
   $('#backupFileCount').textContent = `${files.length} 份`;
   $('#backupFiles').innerHTML = files.length ? files.map((file) => `
-    <article class="history-card">
-      <div class="timeline-title"><strong>${escapeHtml(file.file)}</strong><time>${escapeHtml(formatTime(file.updated_at))}</time></div>
-      <p>${escapeHtml(formatSize(file.size))}</p>
-    </article>`).join('') : '<div class="empty-state">暂无本地备份。可以点击“创建本地备份”。</div>';
+    <article class="log-row tone-ok">
+      <i class="log-dot" aria-hidden="true"></i>
+      <div class="log-body">
+        <div class="log-line">
+          <strong title="${escapeHtml(file.file)}">${escapeHtml(shortText(file.file, 48))}</strong>
+          <time>${escapeHtml(formatTime(file.updated_at))}</time>
+        </div>
+        <div class="log-meta"><span>${escapeHtml(formatSize(file.size))}</span></div>
+      </div>
+    </article>`).join('') : '<div class="empty-state">暂无本地备份。点击「创建备份」即可。</div>';
 }
 
 async function readBackupFile() {
@@ -91,6 +111,30 @@ async function importBackup(mode) {
     await loadBackupFiles();
   } catch (error) { toast(error.message); }
 }
+
+const backupFile = $('#backupFile');
+const backupDrop = $('#backupDrop');
+backupFile?.addEventListener('change', () => setBackupFileLabel(backupFile.files?.[0]));
+['dragenter', 'dragover'].forEach((type) => {
+  backupDrop?.addEventListener(type, (event) => {
+    event.preventDefault();
+    backupDrop.classList.add('dragover');
+  });
+});
+['dragleave', 'drop'].forEach((type) => {
+  backupDrop?.addEventListener(type, (event) => {
+    event.preventDefault();
+    backupDrop.classList.remove('dragover');
+  });
+});
+backupDrop?.addEventListener('drop', (event) => {
+  const file = event.dataTransfer?.files?.[0];
+  if (!file || !backupFile) return;
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  backupFile.files = transfer.files;
+  setBackupFileLabel(file);
+});
 
 $('#importSkipBtn').onclick = () => importBackup('skip');
 $('#importReplaceBtn').onclick = () => importBackup('replace');

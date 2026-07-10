@@ -1,1 +1,43 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>Profile · 个人画像</title><link rel="stylesheet" href="./theme.css"/><link rel="stylesheet" href="./knowledge.css"/></head><body class="module knowledge-page"><header class="kb-bar"><a class="module-back" href="/">返回指挥台</a><div class="module-title"><strong>Profile</strong><span>个人画像 · 长期记忆 · 可编辑偏好</span></div><button class="btn" id="refreshBtn">刷新</button></header><main class="profile-shell"><section class="kb-panel"><div class="panel-head"><h2>画像摘要</h2><span id="profileUser">全局</span></div><pre id="profileSummary" class="profile-summary">加载中...</pre></section><section class="kb-panel"><div class="panel-head"><h2>长期记忆维护</h2><span id="memoryCount">--</span></div><form id="memoryFilterForm" class="doc-form"><div class="form-grid"><label>分类<input name="category" placeholder="finance_profile / fitness_profile"/></label><label>关键词<input name="q" placeholder="搜索记忆内容"/></label></div><button class="btn" type="submit">筛选</button></form><div id="memoryList" class="history-list"><div class="empty-state">正在加载长期记忆...</div></div></section><section class="kb-panel"><div class="panel-head"><h2>画像数据</h2><span>finance / fitness / task</span></div><div id="profileGrid" class="config-grid"></div></section></main><div id="toast" class="toast"></div><script src="./profile.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>个人画像</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page compact-profile">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>个人画像</strong><span>摘要 · 长期记忆 · 偏好</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+  <main class="profile-shell">
+    <section class="kb-panel">
+      <div class="panel-head"><h2>画像摘要</h2><span id="profileUser">全局</span></div>
+      <pre id="profileSummary" class="profile-summary">加载中...</pre>
+    </section>
+    <section class="kb-panel">
+      <div class="panel-head"><h2>长期记忆</h2><span id="memoryCount">--</span></div>
+      <form id="memoryFilterForm" class="compact-form">
+        <div class="compact-row">
+          <input name="category" placeholder="分类，如 finance_profile" />
+          <input name="q" placeholder="搜索记忆内容" />
+        </div>
+        <div class="compact-actions">
+          <span class="form-hint">筛选后可编辑、置顶或删除</span>
+          <button class="btn btn-solid" type="submit">筛选</button>
+        </div>
+      </form>
+      <div id="memoryList" class="log-stream"></div>
+    </section>
+    <section class="kb-panel profile-data-panel">
+      <div class="panel-head"><h2>画像数据</h2><span>finance / fitness / task</span></div>
+      <div id="profileGrid" class="log-stats profile-stats"></div>
+    </section>
+  </main>
+  <div id="toast" class="toast"></div>
+  <script src="./profile.js"></script>
+</body>
+</html>

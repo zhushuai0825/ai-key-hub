@@ -50,3 +50,34 @@ loadTarget().catch((error) => {
   $('#targetText').textContent = error.message;
   $('#uploadTokenForm button').disabled = true;
 });
+
+const uploadFile = $('#uploadFile');
+const uploadDrop = $('#uploadDrop');
+const uploadFileName = $('#uploadFileName');
+function setUploadLabel(file) {
+  if (!uploadFileName) return;
+  uploadFileName.textContent = file?.name || '点击选择文件，或拖到这里';
+  uploadDrop?.classList.toggle('has-file', Boolean(file?.name));
+}
+uploadFile?.addEventListener('change', () => setUploadLabel(uploadFile.files?.[0]));
+['dragenter', 'dragover'].forEach((type) => {
+  uploadDrop?.addEventListener(type, (event) => {
+    event.preventDefault();
+    uploadDrop.classList.add('dragover');
+  });
+});
+['dragleave', 'drop'].forEach((type) => {
+  uploadDrop?.addEventListener(type, (event) => {
+    event.preventDefault();
+    uploadDrop.classList.remove('dragover');
+  });
+});
+uploadDrop?.addEventListener('drop', (event) => {
+  const file = event.dataTransfer?.files?.[0];
+  if (!file || !uploadFile) return;
+  const transfer = new DataTransfer();
+  transfer.items.add(file);
+  uploadFile.files = transfer.files;
+  setUploadLabel(file);
+});
+$('#uploadTokenForm')?.addEventListener('reset', () => setTimeout(() => setUploadLabel(null), 0));
