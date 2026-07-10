@@ -25,7 +25,11 @@ function formatTime(value) {
 }
 
 function card(title, rows) {
-  return `<article class="monitor-card"><div><strong>${escapeHtml(title)}</strong><span class="state-pill ok">${rows.length}</span></div>${rows.slice(0, 8).map((row) => `<p>${escapeHtml(JSON.stringify(row))}</p>`).join('')}</article>`;
+  return `<article class="monitor-card"><div><strong title="${escapeHtml(title)}">${escapeHtml(title)}</strong><span class="state-pill ok">${rows.length}</span></div>${rows.slice(0, 8).map((row) => {
+    const text = typeof row === 'string' ? row : JSON.stringify(row);
+    const short = text.length > 120 ? `${text.slice(0, 120)}…` : text;
+    return `<p title="${escapeHtml(text)}">${escapeHtml(short)}</p>`;
+  }).join('')}</article>`;
 }
 
 function memoryQueryString() {

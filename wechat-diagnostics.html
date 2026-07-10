@@ -1,1 +1,32 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/><title>WeCom Diagnostics</title><link rel="stylesheet" href="./theme.css"/><link rel="stylesheet" href="./knowledge.css"/></head><body class="module knowledge-page"><header class="kb-bar"><a class="module-back" href="/">返回指挥台</a><div class="module-title"><strong>WeCom Diagnostics</strong><span>回调、上传链接、媒体失败、主动推送诊断</span></div><button class="btn" id="refreshBtn">刷新</button></header><main class="diagnostics-shell"><section class="kb-panel"><div class="panel-head"><h2>诊断概览</h2><span id="updatedAt">--</span></div><div id="summaryGrid" class="monitor-grid"></div></section><section class="kb-panel"><div class="panel-head"><h2>最近消息</h2><a class="btn" href="/wechat-inbox.html">处理台</a></div><div id="messageList" class="timeline-list compact"></div></section><section class="kb-panel"><div class="panel-head"><h2>上传与待处理</h2><span>upload targets</span></div><div id="uploadList" class="timeline-list compact"></div></section></main><script src="./wechat-diagnostics.js"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>企微诊断</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page compact-diagnostics">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>企微诊断</strong><span>回调 · 上传 · 媒体 · 推送</span></div>
+    <button class="btn" id="refreshBtn" type="button">刷新</button>
+  </header>
+  <main class="diagnostics-shell">
+    <section class="kb-panel diagnostics-summary-panel">
+      <div class="panel-head"><h2>诊断概览</h2><span id="updatedAt">--</span></div>
+      <div id="summaryGrid" class="log-stats diagnostics-stats"></div>
+    </section>
+    <section class="kb-panel">
+      <div class="panel-head"><h2>最近消息</h2><a class="btn" href="/wechat-inbox.html">处理台</a></div>
+      <div id="messageList" class="log-stream"></div>
+    </section>
+    <section class="kb-panel">
+      <div class="panel-head"><h2>上传与待处理</h2><span id="uploadCount">0 条</span></div>
+      <div id="uploadList" class="log-stream"></div>
+    </section>
+  </main>
+  <script src="./wechat-diagnostics.js"></script>
+</body>
+</html>
