@@ -58,6 +58,7 @@ const WECHAT_FAILED_RETRY_NOTIFY = process.env.WECHAT_FAILED_RETRY_NOTIFY === 't
 const WECHAT_ADMIN_USER = process.env.WECHAT_ADMIN_USER || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
 const chroma = new ChromaClient({ path: CHROMA_URL });
+const companionSessions = new Map();
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -908,6 +909,69 @@ async function deepseekWechatAssistant(question, userContext, knowledgeSources, 
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || `DeepSeek chat failed: ${response.status}`);
   return body?.choices?.[0]?.message?.content || '暂时没有想好怎么回答，你可以换个问法试试。';
+}
+
+
+function getCompanionSession(sessionId) {
+  const id = String(sessionId || '').trim() || crypto.randomUUID();
+  const existing = companionSessions.get(id);
+  if (existing) {
+    existing.updatedAt = Date.now();
+    return { id, session: existing };
+  }
+  const session = { messages: [], updatedAt: Date.now() };
+  companionSessions.set(id, session);
+  return { id, session };
+}
+
+function pruneCompanionSessions() {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const [id, session] of companionSessions.entries()) {
+    if (session.updatedAt < cutoff) companionSessions.delete(id);
+  }
+  while (companionSessions.size > 200) {
+    const oldest = companionSessions.keys().next().value;
+    companionSessions.delete(oldest);
+  }
+}
+
+async function deepseekCompanionChat({ text, history = [], profileSummary = '', userContext = '' }) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) {
+    return '还没配置 DeepSeek Key，暂时没法语音聊天。去 Key 管理里加一个 DeepSeek 就行。';
+  }
+  const recent = history.slice(-12).map((item) => ({
+    role: item.role === 'assistant' ? 'assistant' : 'user',
+    content: String(item.content || '').slice(0, 500),
+  }));
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是用户的中文语音陪伴助手，名字可以叫「小伴」。',
+            '用口语化短句回复，适合朗读，通常 1～3 句，尽量不超过 80 字。',
+            '可以闲聊、安慰、给轻量建议；涉及用户账本/健康/记忆时，只能依据提供的资料，不要编造数字。',
+            '不要用 Markdown、列表符号或表情堆砌。',
+          ].join(''),
+        },
+        {
+          role: 'system',
+          content: `【个人画像】\n${profileSummary || '暂无'}\n\n【近期记录摘要】\n${userContext || '暂无'}`,
+        },
+        ...recent,
+        { role: 'user', content: text },
+      ],
+      temperature: 0.7,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek companion failed: ${response.status}`);
+  return String(body?.choices?.[0]?.message?.content || '我在，你再说一遍好吗？').trim();
 }
 
 function classifyUsefulTopic(question, sources = []) {
@@ -4415,6 +4479,39 @@ async function handleApi(req, res, url) {
     const saved = await pool.query('INSERT INTO knowledge_queries (kb_id,question,answer,sources) VALUES ($1,$2,$3,$4) RETURNING *', [data.kb_id || null, question, answer, JSON.stringify(sources.slice(0, 6))]);
     return sendJson(res, 200, { answer, sources, global_results: globalBundle.items.slice(0, 12), from_cache: false, query: saved.rows[0] });
   }
+
+  if (url.pathname === '/api/companion/chat' && req.method === 'POST') {
+    pruneCompanionSessions();
+    const data = await jsonBody(req);
+    const text = String(data.text || '').trim();
+    if (!text) return sendJson(res, 400, { error: '请先说一句话' });
+    if (text.length > 500) return sendJson(res, 400, { error: '这句话有点长，精简一点再说' });
+    const { id: sessionId, session } = getCompanionSession(data.session_id);
+    const fromUser = data.from_user || null;
+    const [profile, userContext] = await Promise.all([
+      buildPersonalProfile(fromUser).catch(() => ({ summary: '' })),
+      buildWechatUserContext(fromUser, { light: true }).catch(() => ''),
+    ]);
+    const reply = await deepseekCompanionChat({
+      text,
+      history: session.messages,
+      profileSummary: profile?.summary || '',
+      userContext: typeof userContext === 'string' ? userContext : String(userContext || ''),
+    });
+    session.messages.push({ role: 'user', content: text });
+    session.messages.push({ role: 'assistant', content: reply });
+    if (session.messages.length > 24) session.messages = session.messages.slice(-24);
+    session.updatedAt = Date.now();
+    return sendJson(res, 200, { session_id: sessionId, reply, text });
+  }
+  if (url.pathname === '/api/companion/session' && req.method === 'POST') {
+    pruneCompanionSessions();
+    const data = await jsonBody(req).catch(() => ({}));
+    if (data.session_id && companionSessions.has(data.session_id)) companionSessions.delete(data.session_id);
+    const { id } = getCompanionSession();
+    return sendJson(res, 200, { session_id: id });
+  }
+
   const historyMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/queries$/);
   if (historyMatch && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM knowledge_queries WHERE kb_id=$1 ORDER BY created_at DESC LIMIT 30', [Number(historyMatch[1])]);

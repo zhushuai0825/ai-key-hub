@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>语音陪伴</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page companion-page">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>语音陪伴</strong><span>打开后持续聆听 · 说完自动回复</span></div>
+    <div class="kb-bar-actions">
+      <button class="btn" id="muteBtn" type="button" disabled>静音回复</button>
+      <button class="btn btn-solid" id="toggleBtn" type="button">开始陪伴</button>
+    </div>
+  </header>
+
+  <main class="companion-shell">
+    <section class="kb-panel companion-stage">
+      <div class="companion-status">
+        <i class="companion-orb" id="orb" aria-hidden="true"></i>
+        <div>
+          <strong id="statusLabel">待开始</strong>
+          <p id="statusHint">点一次「开始陪伴」授权麦克风，之后不用按键，直接说话即可。</p>
+        </div>
+      </div>
+      <p class="companion-interim" id="interimText">…</p>
+      <div class="companion-actions">
+        <button class="btn" id="interruptBtn" type="button" disabled>打断朗读</button>
+        <button class="btn" id="resetBtn" type="button">新会话</button>
+      </div>
+      <p class="form-hint" id="compatHint"></p>
+    </section>
+
+    <section class="kb-panel companion-log-panel">
+      <div class="panel-head"><h2>对话</h2><span id="turnCount">0 轮</span></div>
+      <div id="chatLog" class="companion-log"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./companion.js"></script>
+</body>
+</html>

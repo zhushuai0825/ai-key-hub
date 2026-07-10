@@ -28,6 +28,7 @@ const MODULE_GROUPS = [
     title: '生活助手',
     hint: '数据、账本、健康、提醒、画像',
     modules: [
+      { id: 'companion', name: '语音陪伴', desc: '打开即听，说完自动语音回复', icon: 'agent.svg', href: '/companion.html', status: 'online' },
       { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
       { id: 'finance', name: '账本', desc: '收支流水、分类统计与纠错', icon: 'cost.svg', href: '/finance.html', status: 'online' },
       { id: 'fitlog', name: '健康', desc: '体重、饮食、运动与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
