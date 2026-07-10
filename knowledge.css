@@ -1134,3 +1134,18 @@ body.knowledge-page { min-height: 100vh; background: var(--bg); color: var(--ink
   .companion-shell { width: 100%; margin: 0; padding: 12px; }
   .companion-log-panel { max-height: none; }
 }
+
+.companion-text-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  margin-top: 12px;
+}
+.companion-text-form input {
+  height: 36px;
+  padding: 0 12px;
+  color: var(--ink);
+  background: #0c0f14;
+  border: 1px solid var(--line-bright);
+}
+.companion-text-form .btn { height: 36px; min-height: 36px; }

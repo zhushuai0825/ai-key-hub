@@ -5,6 +5,7 @@ const synth = window.speechSynthesis;
 
 let sessionId = null;
 let recognition = null;
+let micStream = null;
 let active = false;
 let busy = false;
 let muted = false;
@@ -13,12 +14,13 @@ let shouldListen = false;
 let turns = 0;
 let lastSentAt = 0;
 let restartTimer = null;
+let lastError = '';
 
 function toast(message) {
   const box = $('#toast');
   box.textContent = message;
   box.classList.add('show');
-  setTimeout(() => box.classList.remove('show'), 2400);
+  setTimeout(() => box.classList.remove('show'), 2800);
 }
 
 function escapeHtml(value = '') {
@@ -121,6 +123,7 @@ async function handleFinalText(text) {
     appendChat('assistant', data.reply);
     await speak(data.reply);
   } catch (error) {
+    lastError = error.message;
     setStatus('error', error.message);
     toast(error.message);
   } finally {
@@ -136,15 +139,31 @@ function pauseListening() {
 }
 
 function resumeListening() {
-  if (!active || busy || speaking) return;
+  if (!active || busy || speaking || !recognition) return;
   shouldListen = true;
   setStatus('listening', '继续说就行，说完会自动回复。');
   clearTimeout(restartTimer);
   restartTimer = setTimeout(() => {
-    try {
-      recognition?.start();
-    } catch (_) { /* already started */ }
+    try { recognition.start(); } catch (_) { /* already started */ }
   }, 220);
+}
+
+function releaseMic() {
+  if (micStream) {
+    micStream.getTracks().forEach((track) => track.stop());
+    micStream = null;
+  }
+}
+
+async function requestMic() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('浏览器不支持麦克风接口。请换 Chrome / Edge。');
+  }
+  if (!window.isSecureContext) {
+    throw new Error('当前是 HTTP 访问，浏览器禁止麦克风。请用 https:// 打开，或在本机 localhost 调试。');
+  }
+  micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  return micStream;
 }
 
 function createRecognition() {
@@ -173,9 +192,15 @@ function createRecognition() {
 
   rec.onerror = (event) => {
     if (event.error === 'no-speech' || event.error === 'aborted') return;
-    if (event.error === 'not-allowed') {
-      setStatus('error', '麦克风被拒绝了。请允许权限后重新开始。');
-      stopCompanion();
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+      lastError = '麦克风或语音识别被拒绝。请允许权限，并确认使用 HTTPS / Chrome。';
+      failCompanion(lastError);
+      return;
+    }
+    if (event.error === 'network') {
+      lastError = '语音识别需要联网（浏览器会连 Google 语音服务）。请检查网络或代理。';
+      setStatus('error', lastError);
+      toast(lastError);
       return;
     }
     toast(`识别异常：${event.error}`);
@@ -203,25 +228,44 @@ async function ensureSession(forceNew = false) {
   return sessionId;
 }
 
+function failCompanion(message) {
+  active = false;
+  shouldListen = false;
+  busy = false;
+  clearTimeout(restartTimer);
+  try { recognition?.stop(); } catch (_) { /* ignore */ }
+  stopSpeaking();
+  releaseMic();
+  $('#toggleBtn').textContent = '开始陪伴';
+  $('#interruptBtn').disabled = true;
+  lastError = message || lastError || '启动失败';
+  setStatus('error', lastError);
+  toast(lastError);
+}
+
 async function startCompanion() {
   if (!SpeechRecognition) {
-    setStatus('error', '当前浏览器不支持语音识别，请用 Chrome / Edge。');
+    failCompanion('当前浏览器不支持连续语音识别，请用 Chrome / Edge。');
     return;
   }
   try {
+    setStatus('thinking', '正在申请麦克风权限…');
     await ensureSession(false);
+    await requestMic();
     if (!recognition) recognition = createRecognition();
     active = true;
     shouldListen = true;
+    lastError = '';
     $('#toggleBtn').textContent = '结束陪伴';
     $('#muteBtn').disabled = false;
     $('#interruptBtn').disabled = false;
     setStatus('listening', '已开始。直接说话，说完停顿一下就会自动回复。');
     recognition.start();
   } catch (error) {
-    setStatus('error', error.message || '无法启动麦克风');
-    toast(error.message || '无法启动麦克风');
-    stopCompanion();
+    const msg = error?.name === 'NotAllowedError'
+      ? '麦克风权限被拒绝，请在浏览器地址栏允许麦克风后重试。'
+      : (error?.message || '无法启动麦克风');
+    failCompanion(msg);
   }
 }
 
@@ -230,12 +274,28 @@ function stopCompanion() {
   shouldListen = false;
   busy = false;
   clearTimeout(restartTimer);
-  pauseListening();
+  try { recognition?.stop(); } catch (_) { /* ignore */ }
   stopSpeaking();
+  releaseMic();
   $('#toggleBtn').textContent = '开始陪伴';
   $('#interruptBtn').disabled = true;
-  setStatus('paused', '已结束。再点「开始陪伴」可继续聊。');
+  setStatus('paused', lastError ? `已停止。上次问题：${lastError}` : '已结束。再点「开始陪伴」可继续聊。');
   $('#interimText').textContent = '…';
+}
+
+async function sendTyped() {
+  const input = $('#textInput');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  if (!sessionId) {
+    try { await ensureSession(false); } catch (error) {
+      toast(error.message);
+      return;
+    }
+  }
+  active = true;
+  await handleFinalText(text);
 }
 
 $('#toggleBtn').onclick = () => {
@@ -260,20 +320,29 @@ $('#resetBtn').onclick = async () => {
   $('#chatLog').innerHTML = '';
   turns = 0;
   updateTurnCount();
+  lastError = '';
   try {
     await ensureSession(true);
     toast('已开启新会话');
-    setStatus('idle', '点「开始陪伴」后直接说话即可。');
+    setStatus('idle', '点「开始陪伴」后直接说话即可；麦克风不可用时也可下方打字。');
   } catch (error) {
     toast(error.message);
   }
 };
 
+$('#textForm')?.addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendTyped();
+});
+
 (function initCompat() {
   const hints = [];
   if (!SpeechRecognition) hints.push('当前浏览器不支持连续语音识别，请用 Chrome 或 Edge。');
-  if (!window.isSecureContext) hints.push('当前不是 HTTPS/localhost，部分浏览器可能禁止麦克风，若无法授权请用本机 https 或 Chrome 旗标放行。');
+  if (!window.isSecureContext) {
+    hints.push('重要：当前不是 HTTPS/localhost，浏览器会禁止麦克风。语音陪伴需要 https 访问，或先用文字输入对话。');
+    setStatus('error', '当前页面不是安全上下文（HTTP），无法开麦克风。可先用下方文字聊天，或配置 HTTPS 后再用语音。');
+  }
   if (!synth) hints.push('当前环境不支持语音朗读，仍可文字对话。');
   $('#compatHint').textContent = hints.join(' ');
-  setStatus('idle', '点一次「开始陪伴」授权麦克风，之后不用按键。');
+  if (window.isSecureContext) setStatus('idle', '点一次「开始陪伴」授权麦克风，之后不用按键。');
 })();
