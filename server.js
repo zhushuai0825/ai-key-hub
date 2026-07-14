@@ -3247,43 +3247,215 @@ async function stats() {
 async function listTimeline(url) {
   const limit = Math.min(300, Math.max(20, Number(url.searchParams.get('limit') || 120)));
   const type = url.searchParams.get('type') || '';
+  const fromUser = url.searchParams.get('from_user') || '';
+  const q = String(url.searchParams.get('q') || '').trim();
+  const since = url.searchParams.get('since') || '';
+  const until = url.searchParams.get('until') || '';
+  const like = q ? likeQuery(q) : '%';
   const result = await pool.query(`
     WITH timeline AS (
       SELECT 'finance'::text AS item_type, id::text AS entity_id, occurred_at AS event_at, title,
-             jsonb_build_object('amount', amount, 'direction', direction, 'category', category, 'note', note, 'source_user', source_user) AS detail
+             jsonb_build_object('amount', amount, 'direction', direction, 'category', category, 'note', note, 'source_user', source_user) AS detail,
+             COALESCE(source_user, '') AS actor_user,
+             CONCAT_WS(' ', title, note, category, raw_message) AS search_text
       FROM finance_entries
       UNION ALL
       SELECT 'fitness'::text AS item_type, id::text AS entity_id, recorded_at AS event_at,
              CASE entry_type WHEN 'weight' THEN '体重记录' WHEN 'meal' THEN '饮食记录' WHEN 'workout' THEN '训练记录' WHEN 'sleep' THEN '睡眠记录' ELSE entry_type END AS title,
-             jsonb_build_object('entry_type', entry_type, 'weight_kg', weight_kg, 'calories', calories, 'duration_min', duration_min, 'sleep_hours', sleep_hours, 'note', note, 'source_user', source_user) AS detail
+             jsonb_build_object('entry_type', entry_type, 'weight_kg', weight_kg, 'calories', calories, 'duration_min', duration_min, 'sleep_hours', sleep_hours, 'note', note, 'source_user', source_user) AS detail,
+             COALESCE(source_user, '') AS actor_user,
+             CONCAT_WS(' ', entry_type, food_text, workout_type, note) AS search_text
       FROM fitness_entries
       UNION ALL
       SELECT 'knowledge'::text AS item_type, id::text AS entity_id, created_at AS event_at, title,
-             jsonb_build_object('kb_id', kb_id, 'filename', filename, 'status', status, 'source_user', source_user, 'source_channel', source_channel) AS detail
+             jsonb_build_object('kb_id', kb_id, 'filename', filename, 'status', status, 'source_user', source_user, 'source_channel', source_channel) AS detail,
+             COALESCE(source_user, '') AS actor_user,
+             CONCAT_WS(' ', title, filename) AS search_text
       FROM knowledge_documents
       UNION ALL
       SELECT 'wechat'::text AS item_type, id::text AS entity_id, received_at AS event_at, COALESCE(NULLIF(content,''), msg_type) AS title,
-             jsonb_build_object('from_user', from_user, 'msg_type', msg_type, 'intent', intent, 'parse_status', parse_status, 'media_status', media_status) AS detail
+             jsonb_build_object('from_user', from_user, 'msg_type', msg_type, 'intent', intent, 'parse_status', parse_status, 'media_status', media_status, 'reply_text', reply_text) AS detail,
+             COALESCE(from_user, '') AS actor_user,
+             CONCAT_WS(' ', content, intent, reply_text) AS search_text
       FROM wechat_messages
       UNION ALL
       SELECT 'task'::text AS item_type, id::text AS entity_id, COALESCE(remind_at, created_at) AS event_at, title,
-             jsonb_build_object('status', status, 'recurrence', recurrence, 'from_user', from_user, 'note', note) AS detail
+             jsonb_build_object('status', status, 'recurrence', recurrence, 'from_user', from_user, 'note', note) AS detail,
+             COALESCE(from_user, '') AS actor_user,
+             CONCAT_WS(' ', title, note, status) AS search_text
       FROM assistant_tasks
       UNION ALL
       SELECT 'report'::text AS item_type, id::text AS entity_id, created_at AS event_at, title,
-             jsonb_build_object('report_type', report_type, 'from_user', from_user) AS detail
+             jsonb_build_object('report_type', report_type, 'from_user', from_user) AS detail,
+             COALESCE(from_user, '') AS actor_user,
+             CONCAT_WS(' ', title, report_type, content) AS search_text
       FROM assistant_reports
       UNION ALL
+      SELECT 'memory'::text AS item_type, id::text AS entity_id, updated_at AS event_at, content AS title,
+             jsonb_build_object('category', category, 'importance', importance, 'pinned', pinned, 'from_user', from_user) AS detail,
+             COALESCE(from_user, '') AS actor_user,
+             CONCAT_WS(' ', category, content) AS search_text
+      FROM assistant_memories
+      WHERE category <> 'knowledge_upload_target'
+      UNION ALL
+      SELECT 'query'::text AS item_type, id::text AS entity_id, created_at AS event_at, question AS title,
+             jsonb_build_object('kb_id', kb_id, 'answer', LEFT(COALESCE(answer,''), 240)) AS detail,
+             ''::text AS actor_user,
+             CONCAT_WS(' ', question, answer) AS search_text
+      FROM knowledge_queries
+      UNION ALL
       SELECT 'audit'::text AS item_type, id::text AS entity_id, created_at AS event_at, action AS title,
-             jsonb_build_object('actor', actor, 'entity_type', entity_type, 'entity_id', entity_id, 'detail', detail) AS detail
+             jsonb_build_object('actor', actor, 'entity_type', entity_type, 'entity_id', entity_id, 'detail', detail) AS detail,
+             COALESCE(actor, '') AS actor_user,
+             CONCAT_WS(' ', action, actor, entity_type) AS search_text
       FROM audit_logs
     )
     SELECT item_type AS type, entity_id, event_at, title, detail
     FROM timeline
     WHERE ($1::text = '' OR item_type = $1)
+      AND ($2::text = '' OR actor_user = $2 OR actor_user = '')
+      AND ($3::text = '%' OR search_text ILIKE $3)
+      AND ($4::timestamptz IS NULL OR event_at >= $4::timestamptz)
+      AND ($5::timestamptz IS NULL OR event_at <= $5::timestamptz)
     ORDER BY event_at DESC
-    LIMIT $2`, [type, limit]);
+    LIMIT $6`, [type, fromUser, like, since || null, until || null, limit]);
   return result.rows;
+}
+
+function formatLifeTimelineContext(rows = [], maxItems = 40) {
+  const items = (rows || []).slice(0, maxItems);
+  if (!items.length) return '该时间范围内暂无事件';
+  return items.map((row, index) => {
+    const detail = row.detail || {};
+    const bits = Object.entries(detail)
+      .filter(([, value]) => value !== null && value !== undefined && value !== '')
+      .slice(0, 6)
+      .map(([key, value]) => `${key}=${typeof value === 'object' ? JSON.stringify(value).slice(0, 80) : String(value).slice(0, 80)}`)
+      .join(' · ');
+    return `【${index + 1}/${row.type}】${formatShanghaiDateTime(row.event_at)} ${String(row.title || '').slice(0, 120)}\n${bits}`;
+  }).join('\n\n');
+}
+
+function summarizeLifeStats(rows = []) {
+  const stats = { total: rows.length, by_type: {}, spend: 0, income: 0, wechat: 0, tasks_open: 0 };
+  for (const row of rows) {
+    stats.by_type[row.type] = (stats.by_type[row.type] || 0) + 1;
+    if (row.type === 'finance') {
+      const amount = Number(row.detail?.amount || 0);
+      if (row.detail?.direction === 'income') stats.income += amount;
+      else stats.spend += amount;
+    }
+    if (row.type === 'wechat') stats.wechat += 1;
+    if (row.type === 'task' && row.detail?.status && row.detail.status !== 'done') stats.tasks_open += 1;
+  }
+  return stats;
+}
+
+async function deepseekLifeAsk(question, { timelineRows = [], searchBundle = null, profile = null, rangeLabel = '' } = {}) {
+  const apiKey = await deepseekApiKey();
+  const timelineContext = formatLifeTimelineContext(timelineRows, 45);
+  const searchContext = formatGlobalSearchContext(searchBundle, 12);
+  const stats = summarizeLifeStats(timelineRows);
+  if (!apiKey) {
+    return {
+      answer: `暂未配置 AI。该时段共 ${stats.total} 条事件（支出 ¥${stats.spend.toFixed(2)} / 收入 ¥${stats.income.toFixed(2)}）。\n\n${timelineContext.slice(0, 1200)}`,
+      stats,
+      sources: timelineRows.slice(0, 20),
+    };
+  }
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是「人生时间轴」叙事分析助手。',
+            '根据用户生活事件时间线（企微、账本、健康、任务、记忆、知识问答、运维审计）回答问题。',
+            '目标是讲清楚「发生了什么、可能为什么、和消费/情绪/忙碌有没有关联」。',
+            '没有情绪标注时，只能从消息语气、深夜活动、突击消费、未完成任务等间接线索推断，并明确这是推测。',
+            '先给结论，再列 3～6 条依据（指出事件类型与时间），最后给一句可执行建议。不要编造未出现的事实。',
+          ].join(''),
+        },
+        {
+          role: 'user',
+          content: `问题：${question}\n时间范围：${rangeLabel || '未指定'}\n统计摘要：${JSON.stringify(stats)}\n\n【个人画像】\n${profile?.summary || '暂无'}\n\n【时间轴事件】\n${timelineContext}\n\n【补充检索】\n${searchContext}`,
+        },
+      ],
+      temperature: 0.35,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek life ask failed: ${response.status}`);
+  return {
+    answer: body?.choices?.[0]?.message?.content || '没有生成回答。',
+    stats,
+    sources: timelineRows.slice(0, 30),
+  };
+}
+
+async function deepseekTwinDraft({ incoming, channel = 'wecom', profile = null, styleExamples = '', memoryContext = '', knowledgeContext = '', searchContext = '' } = {}) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) {
+    return {
+      draft: '（未配置 DeepSeek）先根据你以往语气，建议先简短确认对方需求，再给明确下一步。',
+      rationale: '缺少模型密钥，仅返回占位草稿。',
+    };
+  }
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是用户的「反向 AI / 个人分身」写作引擎。',
+            '任务：别人发来一条消息时，起草「用户本人会怎么回」。',
+            '必须模仿用户历史回复的语气、长度、礼貌程度与决策习惯；不要像客服，不要过度热情。',
+            '优先依据【历史回复样本】与【个人画像】；知识库只用于补事实。',
+            '输出 JSON：{"draft":"完整回复正文","rationale":"为何这样回（一两句）","tone":"语气标签"}',
+          ].join(''),
+        },
+        {
+          role: 'user',
+          content: `渠道：${channel}\n对方消息：${incoming}\n\n【个人画像】\n${profile?.summary || '暂无'}\n\n【历史回复样本】\n${styleExamples || '暂无'}\n\n【长期记忆】\n${memoryContext || '暂无'}\n\n【知识库片段】\n${knowledgeContext || '暂无'}\n\n【相关生活数据】\n${searchContext || '暂无'}`,
+        },
+      ],
+      temperature: 0.45,
+      response_format: { type: 'json_object' },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek twin draft failed: ${response.status}`);
+  let parsed = {};
+  try {
+    parsed = JSON.parse(body?.choices?.[0]?.message?.content || '{}');
+  } catch (_) {
+    parsed = { draft: body?.choices?.[0]?.message?.content || '', rationale: '' };
+  }
+  return {
+    draft: String(parsed.draft || '').trim() || '（未能生成草稿）',
+    rationale: String(parsed.rationale || '').trim(),
+    tone: String(parsed.tone || '').trim(),
+  };
+}
+
+async function buildTwinStyleExamples(fromUser = null, limit = 12) {
+  const result = await pool.query(`
+    SELECT content, reply_text, received_at
+    FROM wechat_messages
+    WHERE reply_text IS NOT NULL AND reply_text <> ''
+      AND ($1::text IS NULL OR from_user=$1)
+    ORDER BY received_at DESC
+    LIMIT $2`, [fromUser || null, limit]);
+  if (!result.rows.length) return '暂无历史回复样本（可先在企微多聊几轮）';
+  return result.rows.reverse().map((row, index) => (
+    `${index + 1}. 对方/原话：${String(row.content || '').slice(0, 120)}\n   你的回复：${String(row.reply_text || '').slice(0, 180)}`
+  )).join('\n');
 }
 
 async function listSystemEvents(url) {
@@ -3978,6 +4150,76 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
   }
   if (url.pathname === '/api/timeline' && req.method === 'GET') return sendJson(res, 200, await listTimeline(url));
+  if (url.pathname === '/api/life/ask' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const question = String(data.question || data.query || '').trim();
+    if (!question) return sendJson(res, 400, { error: '请输入问题' });
+    const days = Math.min(90, Math.max(1, Number(data.days || 7)));
+    const since = data.since || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const until = data.until || new Date().toISOString();
+    const fromUser = data.from_user || null;
+    const timelineUrl = new URL('http://local/api/timeline');
+    timelineUrl.searchParams.set('limit', String(data.limit || 180));
+    timelineUrl.searchParams.set('since', since);
+    timelineUrl.searchParams.set('until', until);
+    if (fromUser) timelineUrl.searchParams.set('from_user', fromUser);
+    if (data.type) timelineUrl.searchParams.set('type', data.type);
+    if (data.q) timelineUrl.searchParams.set('q', data.q);
+    const [timelineRows, searchBundle, profile] = await Promise.all([
+      listTimeline(timelineUrl),
+      globalSearch(question, { fromUser, limit: 10 }).catch(() => ({ items: [], groups: {} })),
+      buildPersonalProfile(fromUser).catch(() => ({ summary: '' })),
+    ]);
+    const result = await deepseekLifeAsk(question, {
+      timelineRows,
+      searchBundle,
+      profile,
+      rangeLabel: `${since} → ${until}（约 ${days} 天）`,
+    });
+    return sendJson(res, 200, {
+      answer: result.answer,
+      stats: result.stats,
+      sources: result.sources,
+      range: { since, until, days },
+      profile_summary: profile?.summary || '',
+    });
+  }
+  if (url.pathname === '/api/twin/draft' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const incoming = String(data.incoming_message || data.message || data.text || '').trim();
+    if (!incoming) return sendJson(res, 400, { error: '请输入对方发来的消息' });
+    const fromUser = data.from_user || null;
+    const kbId = data.kb_id || null;
+    const [profile, styleExamples, memoryContext, knowledgeHits, searchBundle] = await Promise.all([
+      buildPersonalProfile(fromUser).catch(() => ({ summary: '' })),
+      buildTwinStyleExamples(fromUser, 12).catch(() => '暂无历史回复样本'),
+      buildAssistantMemoryContext(fromUser, 20).catch(() => '暂无长期记忆'),
+      searchKnowledge(kbId, incoming, 5).catch(() => []),
+      globalSearch(incoming, { fromUser, kbId, limit: 6 }).catch(() => ({ items: [] })),
+    ]);
+    const knowledgeContext = (knowledgeHits || []).slice(0, 5).map((row, index) => (
+      `【知识${index + 1}】${row.document_title || row.filename || '片段'}\n${String(row.content || '').slice(0, 280)}`
+    )).join('\n\n') || '暂无知识库命中';
+    const drafted = await deepseekTwinDraft({
+      incoming,
+      channel: data.channel || 'wecom',
+      profile,
+      styleExamples,
+      memoryContext,
+      knowledgeContext,
+      searchContext: formatGlobalSearchContext(searchBundle, 8),
+    });
+    return sendJson(res, 200, {
+      ...drafted,
+      incoming_message: incoming,
+      style_examples_used: styleExamples,
+      profile_summary: profile?.summary || '',
+      knowledge_hits: (knowledgeHits || []).slice(0, 5).map((row) => ({
+        title: row.document_title || row.filename || '片段',
+        preview: String(row.content || '').slice(0, 160),
+      })),
+    });
+  }
   if (url.pathname === '/api/audit-logs' && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 200');
     return sendJson(res, 200, result.rows);

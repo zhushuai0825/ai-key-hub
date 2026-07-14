@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>人生时间轴</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page life-page compact-search">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>人生时间轴</strong><span>把企微、账本、健康、任务揉成一条叙事线</span></div>
+    <a class="btn" href="/twin.html">个人分身</a>
+  </header>
+
+  <main class="life-shell">
+    <section class="kb-panel life-ask-panel">
+      <div class="panel-head"><h2>问时间轴</h2><span id="lifeRangeLabel">近 7 天</span></div>
+      <form id="lifeAskForm" class="compact-form">
+        <textarea name="question" rows="3" placeholder="例如：上周我为什么烦？钱花在哪，和忙碌有没有关？"></textarea>
+        <div class="compact-actions life-ask-actions">
+          <select name="days">
+            <option value="3">近 3 天</option>
+            <option value="7" selected>近 7 天</option>
+            <option value="14">近 14 天</option>
+            <option value="30">近 30 天</option>
+          </select>
+          <button class="btn btn-solid" type="submit">分析</button>
+        </div>
+      </form>
+      <div class="life-chips" id="lifeChips">
+        <button type="button" data-q="上周我为什么烦？">上周为什么烦</button>
+        <button type="button" data-q="最近花钱和忙碌有没有关系？">花钱 vs 忙碌</button>
+        <button type="button" data-q="这周我的生活节奏怎么样？">生活节奏</button>
+      </div>
+      <div id="lifeAnswerBox" class="answer-box answer-compact-box">
+        <div class="empty-state">先问一句，例如「上周我为什么烦」——会结合时间轴事件讲故事，而不是只列仪表盘。</div>
+      </div>
+      <div id="lifeStats" class="log-stats search-group-stats"></div>
+    </section>
+
+    <section class="kb-panel life-feed-panel">
+      <div class="panel-head"><h2>时间轴</h2><span id="lifeCount">0 条</span></div>
+      <form id="lifeFilterForm" class="search-form timeline-filter-form">
+        <select name="type">
+          <option value="">全部</option>
+          <option value="wechat">企微</option>
+          <option value="finance">账本</option>
+          <option value="fitness">健康</option>
+          <option value="task">提醒</option>
+          <option value="memory">记忆</option>
+          <option value="query">问答</option>
+          <option value="knowledge">知识库</option>
+          <option value="report">报告</option>
+          <option value="audit">运维</option>
+        </select>
+        <input name="q" placeholder="关键词" autocomplete="off" />
+        <select name="days">
+          <option value="7" selected>近 7 天</option>
+          <option value="14">近 14 天</option>
+          <option value="30">近 30 天</option>
+          <option value="90">近 90 天</option>
+        </select>
+        <button class="btn btn-solid" type="submit">刷新</button>
+      </form>
+      <div id="lifeList" class="timeline-list"></div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./life.js"></script>
+</body>
+</html>

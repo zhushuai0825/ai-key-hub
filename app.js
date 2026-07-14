@@ -29,6 +29,8 @@ const MODULE_GROUPS = [
     hint: '数据、账本、健康、提醒、画像',
     modules: [
       { id: 'companion', name: '语音陪伴', desc: '打开即听，说完自动语音回复', icon: 'agent.svg', href: '/companion.html', status: 'online' },
+      { id: 'life', name: '人生时间轴', desc: '问「上周为什么烦」——跨企微账本任务叙事', icon: 'audit.svg', href: '/life.html', status: 'online' },
+      { id: 'twin', name: '个人分身', desc: '别人问你时，先起草你会怎么回', icon: 'agent.svg', href: '/twin.html', status: 'online' },
       { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
       { id: 'finance', name: '账本', desc: '收支流水、分类统计与纠错', icon: 'cost.svg', href: '/finance.html', status: 'online' },
       { id: 'fitlog', name: '健康', desc: '体重、饮食、运动与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },

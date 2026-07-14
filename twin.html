@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>个人分身</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page twin-page compact-search">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title"><strong>个人分身</strong><span>根据你的历史语气，起草「你会怎么回」</span></div>
+    <a class="btn" href="/life.html">人生时间轴</a>
+  </header>
+
+  <main class="twin-shell">
+    <section class="kb-panel twin-main">
+      <div class="panel-head"><h2>对方发来</h2><span>反向 AI</span></div>
+      <form id="twinForm" class="compact-form">
+        <textarea name="incoming" rows="5" placeholder="粘贴别人发给你的消息，例如：今晚能帮我看一下服务器日志吗？"></textarea>
+        <div class="compact-actions">
+          <select name="channel">
+            <option value="wecom">企微</option>
+            <option value="chat">私聊</option>
+            <option value="email">邮件</option>
+          </select>
+          <button class="btn" id="copyDraftBtn" type="button" disabled>复制草稿</button>
+          <button class="btn btn-solid" type="submit">生成你会怎么回</button>
+        </div>
+      </form>
+      <div class="life-chips" id="twinChips">
+        <button type="button" data-q="今晚有空吗，想问你一点工作上的事">今晚有空吗</button>
+        <button type="button" data-q="这个方案你觉得要不要上线？">方案要不要上线</button>
+        <button type="button" data-q="帮我报销一下上周的餐费">帮我报销</button>
+      </div>
+      <div id="twinDraftBox" class="answer-box answer-compact-box">
+        <div class="empty-state">输入对方消息后生成草稿。会参考你的企微历史回复、画像与知识库。</div>
+      </div>
+    </section>
+
+    <section class="kb-panel twin-side">
+      <div class="panel-head"><h2>依据</h2><span id="twinMeta">--</span></div>
+      <div id="twinRationale" class="answer-box answer-compact-box"><div class="empty-state">生成后显示语气说明</div></div>
+      <div id="twinKnowledge" class="log-stream"></div>
+      <details class="payload-details twin-style-details">
+        <summary>历史回复样本</summary>
+        <pre id="twinStylePre">生成后显示</pre>
+      </details>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./twin.js"></script>
+</body>
+</html>

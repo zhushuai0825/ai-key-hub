@@ -1499,3 +1499,20 @@ body[data-companion="speaking"] .companion-wave i { background: rgba(120,210,200
   .companion-wave i,
   .companion-drawer { animation: none !important; transition: none !important; }
 }
+
+/* Life OS + Twin */
+.life-shell, .twin-shell { width: min(1280px, calc(100% - 44px)); margin: 16px auto 28px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr); gap: 12px; align-items: start; }
+.life-ask-panel, .life-feed-panel, .twin-main, .twin-side { max-height: calc(100vh - 120px); overflow: auto; }
+.life-ask-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.life-ask-actions select { height: 34px; }
+.life-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 12px; }
+.life-chips button { height: 30px; padding: 0 12px; border: 1px solid var(--line-bright); background: var(--surface-2); color: var(--ink-2); font-size: 12px; cursor: pointer; }
+.life-chips button:hover { border-color: rgba(212,146,74,.45); color: var(--ink); }
+.twin-draft-text { font-size: 16px; line-height: 1.7; }
+.twin-style-details { margin: 12px 14px 16px; border: 1px solid var(--line); }
+.twin-style-details summary { padding: 10px 12px; cursor: pointer; color: var(--muted); font-size: 12px; }
+.twin-style-details pre { max-height: 220px; margin: 0; padding: 10px 12px; overflow: auto; border-top: 1px solid var(--line); color: var(--ink-2); font-size: 11px; line-height: 1.55; white-space: pre-wrap; }
+@media (max-width: 980px) {
+  .life-shell, .twin-shell { width: 100%; margin: 0; padding: 14px; display: block; }
+  .life-ask-panel, .life-feed-panel, .twin-main, .twin-side { max-height: none; overflow: visible; margin-bottom: 14px; }
+}

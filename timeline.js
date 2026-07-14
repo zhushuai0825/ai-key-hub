@@ -18,6 +18,8 @@ function typeMeta(type) {
     wechat: { label: '企微', tone: 'wechat' },
     task: { label: '提醒', tone: 'task' },
     report: { label: '报告', tone: 'report' },
+    memory: { label: '记忆', tone: 'knowledge' },
+    query: { label: '问答', tone: 'wechat' },
     audit: { label: '系统', tone: 'audit' },
   }[type] || { label: type || '动态', tone: 'other' };
 }
