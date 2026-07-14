@@ -18,6 +18,7 @@ const MODULE_GROUPS = [
       { id: 'aitoken', name: 'AIToken', desc: '厂商 API Key、真实余额、一键复制', icon: 'aitoken.svg', href: '/keys.html', status: 'online', metricKey: 'key_count', metricLabel: 'Key' },
       { id: 'knowledge', name: 'Knowledge', desc: '统一知识库检索与 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
       { id: 'knowledge-manage', name: '知识库管理', desc: '上传文档、质量检测与重建向量', icon: 'knowledge.svg', href: '/knowledge.html', status: 'online' },
+      { id: 'drama', name: '漫剧工作室', desc: '梗概分镜、角色卡、导出豆包提示词', icon: 'agent.svg', href: '/drama.html', status: 'online' },
       { id: 'search', name: 'Global Search', desc: '跨账本、健康、知识库与企微搜索', icon: 'knowledge.svg', href: '/global-search.html', status: 'online' },
       { id: 'gateway', name: 'Gateway', desc: '统一模型路由、限流与故障切换', icon: 'gateway.svg', status: 'planned' },
       { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },

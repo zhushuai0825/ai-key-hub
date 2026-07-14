@@ -326,6 +326,65 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_wechat_user_profiles_enabled ON wechat_user_profiles(enabled, from_user)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_action_time ON audit_logs(action, created_at DESC)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_time ON audit_logs(entity_type, entity_id, created_at DESC)');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS drama_projects (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      genre TEXT NOT NULL DEFAULT '',
+      synopsis TEXT NOT NULL DEFAULT '',
+      style_guide TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS drama_characters (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      mbti TEXT NOT NULL DEFAULT '',
+      appearance TEXT NOT NULL DEFAULT '',
+      personality TEXT NOT NULL DEFAULT '',
+      voice_note TEXT NOT NULL DEFAULT '',
+      ref_prompt TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS drama_episodes (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+      episode_no INTEGER NOT NULL DEFAULT 1,
+      title TEXT NOT NULL DEFAULT '',
+      synopsis TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS drama_shots (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+      episode_id INTEGER NOT NULL REFERENCES drama_episodes(id) ON DELETE CASCADE,
+      shot_no INTEGER NOT NULL DEFAULT 1,
+      shot_size TEXT NOT NULL DEFAULT '中景',
+      visual_prompt TEXT NOT NULL DEFAULT '',
+      dialogue TEXT NOT NULL DEFAULT '',
+      characters TEXT NOT NULL DEFAULT '',
+      duration_sec NUMERIC(6, 1) NOT NULL DEFAULT 4,
+      camera_note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'draft',
+      doubao_prompt TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_characters_project ON drama_characters(project_id, sort_order, id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_episodes_project ON drama_episodes(project_id, episode_no, id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_shots_episode ON drama_shots(episode_id, shot_no, id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_shots_project ON drama_shots(project_id, episode_id, shot_no)');
   await migratePlainApiKeysToEncrypted();
   await ensurePrimaryKnowledgeBase();
 }
@@ -3458,6 +3517,124 @@ async function buildTwinStyleExamples(fromUser = null, limit = 12) {
   )).join('\n');
 }
 
+function buildDramaDoubaoPrompt({ project = null, characters = [], shot = {} } = {}) {
+  const charMap = new Map((characters || []).map((c) => [String(c.name || '').trim(), c]));
+  const names = String(shot.characters || '')
+    .split(/[,，、/|]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const characterBlocks = names.map((name) => {
+    const c = charMap.get(name);
+    if (!c) return `角色：${name}`;
+    const bits = [
+      `角色：${c.name}`,
+      c.mbti ? `MBTI：${c.mbti}` : '',
+      c.appearance || '',
+      c.personality || '',
+      c.ref_prompt || '',
+    ].filter(Boolean);
+    return bits.join('；');
+  }).join('\n');
+  const style = project?.style_guide ? `画风/质感：${project.style_guide}` : '';
+  const parts = [
+    '短剧分镜视频，电影感，人物一致性，无水印，无字幕烧录。',
+    style,
+    characterBlocks,
+    shot.shot_size ? `景别：${shot.shot_size}` : '',
+    shot.camera_note ? `运镜：${shot.camera_note}` : '',
+    shot.visual_prompt ? `画面：${shot.visual_prompt}` : '',
+    shot.dialogue ? `对白（口型参考，勿烧字幕）：${shot.dialogue}` : '',
+    shot.duration_sec ? `时长约 ${shot.duration_sec} 秒` : '',
+  ].filter(Boolean);
+  return parts.join('\n');
+}
+
+async function getDramaProjectBundle(projectId) {
+  const project = (await pool.query('SELECT * FROM drama_projects WHERE id=$1', [projectId])).rows[0];
+  if (!project) return null;
+  const [characters, episodes] = await Promise.all([
+    pool.query('SELECT * FROM drama_characters WHERE project_id=$1 ORDER BY sort_order, id', [projectId]),
+    pool.query('SELECT * FROM drama_episodes WHERE project_id=$1 ORDER BY episode_no, sort_order, id', [projectId]),
+  ]);
+  return { project, characters: characters.rows, episodes: episodes.rows };
+}
+
+async function deepseekDramaSplit({ project, episode, characters = [] } = {}) {
+  const apiKey = await deepseekApiKey();
+  const synopsis = String(episode?.synopsis || project?.synopsis || '').trim();
+  if (!synopsis) throw new Error('请先填写分集梗概或项目梗概');
+  if (!apiKey) {
+    // Offline fallback: naive paragraph split
+    const chunks = synopsis.split(/[\n。！？!?]+/).map((s) => s.trim()).filter((s) => s.length > 6).slice(0, 12);
+    return (chunks.length ? chunks : [synopsis]).map((text, index) => ({
+      shot_no: index + 1,
+      shot_size: index === 0 ? '全景' : (index % 3 === 0 ? '近景' : '中景'),
+      visual_prompt: text,
+      dialogue: '',
+      characters: (characters[0]?.name || ''),
+      duration_sec: 4,
+      camera_note: index === 0 ? '缓推' : '固定',
+    }));
+  }
+  const charText = (characters || []).map((c) => (
+    `- ${c.name}${c.mbti ? `（${c.mbti}）` : ''}：外貌 ${c.appearance || '未填'}；性格 ${c.personality || '未填'}`
+  )).join('\n') || '（暂无角色卡）';
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'deepseek-chat',
+      messages: [
+        {
+          role: 'system',
+          content: [
+            '你是短剧/漫剧分镜导演。根据梗概拆成可拍分镜。',
+            '每镜适合 3–8 秒的 Seedance/豆包视频生成。',
+            'visual_prompt 写具体可见画面（场景、动作、光影、情绪），避免抽象形容词堆砌。',
+            'dialogue 只写该镜要说的对白，可空。',
+            'characters 用角色名，逗号分隔，必须来自给定角色卡（若有）。',
+            'shot_size 用：远景/全景/中景/近景/特写。',
+            '输出 JSON：{"shots":[{"shot_no":1,"shot_size":"中景","visual_prompt":"...","dialogue":"...","characters":"角色A","duration_sec":4,"camera_note":"缓推"}]}',
+            '通常 6–14 镜，剧情完整。',
+          ].join(''),
+        },
+        {
+          role: 'user',
+          content: [
+            `项目：${project?.title || ''}`,
+            `类型：${project?.genre || ''}`,
+            `风格：${project?.style_guide || ''}`,
+            `分集：第 ${episode?.episode_no || 1} 集 ${episode?.title || ''}`,
+            `梗概：\n${synopsis}`,
+            `角色卡：\n${charText}`,
+          ].join('\n'),
+        },
+      ],
+      temperature: 0.55,
+      response_format: { type: 'json_object' },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek drama split failed: ${response.status}`);
+  let parsed = {};
+  try {
+    parsed = JSON.parse(body?.choices?.[0]?.message?.content || '{}');
+  } catch (_) {
+    parsed = {};
+  }
+  const shots = Array.isArray(parsed.shots) ? parsed.shots : [];
+  if (!shots.length) throw new Error('模型未返回分镜，请改写梗概后重试');
+  return shots.map((shot, index) => ({
+    shot_no: Number(shot.shot_no) || index + 1,
+    shot_size: String(shot.shot_size || '中景').trim() || '中景',
+    visual_prompt: String(shot.visual_prompt || '').trim(),
+    dialogue: String(shot.dialogue || '').trim(),
+    characters: String(shot.characters || '').trim(),
+    duration_sec: Math.min(12, Math.max(2, Number(shot.duration_sec) || 4)),
+    camera_note: String(shot.camera_note || '').trim(),
+  }));
+}
+
 async function listSystemEvents(url) {
   const level = url.searchParams.get('level') || '';
   const q = url.searchParams.get('q') || '';
@@ -4220,6 +4397,378 @@ async function handleApi(req, res, url) {
       })),
     });
   }
+
+  // --- Drama studio ---
+  if (url.pathname === '/api/drama/projects' && req.method === 'GET') {
+    const result = await pool.query(`
+      SELECT p.*,
+        (SELECT COUNT(*)::int FROM drama_characters c WHERE c.project_id=p.id) AS character_count,
+        (SELECT COUNT(*)::int FROM drama_episodes e WHERE e.project_id=p.id) AS episode_count,
+        (SELECT COUNT(*)::int FROM drama_shots s WHERE s.project_id=p.id) AS shot_count
+      FROM drama_projects p
+      ORDER BY p.updated_at DESC, p.id DESC`);
+    return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/drama/projects' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const title = String(data.title || '').trim();
+    if (!title) return sendJson(res, 400, { error: '请填写项目标题' });
+    const result = await pool.query(`
+      INSERT INTO drama_projects (title, genre, synopsis, style_guide, status)
+      VALUES ($1,$2,$3,$4,$5)
+      RETURNING *`, [
+      title,
+      String(data.genre || '').trim(),
+      String(data.synopsis || '').trim(),
+      String(data.style_guide || '').trim(),
+      String(data.status || 'draft').trim() || 'draft',
+    ]);
+    const project = result.rows[0];
+    await pool.query(`
+      INSERT INTO drama_episodes (project_id, episode_no, title, synopsis, sort_order)
+      VALUES ($1, 1, '第1集', $2, 0)`, [project.id, String(data.synopsis || '').trim()]);
+    await auditLog(req, { action: 'drama.project.create', entityType: 'drama_project', entityId: String(project.id), detail: { title } });
+    return sendJson(res, 201, project);
+  }
+  const dramaProjectMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)$/);
+  if (dramaProjectMatch && req.method === 'GET') {
+    const bundle = await getDramaProjectBundle(Number(dramaProjectMatch[1]));
+    if (!bundle) return sendJson(res, 404, { error: '项目不存在' });
+    return sendJson(res, 200, bundle);
+  }
+  if (dramaProjectMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const id = Number(dramaProjectMatch[1]);
+    const result = await pool.query(`
+      UPDATE drama_projects SET
+        title=COALESCE(NULLIF($2,''), title),
+        genre=COALESCE($3, genre),
+        synopsis=COALESCE($4, synopsis),
+        style_guide=COALESCE($5, style_guide),
+        status=COALESCE(NULLIF($6,''), status),
+        updated_at=now()
+      WHERE id=$1 RETURNING *`, [
+      id,
+      data.title != null ? String(data.title).trim() : '',
+      data.genre != null ? String(data.genre).trim() : null,
+      data.synopsis != null ? String(data.synopsis).trim() : null,
+      data.style_guide != null ? String(data.style_guide).trim() : null,
+      data.status != null ? String(data.status).trim() : '',
+    ]);
+    if (!result.rowCount) return sendJson(res, 404, { error: '项目不存在' });
+    await auditLog(req, { action: 'drama.project.update', entityType: 'drama_project', entityId: String(id), detail: data });
+    return sendJson(res, 200, result.rows[0]);
+  }
+  if (dramaProjectMatch && req.method === 'DELETE') {
+    const id = dramaProjectMatch[1];
+    const result = await pool.query('DELETE FROM drama_projects WHERE id=$1', [id]);
+    await auditLog(req, { action: 'drama.project.delete', entityType: 'drama_project', entityId: id, detail: { deleted: result.rowCount > 0 } });
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+
+  const dramaProjectCharsMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/characters$/);
+  if (dramaProjectCharsMatch && req.method === 'GET') {
+    const result = await pool.query(
+      'SELECT * FROM drama_characters WHERE project_id=$1 ORDER BY sort_order, id',
+      [dramaProjectCharsMatch[1]],
+    );
+    return sendJson(res, 200, result.rows);
+  }
+  if (dramaProjectCharsMatch && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const projectId = Number(dramaProjectCharsMatch[1]);
+    const name = String(data.name || '').trim();
+    if (!name) return sendJson(res, 400, { error: '请填写角色名' });
+    const exists = await pool.query('SELECT id FROM drama_projects WHERE id=$1', [projectId]);
+    if (!exists.rowCount) return sendJson(res, 404, { error: '项目不存在' });
+    const maxOrder = await pool.query('SELECT COALESCE(MAX(sort_order),0)+1 AS n FROM drama_characters WHERE project_id=$1', [projectId]);
+    const result = await pool.query(`
+      INSERT INTO drama_characters (project_id, name, mbti, appearance, personality, voice_note, ref_prompt, sort_order)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [
+      projectId, name,
+      String(data.mbti || '').trim(),
+      String(data.appearance || '').trim(),
+      String(data.personality || '').trim(),
+      String(data.voice_note || '').trim(),
+      String(data.ref_prompt || '').trim(),
+      Number(data.sort_order) || maxOrder.rows[0].n,
+    ]);
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [projectId]);
+    return sendJson(res, 201, result.rows[0]);
+  }
+  const dramaCharMatch = url.pathname.match(/^\/api\/drama\/characters\/(\d+)$/);
+  if (dramaCharMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(`
+      UPDATE drama_characters SET
+        name=COALESCE(NULLIF($2,''), name),
+        mbti=COALESCE($3, mbti),
+        appearance=COALESCE($4, appearance),
+        personality=COALESCE($5, personality),
+        voice_note=COALESCE($6, voice_note),
+        ref_prompt=COALESCE($7, ref_prompt),
+        sort_order=COALESCE($8, sort_order),
+        updated_at=now()
+      WHERE id=$1 RETURNING *`, [
+      dramaCharMatch[1],
+      data.name != null ? String(data.name).trim() : '',
+      data.mbti != null ? String(data.mbti).trim() : null,
+      data.appearance != null ? String(data.appearance).trim() : null,
+      data.personality != null ? String(data.personality).trim() : null,
+      data.voice_note != null ? String(data.voice_note).trim() : null,
+      data.ref_prompt != null ? String(data.ref_prompt).trim() : null,
+      data.sort_order != null ? Number(data.sort_order) : null,
+    ]);
+    if (!result.rowCount) return sendJson(res, 404, { error: '角色不存在' });
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [result.rows[0].project_id]);
+    return sendJson(res, 200, result.rows[0]);
+  }
+  if (dramaCharMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM drama_characters WHERE id=$1 RETURNING project_id', [dramaCharMatch[1]]);
+    if (result.rowCount) await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [result.rows[0].project_id]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+
+  const dramaProjectEpsMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/episodes$/);
+  if (dramaProjectEpsMatch && req.method === 'GET') {
+    const result = await pool.query(
+      'SELECT * FROM drama_episodes WHERE project_id=$1 ORDER BY episode_no, sort_order, id',
+      [dramaProjectEpsMatch[1]],
+    );
+    return sendJson(res, 200, result.rows);
+  }
+  if (dramaProjectEpsMatch && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const projectId = Number(dramaProjectEpsMatch[1]);
+    const exists = await pool.query('SELECT id FROM drama_projects WHERE id=$1', [projectId]);
+    if (!exists.rowCount) return sendJson(res, 404, { error: '项目不存在' });
+    const maxEp = await pool.query('SELECT COALESCE(MAX(episode_no),0)+1 AS n FROM drama_episodes WHERE project_id=$1', [projectId]);
+    const episodeNo = Number(data.episode_no) || maxEp.rows[0].n;
+    const result = await pool.query(`
+      INSERT INTO drama_episodes (project_id, episode_no, title, synopsis, status, sort_order)
+      VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [
+      projectId,
+      episodeNo,
+      String(data.title || `第${episodeNo}集`).trim(),
+      String(data.synopsis || '').trim(),
+      String(data.status || 'draft').trim() || 'draft',
+      Number(data.sort_order) || episodeNo,
+    ]);
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [projectId]);
+    return sendJson(res, 201, result.rows[0]);
+  }
+  const dramaEpMatch = url.pathname.match(/^\/api\/drama\/episodes\/(\d+)$/);
+  if (dramaEpMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const result = await pool.query(`
+      UPDATE drama_episodes SET
+        episode_no=COALESCE($2, episode_no),
+        title=COALESCE(NULLIF($3,''), title),
+        synopsis=COALESCE($4, synopsis),
+        status=COALESCE(NULLIF($5,''), status),
+        sort_order=COALESCE($6, sort_order),
+        updated_at=now()
+      WHERE id=$1 RETURNING *`, [
+      dramaEpMatch[1],
+      data.episode_no != null ? Number(data.episode_no) : null,
+      data.title != null ? String(data.title).trim() : '',
+      data.synopsis != null ? String(data.synopsis).trim() : null,
+      data.status != null ? String(data.status).trim() : '',
+      data.sort_order != null ? Number(data.sort_order) : null,
+    ]);
+    if (!result.rowCount) return sendJson(res, 404, { error: '分集不存在' });
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [result.rows[0].project_id]);
+    return sendJson(res, 200, result.rows[0]);
+  }
+  if (dramaEpMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM drama_episodes WHERE id=$1 RETURNING project_id', [dramaEpMatch[1]]);
+    if (result.rowCount) await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [result.rows[0].project_id]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+
+  const dramaEpShotsMatch = url.pathname.match(/^\/api\/drama\/episodes\/(\d+)\/shots$/);
+  if (dramaEpShotsMatch && req.method === 'GET') {
+    const result = await pool.query(
+      'SELECT * FROM drama_shots WHERE episode_id=$1 ORDER BY shot_no, sort_order, id',
+      [dramaEpShotsMatch[1]],
+    );
+    return sendJson(res, 200, result.rows);
+  }
+  if (dramaEpShotsMatch && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const episodeId = Number(dramaEpShotsMatch[1]);
+    const ep = (await pool.query('SELECT * FROM drama_episodes WHERE id=$1', [episodeId])).rows[0];
+    if (!ep) return sendJson(res, 404, { error: '分集不存在' });
+    const maxShot = await pool.query('SELECT COALESCE(MAX(shot_no),0)+1 AS n FROM drama_shots WHERE episode_id=$1', [episodeId]);
+    const shotNo = Number(data.shot_no) || maxShot.rows[0].n;
+    const shot = {
+      shot_no: shotNo,
+      shot_size: String(data.shot_size || '中景').trim() || '中景',
+      visual_prompt: String(data.visual_prompt || '').trim(),
+      dialogue: String(data.dialogue || '').trim(),
+      characters: String(data.characters || '').trim(),
+      duration_sec: Math.min(30, Math.max(1, Number(data.duration_sec) || 4)),
+      camera_note: String(data.camera_note || '').trim(),
+      status: String(data.status || 'draft').trim() || 'draft',
+    };
+    const bundle = await getDramaProjectBundle(ep.project_id);
+    const doubao = String(data.doubao_prompt || '').trim()
+      || buildDramaDoubaoPrompt({ project: bundle?.project, characters: bundle?.characters || [], shot });
+    const result = await pool.query(`
+      INSERT INTO drama_shots
+        (project_id, episode_id, shot_no, shot_size, visual_prompt, dialogue, characters,
+         duration_sec, camera_note, status, doubao_prompt, sort_order)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`, [
+      ep.project_id, episodeId, shot.shot_no, shot.shot_size, shot.visual_prompt, shot.dialogue,
+      shot.characters, shot.duration_sec, shot.camera_note, shot.status, doubao, shot.shot_no,
+    ]);
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [ep.project_id]);
+    return sendJson(res, 201, result.rows[0]);
+  }
+
+  const dramaEpSplitMatch = url.pathname.match(/^\/api\/drama\/episodes\/(\d+)\/split$/);
+  if (dramaEpSplitMatch && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const episodeId = Number(dramaEpSplitMatch[1]);
+    const ep = (await pool.query('SELECT * FROM drama_episodes WHERE id=$1', [episodeId])).rows[0];
+    if (!ep) return sendJson(res, 404, { error: '分集不存在' });
+    const bundle = await getDramaProjectBundle(ep.project_id);
+    if (data.synopsis != null) {
+      const updated = await pool.query(
+        'UPDATE drama_episodes SET synopsis=$2, updated_at=now() WHERE id=$1 RETURNING *',
+        [episodeId, String(data.synopsis).trim()],
+      );
+      ep.synopsis = updated.rows[0].synopsis;
+    }
+    const replace = data.replace !== false;
+    const planned = await deepseekDramaSplit({
+      project: bundle.project,
+      episode: ep,
+      characters: bundle.characters,
+    });
+    if (replace) await pool.query('DELETE FROM drama_shots WHERE episode_id=$1', [episodeId]);
+    const created = [];
+    for (const shot of planned) {
+      const doubao = buildDramaDoubaoPrompt({
+        project: bundle.project,
+        characters: bundle.characters,
+        shot,
+      });
+      const row = await pool.query(`
+        INSERT INTO drama_shots
+          (project_id, episode_id, shot_no, shot_size, visual_prompt, dialogue, characters,
+           duration_sec, camera_note, status, doubao_prompt, sort_order)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'draft',$10,$3) RETURNING *`, [
+        ep.project_id, episodeId, shot.shot_no, shot.shot_size, shot.visual_prompt,
+        shot.dialogue, shot.characters, shot.duration_sec, shot.camera_note, doubao,
+      ]);
+      created.push(row.rows[0]);
+    }
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [ep.project_id]);
+    await auditLog(req, { action: 'drama.episode.split', entityType: 'drama_episode', entityId: String(episodeId), detail: { count: created.length, replace } });
+    return sendJson(res, 200, { shots: created, count: created.length });
+  }
+
+  const dramaEpExportMatch = url.pathname.match(/^\/api\/drama\/episodes\/(\d+)\/export$/);
+  if (dramaEpExportMatch && req.method === 'GET') {
+    const episodeId = Number(dramaEpExportMatch[1]);
+    const format = String(url.searchParams.get('format') || 'md').toLowerCase();
+    const ep = (await pool.query('SELECT * FROM drama_episodes WHERE id=$1', [episodeId])).rows[0];
+    if (!ep) return sendJson(res, 404, { error: '分集不存在' });
+    const bundle = await getDramaProjectBundle(ep.project_id);
+    const shots = (await pool.query(
+      'SELECT * FROM drama_shots WHERE episode_id=$1 ORDER BY shot_no, sort_order, id',
+      [episodeId],
+    )).rows;
+    if (format === 'csv') {
+      const header = ['shot_no', 'shot_size', 'duration_sec', 'characters', 'dialogue', 'visual_prompt', 'camera_note', 'doubao_prompt', 'status'];
+      const escapeCsv = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const lines = [header.join(',')].concat(shots.map((s) => header.map((k) => escapeCsv(s[k])).join(',')));
+      const csv = lines.join('\n');
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': `attachment; filename="drama-ep${ep.episode_no}-shots.csv"`,
+      });
+      res.end(`\uFEFF${csv}`);
+      return true;
+    }
+    const md = [
+      `# ${bundle.project.title} · 第${ep.episode_no}集 ${ep.title || ''}`,
+      '',
+      `> 流程：梗概 → 分镜台 → 定妆/角色卡 → 豆包按镜出视频 → OpenCut 精剪`,
+      '',
+      '## 梗概',
+      ep.synopsis || bundle.project.synopsis || '（空）',
+      '',
+      '## 角色卡',
+      ...(bundle.characters.length
+        ? bundle.characters.map((c) => `- **${c.name}** ${c.mbti ? `(${c.mbti})` : ''}：${c.appearance || ''} / ${c.personality || ''} ${c.ref_prompt ? `｜定妆提示：${c.ref_prompt}` : ''}`)
+        : ['（暂无）']),
+      '',
+      '## 豆包分镜提示词',
+      ...shots.flatMap((s) => [
+        '',
+        `### 镜 ${s.shot_no} · ${s.shot_size} · ${s.duration_sec}s · ${s.status}`,
+        s.characters ? `出场：${s.characters}` : '',
+        s.dialogue ? `对白：${s.dialogue}` : '',
+        s.camera_note ? `运镜：${s.camera_note}` : '',
+        '',
+        '```',
+        s.doubao_prompt || buildDramaDoubaoPrompt({ project: bundle.project, characters: bundle.characters, shot: s }),
+        '```',
+      ]),
+      '',
+      '## 下一步',
+      '1. 用定妆图/角色一致性参考图到豆包 Seedance 按镜生成视频',
+      '2. 下载片段后在 OpenCut（https://opencut.app）精剪拼接',
+      '',
+    ].filter((line) => line !== undefined).join('\n');
+    res.writeHead(200, {
+      'Content-Type': 'text/markdown; charset=utf-8',
+      'Content-Disposition': `attachment; filename="drama-ep${ep.episode_no}-doubao.md"`,
+    });
+    res.end(md);
+    return true;
+  }
+
+  const dramaShotMatch = url.pathname.match(/^\/api\/drama\/shots\/(\d+)$/);
+  if (dramaShotMatch && req.method === 'PATCH') {
+    const data = await jsonBody(req);
+    const existing = (await pool.query('SELECT * FROM drama_shots WHERE id=$1', [dramaShotMatch[1]])).rows[0];
+    if (!existing) return sendJson(res, 404, { error: '分镜不存在' });
+    const next = {
+      shot_no: data.shot_no != null ? Number(data.shot_no) : existing.shot_no,
+      shot_size: data.shot_size != null ? String(data.shot_size).trim() : existing.shot_size,
+      visual_prompt: data.visual_prompt != null ? String(data.visual_prompt).trim() : existing.visual_prompt,
+      dialogue: data.dialogue != null ? String(data.dialogue).trim() : existing.dialogue,
+      characters: data.characters != null ? String(data.characters).trim() : existing.characters,
+      duration_sec: data.duration_sec != null ? Math.min(30, Math.max(1, Number(data.duration_sec) || 4)) : existing.duration_sec,
+      camera_note: data.camera_note != null ? String(data.camera_note).trim() : existing.camera_note,
+      status: data.status != null ? String(data.status).trim() : existing.status,
+      sort_order: data.sort_order != null ? Number(data.sort_order) : existing.sort_order,
+    };
+    let doubao = data.doubao_prompt != null ? String(data.doubao_prompt).trim() : existing.doubao_prompt;
+    if (data.rebuild_prompt || data.doubao_prompt == null) {
+      const bundle = await getDramaProjectBundle(existing.project_id);
+      doubao = buildDramaDoubaoPrompt({ project: bundle?.project, characters: bundle?.characters || [], shot: next });
+    }
+    const result = await pool.query(`
+      UPDATE drama_shots SET
+        shot_no=$2, shot_size=$3, visual_prompt=$4, dialogue=$5, characters=$6,
+        duration_sec=$7, camera_note=$8, status=$9, doubao_prompt=$10, sort_order=$11, updated_at=now()
+      WHERE id=$1 RETURNING *`, [
+      dramaShotMatch[1], next.shot_no, next.shot_size, next.visual_prompt, next.dialogue,
+      next.characters, next.duration_sec, next.camera_note, next.status, doubao, next.sort_order,
+    ]);
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [existing.project_id]);
+    return sendJson(res, 200, result.rows[0]);
+  }
+  if (dramaShotMatch && req.method === 'DELETE') {
+    const result = await pool.query('DELETE FROM drama_shots WHERE id=$1 RETURNING project_id', [dramaShotMatch[1]]);
+    if (result.rowCount) await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [result.rows[0].project_id]);
+    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+
   if (url.pathname === '/api/audit-logs' && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 200');
     return sendJson(res, 200, result.rows);

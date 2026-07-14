@@ -320,3 +320,63 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   user_agent TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS drama_projects (
+  id SERIAL PRIMARY KEY,
+  title TEXT NOT NULL,
+  genre TEXT NOT NULL DEFAULT '',
+  synopsis TEXT NOT NULL DEFAULT '',
+  style_guide TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drama_characters (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  mbti TEXT NOT NULL DEFAULT '',
+  appearance TEXT NOT NULL DEFAULT '',
+  personality TEXT NOT NULL DEFAULT '',
+  voice_note TEXT NOT NULL DEFAULT '',
+  ref_prompt TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drama_episodes (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  episode_no INTEGER NOT NULL DEFAULT 1,
+  title TEXT NOT NULL DEFAULT '',
+  synopsis TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drama_shots (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  episode_id INTEGER NOT NULL REFERENCES drama_episodes(id) ON DELETE CASCADE,
+  shot_no INTEGER NOT NULL DEFAULT 1,
+  shot_size TEXT NOT NULL DEFAULT '中景',
+  visual_prompt TEXT NOT NULL DEFAULT '',
+  dialogue TEXT NOT NULL DEFAULT '',
+  characters TEXT NOT NULL DEFAULT '',
+  duration_sec NUMERIC(6, 1) NOT NULL DEFAULT 4,
+  camera_note TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'draft',
+  doubao_prompt TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_drama_characters_project ON drama_characters(project_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_drama_episodes_project ON drama_episodes(project_id, episode_no, id);
+CREATE INDEX IF NOT EXISTS idx_drama_shots_episode ON drama_shots(episode_id, shot_no, id);
+CREATE INDEX IF NOT EXISTS idx_drama_shots_project ON drama_shots(project_id, episode_id, shot_no);

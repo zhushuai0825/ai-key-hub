@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>漫剧工作室</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./knowledge.css" />
+</head>
+<body class="module knowledge-page drama-page compact-search">
+  <header class="kb-bar">
+    <a class="module-back" href="/">返回指挥台</a>
+    <div class="module-title">
+      <strong>漫剧工作室</strong>
+      <span>梗概 → 分镜 → 定妆 → 导出豆包提示词 → OpenCut 精剪</span>
+    </div>
+    <button class="btn btn-solid" id="newProjectBtn" type="button">新建项目</button>
+  </header>
+
+  <main class="drama-shell">
+    <aside class="kb-panel drama-side">
+      <div class="panel-head"><h2>项目</h2><span id="projectCount">0</span></div>
+      <div id="projectList" class="drama-project-list"></div>
+    </aside>
+
+    <section class="kb-panel drama-main">
+      <div id="emptyProject" class="empty-state">左侧新建或选择一个漫剧项目</div>
+      <div id="projectWorkspace" class="drama-workspace" hidden>
+        <form id="projectForm" class="compact-form drama-project-form">
+          <div class="compact-row">
+            <input name="title" required placeholder="项目标题，例如：ENFP 咖啡店恋爱" />
+            <input name="genre" placeholder="类型：恋爱 / 职场 / MBTI IP" />
+          </div>
+          <textarea name="synopsis" rows="3" placeholder="一句话到三段梗概：谁、冲突、反转"></textarea>
+          <textarea name="style_guide" rows="2" placeholder="画风/质感：例如日系漫画线稿、暖色夜景、电影感浅景深"></textarea>
+          <div class="compact-actions">
+            <select name="status">
+              <option value="draft">草稿</option>
+              <option value="storyboard">分镜中</option>
+              <option value="producing">制作中</option>
+              <option value="done">已完成</option>
+            </select>
+            <button class="btn" type="button" id="deleteProjectBtn">删除项目</button>
+            <button class="btn btn-solid" type="submit">保存项目</button>
+          </div>
+        </form>
+
+        <div class="drama-tabs" role="tablist">
+          <button type="button" class="is-active" data-tab="shots">分镜台</button>
+          <button type="button" data-tab="characters">角色卡</button>
+          <button type="button" data-tab="episodes">分集</button>
+        </div>
+
+        <div class="drama-tab-panel" data-panel="episodes" hidden>
+          <form id="episodeForm" class="compact-form">
+            <div class="compact-row">
+              <input name="title" placeholder="分集标题" />
+              <button class="btn btn-solid" type="submit">新增分集</button>
+            </div>
+            <textarea name="synopsis" rows="2" placeholder="本集梗概（可选，默认用项目梗概）"></textarea>
+          </form>
+          <div id="episodeList" class="drama-episode-list"></div>
+        </div>
+
+        <div class="drama-tab-panel" data-panel="characters" hidden>
+          <form id="characterForm" class="compact-form">
+            <div class="compact-row">
+              <input name="name" required placeholder="角色名" />
+              <input name="mbti" placeholder="MBTI，如 ENFP" maxlength="8" />
+            </div>
+            <textarea name="appearance" rows="2" placeholder="外貌定妆：发型、服装、标志物"></textarea>
+            <textarea name="personality" rows="2" placeholder="性格与说话方式"></textarea>
+            <textarea name="ref_prompt" rows="2" placeholder="定妆/一致性提示词（可直接给豆包图生）"></textarea>
+            <div class="compact-actions">
+              <span class="form-hint">角色卡会自动拼进每镜豆包提示词</span>
+              <button class="btn btn-solid" type="submit">添加角色</button>
+            </div>
+          </form>
+          <div id="characterList" class="drama-character-list"></div>
+        </div>
+
+        <div class="drama-tab-panel is-active" data-panel="shots">
+          <div class="drama-shot-toolbar">
+            <select id="episodeSelect"></select>
+            <button class="btn btn-solid" type="button" id="splitBtn">AI 拆分镜</button>
+            <button class="btn" type="button" id="addShotBtn">加一镜</button>
+            <button class="btn" type="button" id="exportMdBtn">导出豆包 MD</button>
+            <button class="btn" type="button" id="exportCsvBtn">导出 CSV</button>
+          </div>
+          <form id="episodeSynopsisForm" class="compact-form drama-ep-synopsis">
+            <textarea name="synopsis" rows="2" placeholder="本集梗概：先写清冲突与节拍，再点「AI 拆分镜」"></textarea>
+            <div class="compact-actions">
+              <span class="form-hint" id="shotCountLabel">0 镜</span>
+              <button class="btn" type="submit">保存本集梗概</button>
+            </div>
+          </form>
+          <div id="shotList" class="drama-shot-list"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+  <script src="./drama.js"></script>
+</body>
+</html>
