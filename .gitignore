@@ -7,3 +7,6 @@ npm-debug.log*
 
 uploads/
 backups/
+
+# Vendor skill clones (installed copies live in .cursor/skills/)
+.tmp-skills/

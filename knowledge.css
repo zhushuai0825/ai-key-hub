@@ -1518,6 +1518,74 @@ body[data-companion="speaking"] .companion-wave i { background: rgba(120,210,200
 }
 
 /* Drama studio */
+.drama-boundary {
+  width: min(1400px, calc(100% - 44px));
+  margin: 10px auto 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(212,146,74,.35);
+  background: rgba(212,146,74,.08);
+  color: var(--ink-2);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.drama-boundary strong {
+  color: var(--accent);
+  margin-right: 8px;
+}
+.drama-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.drama-steps button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.drama-steps button.is-active {
+  border-color: rgba(212,146,74,.55);
+  color: var(--ink);
+}
+.drama-steps button.is-done {
+  color: var(--accent);
+}
+.drama-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.drama-import-box {
+  border: 1px solid var(--line);
+  background: var(--bg);
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
+.drama-import-box summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.drama-import-box textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
 .drama-shell {
   width: min(1400px, calc(100% - 44px));
   margin: 16px auto 28px;
@@ -1539,14 +1607,32 @@ body[data-companion="speaking"] .companion-wave i { background: rgba(120,210,200
 .drama-workspace { padding-bottom: 12px; }
 .drama-project-form { border-bottom: 1px solid var(--line); }
 .drama-tabs {
-  display: flex; gap: 0; border-bottom: 1px solid var(--line); padding: 0 8px;
+  display: flex; gap: 0; border-bottom: 1px solid var(--line); padding: 0 8px; overflow-x: auto;
 }
 .drama-tabs button {
   height: 40px; padding: 0 14px; border: 0; background: transparent;
   color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; font-size: 13px;
+  white-space: nowrap;
 }
 .drama-tabs button.is-active { color: var(--ink); border-bottom-color: var(--accent); }
 .drama-tab-panel { padding: 10px 12px 16px; }
+.drama-lib-intro { margin: 0 0 10px; }
+.drama-char-form .compact-row textarea { min-height: 56px; }
+.drama-anchor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.drama-anchor-grid input {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--ink);
+  padding: 8px 10px;
+  font: inherit;
+  font-size: 12px;
+}
 .drama-shot-toolbar {
   display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px;
 }
@@ -1564,6 +1650,7 @@ body[data-companion="speaking"] .companion-wave i { background: rgba(120,210,200
   font-style: normal; margin-left: 6px; color: var(--accent); font-size: 11px;
 }
 .drama-card p { margin: 0; color: var(--ink-2); font-size: 12px; line-height: 1.5; }
+.drama-card p.form-hint { margin-top: 6px; }
 .drama-card-actions, .drama-shot-head { gap: 6px; }
 .drama-card-actions button, .drama-shot-head button {
   height: 28px; padding: 0 10px; border: 1px solid var(--line-bright);
@@ -1576,18 +1663,28 @@ body[data-companion="speaking"] .companion-wave i { background: rgba(120,210,200
 .drama-shot-grid {
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
 }
+.drama-shot-grid textarea[data-field="action"],
+.drama-shot-grid textarea[data-field="result"],
+.drama-shot-grid textarea[data-field="dialogue"],
+.drama-shot-grid textarea[data-field="narration"],
 .drama-shot-grid textarea[data-field="visual_prompt"],
-.drama-shot-grid textarea[data-field="dialogue"] { grid-column: span 1; }
+.drama-shot-grid textarea[data-field="layout_description"] { grid-column: span 1; }
 .drama-shot-grid textarea[data-field="doubao_prompt"] { grid-column: 1 / -1; }
 .drama-shot-grid input, .drama-shot-grid textarea {
   width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink);
   padding: 8px 10px; font: inherit; font-size: 12px; line-height: 1.45;
 }
+.drama-shot-hint { margin: 8px 0 0; }
 @media (max-width: 980px) {
-  .drama-shell { width: 100%; margin: 0; padding: 14px; display: block; }
+  .drama-boundary, .drama-shell { width: 100%; margin-left: 0; margin-right: 0; padding-left: 14px; padding-right: 14px; box-sizing: border-box; }
+  .drama-shell { display: block; margin-top: 12px; }
   .drama-side, .drama-main { max-height: none; overflow: visible; margin-bottom: 14px; }
-  .drama-shot-grid { grid-template-columns: 1fr; }
-  .drama-shot-grid textarea[data-field="visual_prompt"],
+  .drama-anchor-grid, .drama-shot-grid { grid-template-columns: 1fr; }
+  .drama-shot-grid textarea[data-field="action"],
+  .drama-shot-grid textarea[data-field="result"],
   .drama-shot-grid textarea[data-field="dialogue"],
+  .drama-shot-grid textarea[data-field="narration"],
+  .drama-shot-grid textarea[data-field="visual_prompt"],
+  .drama-shot-grid textarea[data-field="layout_description"],
   .drama-shot-grid textarea[data-field="doubao_prompt"] { grid-column: 1; }
 }
