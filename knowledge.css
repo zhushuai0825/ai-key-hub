@@ -1517,77 +1517,276 @@ body[data-companion="speaking"] .companion-wave i { background: rgba(120,210,200
   .life-ask-panel, .life-feed-panel, .twin-main, .twin-side { max-height: none; overflow: visible; margin-bottom: 14px; }
 }
 
-/* Drama studio */
-.drama-shell {
-  width: min(1400px, calc(100% - 44px));
-  margin: 16px auto 28px;
+/* Drama studio — linear flow */
+.drama-flow {
+  width: min(1280px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 20px 0 48px;
+}
+.drama-view { min-height: 60vh; }
+.drama-list-head h1 {
+  margin: 0 0 6px;
+  font-size: 28px;
+  letter-spacing: -0.02em;
+}
+.drama-list-head p {
+  margin: 0 0 20px;
+  color: var(--muted);
+  font-size: 14px;
+}
+.drama-grid {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 12px;
-  align-items: start;
 }
-.drama-side, .drama-main { max-height: calc(100vh - 120px); overflow: auto; }
-.drama-project-list { display: grid; gap: 8px; padding: 10px 12px 14px; }
-.drama-project-item {
-  display: grid; gap: 4px; text-align: left; width: 100%;
-  padding: 10px 12px; border: 1px solid var(--line); background: var(--surface-2);
-  color: var(--ink); cursor: pointer;
+.drama-card-btn {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  color: inherit;
+  cursor: pointer;
+  transition: border-color .15s, transform .15s;
 }
-.drama-project-item strong { font-size: 13px; }
-.drama-project-item span { font-size: 11px; color: var(--muted); }
-.drama-project-item:hover, .drama-project-item.is-active { border-color: rgba(212,146,74,.5); }
-.drama-workspace { padding-bottom: 12px; }
-.drama-project-form { border-bottom: 1px solid var(--line); }
-.drama-tabs {
-  display: flex; gap: 0; border-bottom: 1px solid var(--line); padding: 0 8px;
+.drama-card-btn:hover {
+  border-color: rgba(212,146,74,.55);
+  transform: translateY(-1px);
 }
-.drama-tabs button {
-  height: 40px; padding: 0 14px; border: 0; background: transparent;
-  color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; font-size: 13px;
+.drama-card-btn strong { font-size: 16px; }
+.drama-card-btn span { font-size: 12px; color: var(--muted); }
+.drama-card-btn em {
+  font-style: normal;
+  font-size: 13px;
+  color: var(--ink-2);
+  line-height: 1.45;
 }
-.drama-tabs button.is-active { color: var(--ink); border-bottom-color: var(--accent); }
-.drama-tab-panel { padding: 10px 12px 16px; }
-.drama-shot-toolbar {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px;
+.drama-card-phase {
+  display: inline-block;
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px !important;
 }
-.drama-shot-toolbar select { height: 34px; min-width: 160px; }
-.drama-ep-synopsis { border: 1px solid var(--line); margin-bottom: 12px; }
-.drama-card, .drama-shot {
-  border: 1px solid var(--line); background: var(--surface-2); margin-bottom: 10px; padding: 10px 12px;
+.drama-empty, .drama-empty-inline, .drama-export-box {
+  border: 1px dashed var(--line);
+  border-radius: 14px;
+  padding: 28px 20px;
+  text-align: center;
+  color: var(--muted);
 }
-.drama-card.is-active { border-color: rgba(212,146,74,.45); }
-.drama-card-head, .drama-shot-head {
-  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 8px;
+.drama-empty strong { display: block; color: var(--ink); margin-bottom: 8px; font-size: 16px; }
+.drama-empty .btn { margin-top: 14px; }
+.drama-work-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
 }
-.drama-card-head strong, .drama-shot-head strong { font-size: 13px; }
-.drama-card-head em {
-  font-style: normal; margin-left: 6px; color: var(--accent); font-size: 11px;
+.drama-work-title { flex: 1; min-width: 160px; }
+.drama-work-title strong { display: block; font-size: 18px; }
+.drama-work-title span { font-size: 12px; color: var(--muted); }
+.drama-work-actions { display: flex; gap: 8px; }
+.drama-steps {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
 }
-.drama-card p { margin: 0; color: var(--ink-2); font-size: 12px; line-height: 1.5; }
-.drama-card-actions, .drama-shot-head { gap: 6px; }
-.drama-card-actions button, .drama-shot-head button {
-  height: 28px; padding: 0 10px; border: 1px solid var(--line-bright);
-  background: transparent; color: var(--ink-2); font-size: 12px; cursor: pointer;
+.drama-step {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 10px 8px;
+  font-size: 13px;
+  cursor: pointer;
 }
-.drama-shot-head select, .drama-shot-head input[type="number"] {
-  height: 28px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); font-size: 12px;
+.drama-step.is-active {
+  color: var(--ink);
+  border-color: rgba(212,146,74,.55);
+  background: var(--accent-soft);
 }
-.drama-shot-head input[type="number"] { width: 64px; }
-.drama-shot-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+.drama-outline-layout {
+  display: grid;
+  grid-template-columns: 1.1fr 0.9fr;
+  gap: 12px;
+  margin-bottom: 12px;
+  align-items: stretch;
 }
-.drama-shot-grid textarea[data-field="visual_prompt"],
-.drama-shot-grid textarea[data-field="dialogue"] { grid-column: span 1; }
-.drama-shot-grid textarea[data-field="doubao_prompt"] { grid-column: 1 / -1; }
-.drama-shot-grid input, .drama-shot-grid textarea {
-  width: 100%; border: 1px solid var(--line); background: var(--bg); color: var(--ink);
-  padding: 8px 10px; font: inherit; font-size: 12px; line-height: 1.45;
+.drama-outline-chat-col { min-width: 0; }
+.drama-outline-live {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: calc(min(52vh, 480px) + 52px);
 }
-@media (max-width: 980px) {
-  .drama-shell { width: 100%; margin: 0; padding: 14px; display: block; }
-  .drama-side, .drama-main { max-height: none; overflow: visible; margin-bottom: 14px; }
-  .drama-shot-grid { grid-template-columns: 1fr; }
-  .drama-shot-grid textarea[data-field="visual_prompt"],
-  .drama-shot-grid textarea[data-field="dialogue"],
-  .drama-shot-grid textarea[data-field="doubao_prompt"] { grid-column: 1; }
+.drama-outline-live header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.drama-outline-live .drama-preview {
+  flex: 1;
+  max-height: none;
+  overflow: auto;
+}
+@media (max-width: 800px) {
+  .drama-outline-layout { grid-template-columns: 1fr; }
+  .drama-outline-live { max-height: 240px; }
+}
+.drama-chat {
+  height: min(52vh, 480px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+  margin-bottom: 10px;
+}
+.drama-bubble {
+  width: fit-content;
+  max-width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.55;
+  flex: 0 0 auto;
+}
+.drama-bubble p { margin: 0 0 6px; }
+.drama-bubble p:last-child { margin: 0; }
+.drama-bubble.user {
+  align-self: flex-end;
+  background: var(--accent-soft);
+  border: 1px solid rgba(212,146,74,.35);
+}
+.drama-bubble.assistant {
+  align-self: flex-start;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+.drama-chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.drama-chat-form input {
+  height: 42px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: inherit;
+  padding: 0 12px;
+}
+.drama-step-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 8px;
+}
+.drama-result {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 14px;
+  margin-bottom: 14px;
+  background: var(--surface);
+}
+.drama-result header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.drama-preview {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-2);
+  max-height: 180px;
+  overflow: auto;
+}
+.drama-primary-action {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.drama-ep-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.drama-ep-count input {
+  width: 64px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: inherit;
+  padding: 0 8px;
+}
+.drama-result-list { display: grid; gap: 10px; margin-bottom: 14px; }
+.drama-detail {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 0 12px 12px;
+}
+.drama-detail summary {
+  cursor: pointer;
+  padding: 12px 0;
+  font-weight: 600;
+}
+.drama-detail pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--ink-2);
+}
+.drama-asset-cols {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.drama-asset-cols h3 { margin: 0 0 8px; font-size: 14px; }
+.drama-asset-cols h3 span { color: var(--muted); font-weight: 500; }
+.drama-mini {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+  background: var(--surface);
+}
+.drama-mini strong { display: block; font-size: 13px; margin-bottom: 4px; }
+.drama-mini p { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.45; }
+.drama-export-box h2 { margin: 0 0 8px; color: var(--ink); }
+.drama-export-box .btn { margin-top: 16px; }
+@media (max-width: 800px) {
+  .drama-steps { grid-template-columns: 1fr 1fr; }
+  .drama-asset-cols { grid-template-columns: 1fr; }
 }

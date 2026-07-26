@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Command Hub · AI 运维指挥台</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body class="cockpit">
+  <div class="cockpit-shell">
+    <div class="cockpit-grid-bg" aria-hidden="true"></div>
+
+    <header class="cockpit-bar">
+      <div class="cockpit-brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div>
+          <strong>Command Hub</strong>
+          <span>AI 运维指挥台</span>
+        </div>
+      </div>
+      <time id="clock" class="cockpit-clock">--</time>
+    </header>
+
+    <main class="cockpit-body">
+      <!-- ① 系统运维：Key / 调用 / 费用 -->
+      <section class="hub-zone hub-zone-ops" aria-labelledby="zoneOpsTitle">
+        <header class="zone-head">
+          <div>
+            <p class="zone-kicker">01 · 系统运维</p>
+            <h1 id="zoneOpsTitle">模型与调用</h1>
+          </div>
+          <div class="zone-head-actions">
+            <p class="zone-desc">厂商 Key、今日调用费用与近 24 小时真实调用</p>
+            <a class="dash-link" href="/keys.html">前往 Key 管理</a>
+          </div>
+        </header>
+
+        <div class="telemetry-strip" aria-label="系统遥测">
+          <div class="telemetry" id="telemetry"></div>
+        </div>
+
+        <div class="ops-panels">
+          <article class="rail-card ops-pulse">
+            <header class="rail-head">
+              <h2>调用 Pulse</h2>
+              <span class="rail-meta">近 24h · 真实日志</span>
+            </header>
+            <div id="pulseChart" class="pulse-chart"></div>
+          </article>
+        </div>
+      </section>
+
+      <!-- ② 助手动态：待办 / 企微 / 知识库 / 缓存 -->
+      <section class="hub-zone hub-zone-life" aria-labelledby="zoneLifeTitle">
+        <header class="zone-head">
+          <div>
+            <p class="zone-kicker">02 · 助手动态</p>
+            <h1 id="zoneLifeTitle">今日动态</h1>
+          </div>
+          <p class="zone-desc">待办提醒、企微待处理与知识库动态</p>
+        </header>
+
+        <div class="memory-dashboard" aria-label="助手动态数据">
+          <article class="dash-panel dash-panel-tasks">
+            <header class="dash-head">
+              <h2>今日待办</h2>
+              <span class="dash-meta" id="tasksMeta">0 条</span>
+            </header>
+            <div id="tasksFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/tasks.html">提醒中心</a>
+          </article>
+
+          <article class="dash-panel dash-panel-wecom">
+            <header class="dash-head">
+              <h2>企微待处理</h2>
+              <span class="dash-meta" id="wecomMeta">0 条</span>
+            </header>
+            <div id="wecomFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/wechat-inbox.html">企微处理台</a>
+          </article>
+
+          <article class="dash-panel dash-panel-knowledge">
+            <header class="dash-head">
+              <h2>知识库动态</h2>
+              <span class="dash-meta" id="knowledgeMeta">0 条</span>
+            </header>
+            <div id="knowledgeFeed" class="dash-feed"></div>
+            <a class="dash-link" href="/knowledge.html">知识库管理</a>
+          </article>
+        </div>
+      </section>
+
+      <!-- ③ 功能入口：按用途分组 -->
+      <section class="hub-zone hub-zone-modules" aria-labelledby="zoneModulesTitle">
+        <header class="zone-head">
+          <div>
+            <p class="zone-kicker">03 · 功能入口</p>
+            <h1 id="zoneModulesTitle">模块导航</h1>
+          </div>
+          <p class="zone-desc">按用途分组，避免和上方数据区混在一起</p>
+        </header>
+        <div id="moduleGroups" class="module-groups"></div>
+      </section>
+    </main>
+
+    <footer class="cockpit-foot">
+      <span class="sys-ok"><i></i>SYS ONLINE</span>
+      <span id="nodeStatus">--</span>
+      <span class="foot-meta">v0.2 · internal</span>
+    </footer>
+  </div>
+
+  <script src="./node_modules/echarts/dist/echarts.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>登录 · AIToken</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <style>
+    body.keys-login {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 70% 50% at 50% -10%, rgba(212,146,74,.12), transparent 55%),
+        var(--bg);
+    }
+    .login-card {
+      width: min(400px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 28px 24px 22px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.35);
+    }
+    .login-card h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+    .login-card p {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .login-card label {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: var(--ink-2);
+    }
+    .login-card input {
+      height: 42px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--ink);
+      padding: 0 12px;
+      font: inherit;
+    }
+    .login-card input:focus {
+      outline: none;
+      border-color: rgba(212,146,74,.55);
+    }
+    .login-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: flex-end;
+      margin-top: 8px;
+    }
+    .login-error {
+      min-height: 18px;
+      margin: 0 0 8px;
+      color: var(--bad);
+      font-size: 12px;
+    }
+    .login-back {
+      display: inline-block;
+      margin-bottom: 16px;
+      color: var(--muted);
+      text-decoration: none;
+      font-size: 13px;
+    }
+    .login-back:hover { color: var(--accent); }
+  </style>
+</head>
+<body class="module keys-login">
+  <div class="login-card">
+    <a class="login-back" href="/hub.html">← 返回指挥台</a>
+    <h1>AIToken 登录</h1>
+    <p>仅 Key 管理需要验证，其他页面可直接访问</p>
+    <form id="loginForm">
+      <label>用户名
+        <input name="username" autocomplete="username" required autofocus />
+      </label>
+      <label>密码
+        <input name="password" type="password" autocomplete="current-password" required />
+      </label>
+      <p class="login-error" id="loginError"></p>
+      <div class="login-actions">
+        <a class="btn" href="/hub.html">取消</a>
+        <button class="btn btn-solid" type="submit" id="loginBtn">进入 Key 管理</button>
+      </div>
+    </form>
+  </div>
+  <script src="./keys-login.js"></script>
+</body>
+</html>

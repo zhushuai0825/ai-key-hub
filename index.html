@@ -3,138 +3,255 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Command Hub · AI 运维指挥台</title>
-  <link rel="stylesheet" href="./theme.css" />
-  <link rel="stylesheet" href="./styles.css" />
+  <title>朱帅 · AI / 自动化测试工程师</title>
+  <meta name="description" content="朱帅 — AI / 自动化测试工程师。3 年测试经验，覆盖 LLM、RAG、ASR、文生图与自动化；作品含 AI Key Hub 与 LocalMiniDrama。" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./home.css" />
 </head>
-<body class="cockpit">
-  <div class="cockpit-shell">
-    <div class="cockpit-grid-bg" aria-hidden="true"></div>
+<body>
+  <a class="skip" href="#work">跳到作品</a>
 
-    <header class="cockpit-bar">
-      <div class="cockpit-brand">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <div>
-          <strong>Command Hub</strong>
-          <span>AI 运维指挥台</span>
+  <header class="site-top">
+    <a class="mark" href="/">朱帅</a>
+    <nav class="site-nav" aria-label="主导航">
+      <a href="#about">简介</a>
+      <a href="#experience">经历</a>
+      <a href="#work">作品</a>
+      <a href="#contact">联系</a>
+      <a class="nav-hub" href="/hub.html">后台</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero" aria-label="首页">
+      <div class="hero-copy">
+        <p class="hero-brand">朱帅</p>
+        <h1 class="hero-line">把 AI 测稳，也把系统做出来。</h1>
+        <p class="hero-sub">AI / 自动化测试工程师 · 3 年经验。擅长 LLM、RAG、ASR、文生图与接口自动化；业余把个人工具做成能跑的系统。</p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" href="#work">查看作品</a>
+          <a class="btn btn-ghost" href="#contact">联系我</a>
         </div>
       </div>
-      <time id="clock" class="cockpit-clock">--</time>
-    </header>
-
-    <main class="cockpit-body">
-      <!-- ① 系统运维：Key / 调用 / 费用 / 预警 -->
-      <section class="hub-zone hub-zone-ops" aria-labelledby="zoneOpsTitle">
-        <header class="zone-head">
-          <div>
-            <p class="zone-kicker">01 · 系统运维</p>
-            <h1 id="zoneOpsTitle">模型与调用</h1>
+      <aside class="hero-stage" aria-hidden="true">
+        <div class="stage-plane">
+          <div class="stage-rail">
+            <span>01</span>
+            <span>SYSTEM</span>
+            <span>ONLINE</span>
           </div>
-          <p class="zone-desc">厂商 Key、今日调用费用与余额预警</p>
-        </header>
-
-        <div class="telemetry-strip" aria-label="系统遥测">
-          <div class="telemetry" id="telemetry"></div>
-        </div>
-
-        <div class="ops-panels">
-          <article class="rail-card ops-pulse">
-            <header class="rail-head">
-              <h2>调用 Pulse</h2>
-              <span class="rail-meta">近 24h · 次</span>
-            </header>
-            <div id="pulseChart" class="pulse-chart"></div>
-          </article>
-
-          <article class="rail-card ops-signals">
-            <header class="rail-head">
-              <h2>系统预警</h2>
-              <span class="signal-count" id="alertCount">0</span>
-            </header>
-            <div id="signalFeed" class="signal-feed"></div>
-            <a class="dash-link" href="/keys.html">前往 Key 管理</a>
-          </article>
-        </div>
-      </section>
-
-      <!-- ② 生活助手：待办 / 健康 / 记账 / 缓存 -->
-      <section class="hub-zone hub-zone-life" aria-labelledby="zoneLifeTitle">
-        <header class="zone-head">
-          <div>
-            <p class="zone-kicker">02 · 生活助手</p>
-            <h1 id="zoneLifeTitle">今日动态</h1>
+          <div class="stage-grid">
+            <div class="stage-cell">
+              <span class="cell-k">KEYS</span>
+              <strong>12</strong>
+              <em>providers</em>
+            </div>
+            <div class="stage-cell">
+              <span class="cell-k">MEMORY</span>
+              <strong>∞</strong>
+              <em>knowledge</em>
+            </div>
+            <div class="stage-cell stage-cell-wide">
+              <span class="cell-k">ROUTE</span>
+              <code>gateway → model → reply</code>
+            </div>
+            <div class="stage-cell stage-cell-code">
+              <span class="cell-k">STACK</span>
+              <pre>Node · Postgres · Chroma
+WeCom · RAG · Voice</pre>
+            </div>
           </div>
-          <p class="zone-desc">企微与网页录入的待办、健康、账本与问答缓存</p>
-        </header>
-
-        <div class="memory-dashboard" aria-label="生活助手数据">
-          <article class="dash-panel dash-panel-tasks">
-            <header class="dash-head">
-              <h2>今日待办</h2>
-              <span class="dash-meta" id="tasksMeta">0 项</span>
-            </header>
-            <div id="tasksFeed" class="dash-feed"></div>
-            <a class="dash-link" href="/tasks.html">提醒中心</a>
-          </article>
-
-          <article class="dash-panel dash-panel-lifestyle">
-            <header class="dash-head">
-              <h2>健康生活</h2>
-              <span class="dash-meta">体重 · 饮食 · 睡眠</span>
-            </header>
-            <div id="lifestyleFeed" class="dash-feed"></div>
-            <a class="dash-link" href="/fitness.html">FitLog</a>
-          </article>
-
-          <article class="dash-panel dash-panel-finance">
-            <header class="dash-head">
-              <h2>记账</h2>
-              <span class="dash-meta" id="financeMonthMeta">本月 --</span>
-            </header>
-            <div id="financeFeed" class="dash-feed"></div>
-            <a class="dash-link" href="/finance.html">账本</a>
-          </article>
-
-          <article class="dash-panel dash-panel-cache">
-            <header class="dash-head">
-              <h2>问答缓存</h2>
-              <span class="dash-meta" id="cacheHitMeta">0 次命中</span>
-            </header>
-            <div id="cacheHitFeed" class="dash-feed"></div>
-            <a class="dash-link" href="/assistant-cache.html">我的数据</a>
-          </article>
+          <div class="stage-scan"></div>
         </div>
+      </aside>
+    </section>
 
-        <article class="rail-card life-trend">
-          <header class="rail-head">
-            <h2>健康趋势</h2>
-            <span class="rail-meta">最近 30 天 · 体重 / 摄入 / 运动 / 睡眠</span>
-          </header>
-          <div id="fitnessChart" class="pulse-chart fitness-chart"></div>
-        </article>
-      </section>
-
-      <!-- ③ 功能入口：按用途分组 -->
-      <section class="hub-zone hub-zone-modules" aria-labelledby="zoneModulesTitle">
-        <header class="zone-head">
+    <section class="section about" id="about">
+      <div class="section-head">
+        <p class="section-index">01</p>
+        <h2>简介</h2>
+      </div>
+      <div class="about-body">
+        <p class="about-lead">用可量化的方式测 AI，用可维护的方式写工具。</p>
+        <dl class="fact-grid">
           <div>
-            <p class="zone-kicker">03 · 功能入口</p>
-            <h1 id="zoneModulesTitle">模块导航</h1>
+            <dt>求职方向</dt>
+            <dd>AI / 自动化测试工程师</dd>
           </div>
-          <p class="zone-desc">按用途分组，避免和上方数据区混在一起</p>
-        </header>
-        <div id="moduleGroups" class="module-groups"></div>
-      </section>
-    </main>
+          <div>
+            <dt>经验</dt>
+            <dd>3 年测试 · 含 AI 与军工项目</dd>
+          </div>
+          <div>
+            <dt>教育</dt>
+            <dd>海南热带海洋学院 · 软件工程 · 本科</dd>
+          </div>
+          <div>
+            <dt>在做</dt>
+            <dd>商汤 SenseAudio · AI 测试</dd>
+          </div>
+        </dl>
+        <div class="about-cols">
+          <p>我做过客户端 ASR、文生图、智能 PPT、人脸识别、RAG / TTS / Agent 等评测落地：从需求评审、用例设计、接口与 UI 自动化，到压测、安全边界和缺陷闭环。</p>
+          <p>工具栈覆盖 Python、pytest、Playwright、JMeter、Locust、Jenkins、Docker，以及 Milvus / Qdrant 向量库环境。业余做 AI Key Hub 与本地短剧流水线，把「测过的能力」亲手接进可用产品。</p>
+        </div>
+        <ul class="traits">
+          <li>LLM / RAG 评测</li>
+          <li>接口 &amp; UI 自动化</li>
+          <li>性能与安全</li>
+          <li>多模态 AI</li>
+          <li>Python</li>
+          <li>Docker</li>
+        </ul>
+      </div>
+    </section>
 
-    <footer class="cockpit-foot">
-      <span class="sys-ok"><i></i>SYS ONLINE</span>
-      <span id="nodeStatus">--</span>
-      <span class="foot-meta">v0.2 · internal</span>
-    </footer>
-  </div>
+    <section class="section experience" id="experience">
+      <div class="section-head">
+        <p class="section-index">02</p>
+        <h2>经历</h2>
+      </div>
+      <ol class="exp-list">
+        <li class="exp-item">
+          <div class="exp-meta">
+            <span>2026.04 – 至今</span>
+            <span>上海</span>
+          </div>
+          <div class="exp-main">
+            <h3>上海微创（商汤科技 · SenseAudio）</h3>
+            <p class="exp-role">AI 测试工程师</p>
+            <p>负责 SoWork 客户端 ASR 语音转写的功能、兼容与性能；覆盖嘈杂环境、多口音、扩写与异常音频。SenseStudio 侧负责文生图与 AI PPT 模块的量化评测、边界用例与并发压测，推动缺陷闭环与版本验收。</p>
+          </div>
+        </li>
+        <li class="exp-item">
+          <div class="exp-meta">
+            <span>2024.09 – 2026.04</span>
+            <span>北京</span>
+          </div>
+          <div class="exp-main">
+            <h3>北京游刃科技（海马体 AI）</h3>
+            <p class="exp-role">AI 测试工程师</p>
+            <p>端侧与 Web/App 全量用例与验收；Python + Pytest + Requests / Playwright 搭建自动化；JMeter / Locust 压测定位瓶颈。负责轻量化人脸识别模型评测（暗光、侧脸、遮挡等），并做过直播流采集、切片与转码保障。</p>
+          </div>
+        </li>
+        <li class="exp-item">
+          <div class="exp-meta">
+            <span>2023.10 – 2024.07</span>
+            <span>北京</span>
+          </div>
+          <div class="exp-main">
+            <h3>北京航云科创</h3>
+            <p class="exp-role">测试工程师 · 军工项目</p>
+            <p>需求解析与高覆盖用例、Web 功能与接口测试、缺陷跟踪与回归；按国标输出测试文档，协助服务器部署与环境保障。</p>
+          </div>
+        </li>
+      </ol>
+    </section>
 
-  <script src="./node_modules/echarts/dist/echarts.min.js"></script>
-  <script src="./app.js"></script>
+    <section class="section work" id="work">
+      <div class="section-head">
+        <p class="section-index">03</p>
+        <h2>作品</h2>
+      </div>
+      <ol class="project-list">
+        <li class="project">
+          <article class="project-card">
+            <div class="project-meta">
+              <span class="project-no">01</span>
+              <span class="project-year">2025–</span>
+            </div>
+            <div class="project-main">
+              <div class="project-title-row">
+                <h3>AI Key Hub</h3>
+                <a class="project-ext" href="https://github.com/zhushuai0825/ai-key-hub" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+              </div>
+              <p class="project-role">个人 AI 运维与生活中枢 · 独立全栈</p>
+              <p class="project-summary">从「管 Key」长成一套可日常使用的 AI 指挥台：多厂商 Key / 余额看板、知识库 RAG、企业微信助手、提醒与漫剧工作室。目标不是演示聊天窗口，而是把模型能力嵌进真实流程。</p>
+              <ul class="project-points">
+                <li>统一管理 DeepSeek、通义、豆包、智谱等 Key：脱敏展示、一键复制 curl / 环境变量、低余额与异常预警。</li>
+                <li>知识库入库与向量检索（PostgreSQL + Chroma），支持文档提问、全局搜索、企微文件上传与问答缓存。</li>
+                <li>生活侧：待办提醒、时间轴动态；运维侧：审计日志、监控、备份恢复、配置中心。</li>
+                <li>漫剧工作室（梗概 → 分镜 / 角色卡 → 导出豆包提示词），持续把创作与运维收成模块。</li>
+              </ul>
+              <ul class="tags">
+                <li>Node.js</li>
+                <li>PostgreSQL</li>
+                <li>Chroma / RAG</li>
+                <li>企业微信</li>
+                <li>Docker</li>
+              </ul>
+            </div>
+          </article>
+        </li>
+        <li class="project">
+          <article class="project-card">
+            <div class="project-meta">
+              <span class="project-no">02</span>
+              <span class="project-year">v1.2.8</span>
+            </div>
+            <div class="project-main">
+              <div class="project-title-row">
+                <h3>LocalMiniDrama · 本地短剧助手</h3>
+                <a class="project-ext" href="https://github.com/xuanyustudio/LocalMiniDrama" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
+              </div>
+              <p class="project-role">本地优先的 AI 短剧 / 漫剧全流程工具 · Vue3 + Node + Electron</p>
+              <p class="project-summary">开源本地短剧生成器：剧本、角色、场景、道具、分镜到图片 / 视频合成一条链路跑通；SQLite + 本地文件，素材不上云。支持列表精细编辑与画布批量编排双视图，接入通义、火山 Seedance、可灵、Gemini、Agnes 等多模型。</p>
+              <ul class="project-points">
+                <li>完整流水线：梗概生成多集剧本 → 提取角色 / 场景 / 道具并生图 → 分镜脚本（景别 / 运镜 / 台词）→ 静帧与视频 → ffmpeg 合成成片。</li>
+                <li>画布工作流（@vue-flow）：竖排节点、剧本起点、框选整组重跑、布局持久化；与列表模式同源数据。</li>
+                <li>工程能力：一键生成与失败重试、ZIP 导入导出、全局素材库、多画幅、提示词可覆盖、Electron 桌面打包。</li>
+                <li>本地优先：better-sqlite3 存工程，生成物落盘；适合创作者批量生产，也适合二次开发接新服务商。</li>
+              </ul>
+              <ul class="tags">
+                <li>Vue 3</li>
+                <li>Express</li>
+                <li>SQLite</li>
+                <li>Electron</li>
+                <li>多模型视频</li>
+              </ul>
+            </div>
+          </article>
+        </li>
+      </ol>
+    </section>
+
+    <section class="section contact" id="contact">
+      <div class="section-head">
+        <p class="section-index">04</p>
+        <h2>联系</h2>
+      </div>
+      <div class="contact-body">
+        <p class="contact-lead">求职沟通、项目交流，邮件或电话都可以。</p>
+        <div class="contact-rows">
+          <a class="contact-row" href="mailto:16630507306@163.com">
+            <span>邮箱</span>
+            <strong>16630507306@163.com</strong>
+          </a>
+          <a class="contact-row" href="tel:16630507306">
+            <span>电话</span>
+            <strong>16630507306</strong>
+          </a>
+          <a class="contact-row" href="https://github.com/zhushuai0825" target="_blank" rel="noopener noreferrer">
+            <span>GitHub</span>
+            <strong>zhushuai0825</strong>
+          </a>
+          <a class="contact-row" href="/hub.html">
+            <span>内部后台</span>
+            <strong>Command Hub</strong>
+          </a>
+        </div>
+        <p class="contact-note">邮件主题可写「面试 / 合作」方便我优先处理。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-foot">
+    <span>© <span id="year">2026</span> 朱帅</span>
+    <span class="foot-mono">built to be used</span>
+  </footer>
+
+  <script src="./home.js"></script>
 </body>
 </html>

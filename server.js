@@ -1,7 +1,7 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
+import { readFileSync, createReadStream, existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { createReadStream, existsSync } from 'node:fs';
 import { mkdir, writeFile, readFile as readLocalFile, readdir, unlink, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,14 +19,56 @@ import {
   getEmbeddingStatus,
   warmupEmbeddings,
 } from './lib/embeddings.js';
+import {
+  outlineSystemPrompt,
+  outlineChatSystemPrompt,
+  storyExpansionSystemPrompt,
+  characterExtractionSystemPrompt,
+  sceneExtractionSystemPrompt,
+  propExtractionSystemPrompt,
+  buildOutlineUserPrompt,
+  buildStoryUserPrompt,
+  collectScriptText,
+  normalizeEpisodeScripts,
+  normalizeCharacters,
+  normalizeScenes,
+  normalizeProps,
+  parseModelJson,
+  buildLmdProjectJson,
+  buildZipBuffer,
+  safeZipFilename,
+} from './lib/drama-workflow.js';
 
 const { Pool } = pg;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function loadEnvFile(filePath) {
+  if (!existsSync(filePath)) return;
+  for (const rawLine of readFileSync(filePath, 'utf8').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const idx = line.indexOf('=');
+    if (idx <= 0) continue;
+    const key = line.slice(0, idx).trim();
+    let value = line.slice(idx + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+
+loadEnvFile(path.join(__dirname, '.env'));
+
 const PORT = Number(process.env.PORT || 8899);
 const DATABASE_URL = process.env.DATABASE_URL || 'postgres://ai_admin:ai_admin_123@127.0.0.1:5432/ai_key_hub';
 const AUTH_USER = process.env.APP_AUTH_USER || '';
 const AUTH_PASSWORD = process.env.APP_AUTH_PASSWORD || '';
+const KEY_AUTH_USER = process.env.KEY_AUTH_USER || process.env.APP_AUTH_USER || '';
+const KEY_AUTH_PASSWORD = process.env.KEY_AUTH_PASSWORD || process.env.APP_AUTH_PASSWORD || '';
+const KEY_AUTH_TTL_MS = Number(process.env.KEY_AUTH_TTL_MS || 12 * 60 * 60 * 1000);
 const PROFILE_HEIGHT_CM = 177;
+const DEEPSEEK_CHAT_MODEL = process.env.DEEPSEEK_CHAT_MODEL || 'deepseek-v4-flash';
 const CHROMA_URL = process.env.CHROMA_URL || 'http://127.0.0.1:8000';
 const KNOWLEDGE_COLLECTION = process.env.KNOWLEDGE_COLLECTION || (USE_HASH_EMBEDDING ? 'ai_key_hub_knowledge' : 'ai_key_hub_knowledge_bge');
 const UPLOAD_DIR = path.join(__dirname, 'uploads', 'knowledge');
@@ -56,9 +98,17 @@ const WECHAT_FAILED_RETRY_ENABLED = process.env.WECHAT_FAILED_RETRY_ENABLED !== 
 const WECHAT_FAILED_RETRY_MS = Number(process.env.WECHAT_FAILED_RETRY_MS || 5 * 60 * 1000);
 const WECHAT_FAILED_RETRY_NOTIFY = process.env.WECHAT_FAILED_RETRY_NOTIFY === 'true';
 const WECHAT_ADMIN_USER = process.env.WECHAT_ADMIN_USER || '';
+const BALANCE_REFRESH_MS = Number(process.env.BALANCE_REFRESH_MS || 5 * 60 * 1000);
+const ALIYUN_ACCESS_KEY_ID = process.env.ALIYUN_ACCESS_KEY_ID || '';
+const ALIYUN_ACCESS_KEY_SECRET = process.env.ALIYUN_ACCESS_KEY_SECRET || '';
+const VOLC_ACCESS_KEY_ID = process.env.VOLC_ACCESS_KEY_ID || process.env.VOLC_ACCESSKEY || '';
+const VOLC_SECRET_ACCESS_KEY = process.env.VOLC_SECRET_ACCESS_KEY || process.env.VOLC_SECRETKEY || '';
 const pool = new Pool({ connectionString: DATABASE_URL });
 const chroma = new ChromaClient({ path: CHROMA_URL });
 const companionSessions = new Map();
+const dramaWritingSessions = new Map();
+const keyAuthSessions = new Map();
+const DRAMA_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 
 const mime = {
   '.html': 'text/html; charset=utf-8',
@@ -385,6 +435,39 @@ async function initDb() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_episodes_project ON drama_episodes(project_id, episode_no, id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_shots_episode ON drama_shots(episode_id, shot_no, id)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_shots_project ON drama_shots(project_id, episode_id, shot_no)');
+  await pool.query(`ALTER TABLE drama_projects ADD COLUMN IF NOT EXISTS logline TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE drama_projects ADD COLUMN IF NOT EXISTS outline TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE drama_projects ADD COLUMN IF NOT EXISTS episode_hooks JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query(`ALTER TABLE drama_episodes ADD COLUMN IF NOT EXISTS script_content TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`ALTER TABLE drama_characters ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'supporting'`);
+  await pool.query(`ALTER TABLE drama_characters ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS drama_scenes (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+      location TEXT NOT NULL DEFAULT '',
+      time_label TEXT NOT NULL DEFAULT '日',
+      prompt TEXT NOT NULL DEFAULT '',
+      episode_index INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS drama_props (
+      id SERIAL PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT '关键道具',
+      description TEXT NOT NULL DEFAULT '',
+      prompt TEXT NOT NULL DEFAULT '',
+      episode_index INTEGER NOT NULL DEFAULT 0,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )`);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_scenes_project ON drama_scenes(project_id, sort_order, id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_drama_props_project ON drama_props(project_id, sort_order, id)');
   await migratePlainApiKeysToEncrypted();
   await ensurePrimaryKnowledgeBase();
 }
@@ -442,12 +525,12 @@ function fitnessPrompt(entry) {
 
 async function deepseekFitnessAdvice(entry) {
   const apiKey = await deepseekApiKey();
-  if (!apiKey) throw new Error('DeepSeek Key not configured');
+  if (!apiKey) throw new Error('AI 服务未配置，请先在 Key 管理中添加可用密钥');
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         { role: 'system', content: '你只返回严格 JSON，不要 Markdown。' },
         { role: 'user', content: fitnessPrompt(entry) },
@@ -456,7 +539,7 @@ async function deepseekFitnessAdvice(entry) {
     }),
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek analyze failed: ${response.status}`);
+  if (!response.ok) throw new Error(body?.error?.message || `分析请求失败：${response.status}`);
   const content = body?.choices?.[0]?.message?.content || '';
   const parsed = JSON.parse(content.replace(/^```json\s*|\s*```$/g, '').trim());
   return {
@@ -679,7 +762,7 @@ async function deepseekGlobalAnswer(question, bundle, profile) {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         { role: 'system', content: '你是个人数据中枢助手。根据全局搜索结果和个人画像回答问题。优先跨账本、健康、知识库、任务、企业微信消息、报告做综合分析；能计算趋势就给结论和依据；必须说明引用了哪些类型的数据，不要编造未提供的事实。回答适合手机阅读，先给结论，再给依据和建议。' },
         { role: 'user', content: `问题：${question}\n\n【个人画像】\n${profile?.summary || '暂无'}\n\n【全局搜索结果】\n${context}` },
@@ -874,7 +957,7 @@ async function deepseekUnderstandWechatMessage(message, userContext, memoryConte
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         {
           role: 'system',
@@ -942,7 +1025,7 @@ async function deepseekWechatAssistant(question, userContext, knowledgeSources, 
   if (!apiKey) {
     return userContext
       ? `暂未配置 AI。根据你的记录：\n${truncateWechatReply(userContext, 500)}`
-      : '暂未配置 DeepSeek，无法进行智能回复。';
+      : '暂未配置 AI 密钥，无法进行智能回复。';
   }
   const kbContext = knowledgeSources.length
     ? knowledgeSources.map((item, index) => `【资料${index + 1}】${item.content}`).join('\n\n')
@@ -951,7 +1034,7 @@ async function deepseekWechatAssistant(question, userContext, knowledgeSources, 
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         {
           role: 'system',
@@ -997,7 +1080,7 @@ function pruneCompanionSessions() {
 async function deepseekCompanionChat({ text, history = [], profileSummary = '', userContext = '' }) {
   const apiKey = await deepseekApiKey();
   if (!apiKey) {
-    return '还没配置 DeepSeek Key，暂时没法语音聊天。去 Key 管理里加一个 DeepSeek 就行。';
+    return '还没配置 AI 密钥，暂时没法语音聊天。去 Key 管理里添加可用密钥即可。';
   }
   const recent = history.slice(-12).map((item) => ({
     role: item.role === 'assistant' ? 'assistant' : 'user',
@@ -1007,7 +1090,7 @@ async function deepseekCompanionChat({ text, history = [], profileSummary = '', 
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         {
           role: 'system',
@@ -1264,49 +1347,77 @@ async function assistantCacheSummary() {
 }
 
 async function dashboardMemoryBundle() {
-  const [cacheHits, lifestyle, finance, monthStats, tasks] = await Promise.all([
+  const [cacheHits, wecom, knowledgeDocs, knowledgeQueries, wecomCounts, tasks, knowledgeCounts] = await Promise.all([
     pool.query(`
       SELECT id, question, answer, topic, hit_count, last_hit_at, channel, pinned
       FROM assistant_answer_cache
-      WHERE topic IN ('fitness', 'finance', 'knowledge') AND hit_count > 0
+      WHERE topic IN ('knowledge', 'wechat', 'task') AND hit_count > 0
       ORDER BY last_hit_at DESC NULLS LAST, hit_count DESC, updated_at DESC
       LIMIT 15`),
     pool.query(`
-      SELECT entry_type, recorded_at, weight_kg, meal_type, food_text, calories, sleep_hours, sleep_quality, note
-      FROM fitness_entries
-      WHERE entry_type IN ('weight', 'meal', 'sleep')
-      ORDER BY recorded_at DESC, id DESC
+      SELECT id, content, intent, parse_status, reply_text, received_at, from_user
+      FROM wechat_messages
+      WHERE parse_status IN ('failed', 'processing')
+         OR (parse_status IN ('recorded', 'replied') AND received_at >= now() - interval '24 hours')
+      ORDER BY
+        CASE parse_status WHEN 'failed' THEN 0 WHEN 'processing' THEN 1 ELSE 2 END,
+        received_at DESC, id DESC
       LIMIT 15`),
     pool.query(`
-      SELECT direction, amount, category, title, occurred_at, note
-      FROM finance_entries
-      ORDER BY occurred_at DESC, id DESC
-      LIMIT 15`),
+      SELECT id, title, filename, status, source_channel, updated_at, created_at
+      FROM knowledge_documents
+      ORDER BY updated_at DESC, id DESC
+      LIMIT 8`),
+    pool.query(`
+      SELECT id, question, answer, created_at
+      FROM knowledge_queries
+      ORDER BY created_at DESC, id DESC
+      LIMIT 8`),
     pool.query(`
       SELECT
-        COALESCE(SUM(amount) FILTER (WHERE direction='expense'), 0)::float expense,
-        COALESCE(SUM(amount) FILTER (WHERE direction='income'), 0)::float income
-      FROM finance_entries
-      WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`),
+        COUNT(*) FILTER (WHERE parse_status IN ('failed', 'processing'))::int pending,
+        COUNT(*) FILTER (WHERE parse_status='failed')::int failed
+      FROM wechat_messages`),
     pool.query(`
       SELECT *
       FROM assistant_tasks
       WHERE status='pending'
       ORDER BY remind_at NULLS LAST, created_at DESC
       LIMIT 20`),
+    pool.query(`
+      SELECT
+        (SELECT COUNT(*)::int FROM knowledge_documents) docs,
+        (SELECT COUNT(*)::int FROM knowledge_queries) queries`),
   ]);
-  const expense = Number(monthStats.rows[0]?.expense || 0);
-  const income = Number(monthStats.rows[0]?.income || 0);
+
+  const knowledge = [
+    ...knowledgeDocs.rows.map((row) => ({
+      kind: 'doc',
+      title: row.title || row.filename || '未命名文档',
+      preview: `${row.status || 'pending'} · ${row.source_channel || 'web'}`,
+      time: row.updated_at || row.created_at,
+    })),
+    ...knowledgeQueries.rows.map((row) => ({
+      kind: 'query',
+      title: row.question || '知识库提问',
+      preview: String(row.answer || '').slice(0, 120),
+      time: row.created_at,
+    })),
+  ]
+    .sort((a, b) => new Date(b.time).getTime() - new Date(a.time).getTime())
+    .slice(0, 12);
+
   return {
     cache_hits: cacheHits.rows,
-    lifestyle: lifestyle.rows,
-    finance: finance.rows,
+    wecom: wecom.rows,
+    knowledge,
     tasks: tasks.rows,
-    month_stats: { expense, income, balance: income - expense },
     counts: {
       cache_hits: cacheHits.rowCount,
-      lifestyle: lifestyle.rowCount,
-      finance: finance.rowCount,
+      wecom_pending: Number(wecomCounts.rows[0]?.pending || 0),
+      wecom_failed: Number(wecomCounts.rows[0]?.failed || 0),
+      knowledge_docs: Number(knowledgeCounts.rows[0]?.docs || 0),
+      knowledge_queries: Number(knowledgeCounts.rows[0]?.queries || 0),
       tasks: tasks.rowCount,
       tasks_due: tasks.rows.filter((row) => row.remind_at && new Date(row.remind_at).getTime() <= Date.now()).length,
     },
@@ -1322,13 +1433,13 @@ async function invalidateAssistantCacheForUser(fromUser) {
 
 async function deepseekKnowledgeAnswer(question, sources, globalContext = '') {
   const apiKey = await deepseekApiKey();
-  if (!apiKey) throw new Error('DeepSeek Key not configured');
+  if (!apiKey) throw new Error('问答服务未配置，请先在 Key 管理中添加可用密钥');
   const context = sources.map((item, index) => `【资料${index + 1}｜doc:${item.doc_id}｜chunk:${item.chunk_index}｜score:${item.score ?? '--'}】${item.content}`).join('\n\n');
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         { role: 'system', content: '你是个人数据中枢问答助手。优先根据知识库资料回答，也可以结合全局搜索到的账本、健康、记忆、提醒和企微消息。资料不足时明确说明。回答要简洁，并列出引用资料编号或全局来源。' },
         { role: 'user', content: `问题：${question}\n\n知识库资料：\n${context}\n\n全局搜索结果：\n${globalContext || '暂无'}` },
@@ -1337,7 +1448,7 @@ async function deepseekKnowledgeAnswer(question, sources, globalContext = '') {
     }),
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek ask failed: ${response.status}`);
+  if (!response.ok) throw new Error(body?.error?.message || `问答请求失败：${response.status}`);
   return body?.choices?.[0]?.message?.content || '没有生成答案。';
 }
 
@@ -2186,54 +2297,11 @@ function parseFitnessMessage(content) {
 }
 
 async function createFitnessEntry(data) {
-  const mealEstimate = data.entry_type === 'meal' ? estimateMealNutrition(data.food_text || '') : {};
-  const burnedCalories = data.entry_type === 'workout'
-    ? estimateWorkoutBurn(data.workout_type, numberOrNull(data.duration_min), data.intensity)
-    : null;
-  const result = await pool.query(
-    `INSERT INTO fitness_entries (
-      entry_type, recorded_at, weight_kg, meal_type, food_text, calories, protein_g, carbs_g, fat_g,
-      workout_type, workout_text, duration_min, intensity, burned_calories, sleep_hours, sleep_quality, note, source_user
-    ) VALUES ($1,COALESCE($2::timestamp AT TIME ZONE 'Asia/Shanghai', now()),$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-    RETURNING *`,
-    [
-      data.entry_type,
-      data.recorded_at || null,
-      numberOrNull(data.weight_kg),
-      data.meal_type || null,
-      data.food_text || null,
-      mealEstimate.calories ?? null,
-      mealEstimate.protein_g ?? null,
-      mealEstimate.carbs_g ?? null,
-      mealEstimate.fat_g ?? null,
-      data.workout_type || null,
-      data.workout_text || null,
-      numberOrNull(data.duration_min),
-      data.intensity || null,
-      burnedCalories,
-      numberOrNull(data.sleep_hours),
-      data.sleep_quality || null,
-      data.note || '',
-      data.source_user || null,
-    ]
-  );
-  const report = await createFitnessReport(result.rows[0]);
-  return { entry: result.rows[0], report };
+  throw new Error('健康功能已下线');
 }
 
 async function createFinanceEntry(data, fromUser, rawMessage) {
-  const amount = numberOrNull(data.amount);
-  if (!amount || amount <= 0) throw new Error('finance amount required');
-  const directionRule = await matchAssistantRule({ fromUser, ruleType: 'finance_direction', text: rawMessage || data.note || data.title || '' });
-  const categoryRule = await matchAssistantRule({ fromUser, ruleType: 'finance_category', text: rawMessage || data.note || data.title || '' });
-  const direction = directionRule?.value === 'income' ? 'income' : (data.direction === 'income' ? 'income' : 'expense');
-  const category = categoryRule?.value || data.category || '未分类';
-  const result = await pool.query(
-    `INSERT INTO finance_entries (direction, amount, category, title, note, source_user, raw_message)
-     VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-    [direction, amount, category, data.title || (direction === 'income' ? '收入' : '支出'), data.note || rawMessage || '', fromUser || null, rawMessage || '']
-  );
-  return result.rows[0];
+  throw new Error('记账功能已下线');
 }
 
 async function saveAssistantMemory({ fromUser, category = 'general', content, importance = 3, source = 'wechat' }) {
@@ -2522,15 +2590,11 @@ async function executeAssistantActions(actions, content, fromUser) {
   const result = { financeEntry: null, fitnessEntry: null, memories: [], knowledgeDocuments: [], tasks: [], reports: [], corrections: [], deletions: [], intents: [] };
   for (const action of Array.isArray(actions) ? actions : []) {
     if (action?.type === 'fitness' && action.entry_type) {
-      const created = await createFitnessEntry({ ...action, note: action.note || content, source_user: fromUser });
-      result.fitnessEntry ||= created.entry;
-      result.intents.push(`fitness.${action.entry_type}`);
+      result.intents.push('fitness.disabled');
       continue;
     }
     if (action?.type === 'finance') {
-      const created = await createFinanceEntry(action, fromUser, content);
-      result.financeEntry ||= created;
-      result.intents.push(`finance.${created.direction}`);
+      result.intents.push('finance.disabled');
       continue;
     }
     if (action?.type === 'memory') {
@@ -2586,6 +2650,8 @@ async function executeAssistantActions(actions, content, fromUser) {
 
 function actionReplySuffix(executed) {
   const parts = [];
+  if (executed.intents.includes('fitness.disabled')) parts.push('健康记账功能已下线');
+  if (executed.intents.includes('finance.disabled')) parts.push('记账功能已下线');
   if (executed.fitnessEntry) parts.push('健康记录已保存');
   if (executed.financeEntry) parts.push(`${executed.financeEntry.direction === 'income' ? '收入' : '支出'}已保存`);
   if (executed.memories.length) parts.push(`已记住 ${executed.memories.length} 条长期记忆`);
@@ -2684,6 +2750,202 @@ function isKnowledgeUploadIntent(text) {
 function parseKnowledgeTextCommand(text) {
   const match = String(text || '').trim().match(/^(?:存入|保存到?|上传到?)\s*知识库[:：]?\s*([\s\S]+)/);
   return match?.[1]?.trim() || '';
+}
+
+function pruneDramaWritingSessions() {
+  const cutoff = Date.now() - DRAMA_SESSION_TTL_MS;
+  for (const [user, session] of dramaWritingSessions.entries()) {
+    if ((session.updatedAt || 0) < cutoff) dramaWritingSessions.delete(user);
+  }
+}
+
+function getDramaWritingSession(fromUser) {
+  pruneDramaWritingSessions();
+  const key = String(fromUser || '').trim();
+  if (!key) return null;
+  const session = dramaWritingSessions.get(key);
+  if (!session) return null;
+  session.updatedAt = Date.now();
+  return session;
+}
+
+function startDramaWritingSession(fromUser) {
+  const key = String(fromUser || '').trim() || 'anonymous';
+  const session = {
+    fromUser: key,
+    title: '',
+    genre: '',
+    synopsis: '',
+    scriptBody: '',
+    messages: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  dramaWritingSessions.set(key, session);
+  return session;
+}
+
+function clearDramaWritingSession(fromUser) {
+  dramaWritingSessions.delete(String(fromUser || '').trim());
+}
+
+function isDramaWritingStart(text = '') {
+  const clean = String(text || '').trim();
+  return /^(写剧本|开始写剧本|开启写剧本(?:模式)?|进入写剧本(?:模式)?|剧本模式)([！!。.\s]|$)/.test(clean)
+    || /^(我想|我要|帮我)?写(一部|一个|个)?剧本/.test(clean);
+}
+
+function isDramaWritingCancel(text = '') {
+  const clean = String(text || '').trim();
+  return /^(取消写剧本|退出写剧本|结束写剧本模式|不写了|退出剧本模式)$/.test(clean);
+}
+
+function isDramaWritingFinalize(text = '') {
+  const clean = String(text || '').trim();
+  return /^(定稿|完成剧本|保存剧本|保存到漫剧(?:工作室)?|结束写剧本|提交剧本)$/.test(clean)
+    || /定稿并保存|保存到漫剧/.test(clean);
+}
+
+async function deepseekDramaCowrite(session, userText) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) {
+    const merged = [session.scriptBody, userText].filter(Boolean).join('\n\n').trim();
+    return {
+      reply: '已记下这段内容。当前未配置 AI 密钥，只能先原文拼接；说「定稿」可保存到漫剧工作室。',
+      title: session.title || '企微剧本草稿',
+      genre: session.genre || '',
+      synopsis: session.synopsis || String(userText).slice(0, 120),
+      script_body: merged,
+    };
+  }
+  const history = (session.messages || []).slice(-8).map((item) => `${item.role === 'user' ? '用户' : '助手'}：${item.content}`).join('\n');
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: DEEPSEEK_CHAT_MODEL,
+      messages: [
+        {
+          role: 'system',
+          content: `你是短剧/漫剧编剧搭档，正在企业微信里和用户共创剧本。
+规则：
+1. 只返回 JSON，不要 Markdown。
+2. 根据用户本轮输入，更新完整草稿 script_body（保留已有合理内容，合并新设定/对白/分场）。
+3. reply 用中文，简洁，适合微信阅读，120 字以内；可追问缺口（主角、冲突、结局），并提醒「定稿」可保存。
+4. title / genre / synopsis 尽量补全；不确定时保留旧值或给暂定名。
+格式：
+{"reply":"...","title":"...","genre":"...","synopsis":"一两句梗概","script_body":"完整剧本文本"}`,
+        },
+        {
+          role: 'user',
+          content: `【当前草稿】
+标题：${session.title || '（未定）'}
+类型：${session.genre || '（未定）'}
+梗概：${session.synopsis || '（未定）'}
+正文：
+${session.scriptBody || '（空）'}
+
+【最近几轮】
+${history || '暂无'}
+
+【用户本轮】
+${userText}`,
+        },
+      ],
+      temperature: 0.5,
+      response_format: { type: 'json_object' },
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek drama write failed: ${response.status}`);
+  return safeJsonFromAi(body?.choices?.[0]?.message?.content || '{}');
+}
+
+async function finalizeDramaWritingSession(session, publicBase = '') {
+  const title = String(session.title || '').trim() || `企微剧本 ${formatShanghaiDateTime().slice(0, 16)}`;
+  const genre = String(session.genre || '').trim();
+  const synopsis = String(session.synopsis || '').trim() || String(session.scriptBody || '').slice(0, 200);
+  const scriptBody = String(session.scriptBody || '').trim();
+  if (!scriptBody && !synopsis) throw new Error('草稿还是空的，先写几句再定稿');
+
+  const project = await pool.query(`
+    INSERT INTO drama_projects (title, genre, synopsis, style_guide, status, outline, logline)
+    VALUES ($1,$2,$3,$4,'draft',$5,$6)
+    RETURNING *`, [title, genre, synopsis, '来源：企业微信写剧本模式', scriptBody || synopsis, synopsis.slice(0, 120)]);
+  const projectId = project.rows[0].id;
+  await pool.query(`
+    INSERT INTO drama_episodes (project_id, episode_no, title, synopsis, script_content, status, sort_order)
+    VALUES ($1,1,$2,$3,$4,'draft',0)`, [
+    projectId,
+    '第1集',
+    synopsis,
+    scriptBody || synopsis,
+  ]);
+  const base = String(publicBase || PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  const href = base ? `${base}/drama.html?id=${projectId}` : `/drama.html?id=${projectId}`;
+  return { project: project.rows[0], href };
+}
+
+async function handleDramaWritingMessage({ content, fromUser, publicBase = '' }) {
+  const text = String(content || '').trim();
+  let session = getDramaWritingSession(fromUser);
+
+  if (isDramaWritingStart(text)) {
+    session = startDramaWritingSession(fromUser);
+    return {
+      intent: 'drama.mode_start',
+      status: 'replied',
+      reply: '已进入写剧本模式。\n直接发梗概、人设、对白或分场，我会帮你整理成草稿。\n写完发「定稿」保存到漫剧工作室；发「取消写剧本」可退出。',
+    };
+  }
+
+  if (!session) return null;
+
+  if (isDramaWritingCancel(text)) {
+    clearDramaWritingSession(fromUser);
+    return { intent: 'drama.mode_cancel', status: 'replied', reply: '已退出写剧本模式，草稿未保存。' };
+  }
+
+  if (isDramaWritingFinalize(text)) {
+    try {
+      const saved = await finalizeDramaWritingSession(session, publicBase);
+      clearDramaWritingSession(fromUser);
+      return {
+        intent: 'drama.finalized',
+        status: 'recorded',
+        reply: `已定稿并写入漫剧工作室：${saved.project.title}\n打开继续分镜：${saved.href}`,
+        projectId: saved.project.id,
+      };
+    } catch (error) {
+      return { intent: 'drama.finalize_failed', status: 'failed', reply: `定稿失败：${error.message}` };
+    }
+  }
+
+  try {
+    const drafted = await deepseekDramaCowrite(session, text);
+    session.title = String(drafted.title || session.title || '').trim();
+    session.genre = String(drafted.genre || session.genre || '').trim();
+    session.synopsis = String(drafted.synopsis || session.synopsis || '').trim();
+    session.scriptBody = String(drafted.script_body || session.scriptBody || text).trim();
+    session.messages.push({ role: 'user', content: text });
+    session.messages.push({ role: 'assistant', content: String(drafted.reply || '已更新草稿') });
+    if (session.messages.length > 16) session.messages = session.messages.slice(-16);
+    session.updatedAt = Date.now();
+    const tip = '\n（继续补充，或发「定稿」保存）';
+    return {
+      intent: 'drama.writing',
+      status: 'replied',
+      reply: truncateWechatReply(`${drafted.reply || '已更新草稿。'}${tip}`),
+    };
+  } catch (error) {
+    session.scriptBody = [session.scriptBody, text].filter(Boolean).join('\n\n').trim();
+    session.updatedAt = Date.now();
+    return {
+      intent: 'drama.writing_fallback',
+      status: 'replied',
+      reply: `整理草稿时 AI 暂不可用（${error.message}），已先把原文拼进草稿。可继续发内容，或发「定稿」保存。`,
+    };
+  }
 }
 
 function extractVoiceText(payload) {
@@ -2885,7 +3147,7 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
   let memories = [];
   let intent = 'unknown';
   let status = 'ignored';
-  let reply = '你好，我是你的助手。可以记录体重/消费/运动/睡眠，也可以问我「这个月花了多少」「最近体重趋势」或知识库问题。';
+  let reply = '你好，我是你的助手。可以写剧本、设提醒、问知识库，也可以闲聊。';
   let assistantContext = null;
   const controlCommand = msg_type === 'text' ? parseWechatControlCommand(content) : null;
   if (controlCommand) {
@@ -2901,8 +3163,15 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
     await savePendingMedia({ fromUser: from_user, toUser: to_user, msgType: sourceMsgType, mediaId, contentHint: content, rawPayload: raw_payload });
     intent = `${sourceMsgType}.media_failed`;
     status = 'failed';
-    reply = `${mediaError}\n你可以直接补充一句说明，例如：这张图是午餐 28 元、这张图是体重 70.8kg、这张图存入知识库。`;
+    reply = `${mediaError}\n你可以直接补充一句说明，例如：这张图存入知识库。`;
   } else if (msg_type === 'text' && content.trim()) {
+    const publicBase = raw_payload.public_base_url || PUBLIC_BASE_URL || '';
+    const dramaHandled = await handleDramaWritingMessage({ content, fromUser: from_user, publicBase });
+    if (dramaHandled) {
+      intent = dramaHandled.intent;
+      status = dramaHandled.status;
+      reply = dramaHandled.reply;
+    } else {
     const kbText = parseKnowledgeTextCommand(content);
     if (kbText) {
       try {
@@ -2921,7 +3190,6 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         const target = await rememberNextKnowledgeUploadTarget(from_user, content);
         intent = 'knowledge.upload_target';
         status = 'replied';
-        const publicBase = raw_payload.public_base_url || PUBLIC_BASE_URL || '';
         const uploadUrl = `${String(publicBase).replace(/\/$/, '')}/wechat-upload.html?token=${target.upload_token}`;
         reply = `可以，30 分钟内发送的下一个文件会保存到知识库「${target?.kb?.name || '微信上传资料'}」。如果企业微信文件没有触发回调，也可以打开这个链接上传：${uploadUrl}\n也可以直接发「存入知识库：」+ 正文。`;
       } catch (error) {
@@ -2978,6 +3246,7 @@ async function saveWechatMessage({ from_user, to_user, msg_type = 'text', conten
         status = 'failed';
       }
     }
+    }
   }
   if (assistantContext) raw_payload = { ...raw_payload, assistant_context: assistantContext };
   return recordWechatMessageRow({ from_user, to_user, msg_type, content, raw_payload, financeEntry, fitnessEntry, knowledgeDocument, tasks, memories, intent, status, reply, sourceMsgType, mediaId, mediaStatus, mediaError });
@@ -2989,7 +3258,7 @@ async function createFitnessReport(entry) {
     report = await deepseekFitnessAdvice(entry);
   } catch (error) {
     report = localFitnessAdvice(entry);
-    report.advice = `${report.advice}（DeepSeek 分析暂不可用：${error.message}）`;
+    report.advice = `${report.advice}（智能分析暂不可用：${error.message}）`;
   }
   const result = await pool.query(
     `INSERT INTO fitness_ai_reports (entry_id, summary, advice, risk_level)
@@ -3014,13 +3283,73 @@ function sendJson(res, status, payload) {
 
 function authorized(req) {
   if (!AUTH_USER || !AUTH_PASSWORD) return true;
+  return basicAuthorized(req, AUTH_USER, AUTH_PASSWORD);
+}
+
+function basicAuthorized(req, user, password) {
   const header = req.headers.authorization || '';
   if (!header.startsWith('Basic ')) return false;
   const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
   const index = decoded.indexOf(':');
-  const user = decoded.slice(0, index);
-  const password = decoded.slice(index + 1);
-  return user === AUTH_USER && password === AUTH_PASSWORD;
+  if (index < 0) return false;
+  return decoded.slice(0, index) === user && decoded.slice(index + 1) === password;
+}
+
+function parseCookies(req) {
+  const raw = String(req.headers.cookie || '');
+  const out = {};
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx <= 0) continue;
+    const key = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (!key) continue;
+    out[key] = decodeURIComponent(value);
+  }
+  return out;
+}
+
+function purgeKeyAuthSessions() {
+  const now = Date.now();
+  for (const [token, session] of keyAuthSessions.entries()) {
+    if (!session || session.expiresAt <= now) keyAuthSessions.delete(token);
+  }
+}
+
+function createKeyAuthSession() {
+  purgeKeyAuthSessions();
+  const token = crypto.randomBytes(24).toString('hex');
+  keyAuthSessions.set(token, { expiresAt: Date.now() + KEY_AUTH_TTL_MS });
+  return token;
+}
+
+function readKeyAuthToken(req) {
+  const cookies = parseCookies(req);
+  if (cookies.aitoken_key_session) return cookies.aitoken_key_session;
+  const header = req.headers.authorization || '';
+  if (header.startsWith('Bearer ')) return header.slice(7).trim();
+  return '';
+}
+
+function keyAuthorized(req) {
+  if (!KEY_AUTH_USER || !KEY_AUTH_PASSWORD) return false;
+  const token = readKeyAuthToken(req);
+  if (!token) return false;
+  const session = keyAuthSessions.get(token);
+  if (!session) return false;
+  if (session.expiresAt <= Date.now()) {
+    keyAuthSessions.delete(token);
+    return false;
+  }
+  session.expiresAt = Date.now() + KEY_AUTH_TTL_MS;
+  return true;
+}
+
+function requiresKeyAuth(pathname = '') {
+  if (pathname === '/api/keys/login' || pathname === '/api/keys/logout' || pathname === '/api/keys/session') return false;
+  return pathname === '/keys.html'
+    || pathname === '/api/keys'
+    || pathname.startsWith('/api/keys/');
 }
 
 function gatewayAuthorized(req) {
@@ -3029,12 +3358,18 @@ function gatewayAuthorized(req) {
   return header === `Bearer ${GATEWAY_TOKEN}`;
 }
 
-function sendUnauthorized(res) {
-  res.writeHead(401, {
-    'WWW-Authenticate': 'Basic realm="AI Key Hub"',
-    'Content-Type': 'text/plain; charset=utf-8',
-  });
-  res.end('authentication required');
+function sendUnauthorized(res, message = 'authentication required') {
+  res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+  res.end(JSON.stringify({ error: message }));
+}
+
+function setKeyAuthCookie(res, token) {
+  const maxAge = Math.floor(KEY_AUTH_TTL_MS / 1000);
+  res.setHeader('Set-Cookie', `aitoken_key_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+}
+
+function clearKeyAuthCookie(res) {
+  res.setHeader('Set-Cookie', 'aitoken_key_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
 }
 
 function requestBaseUrl(req) {
@@ -3141,10 +3476,27 @@ function estimateGatewayCost(target, usage = {}) {
   const outputTokens = Number(usage.completion_tokens || usage.output_tokens || 0);
   const inputPrice = Number(target.input_price || 0);
   const outputPrice = Number(target.output_price || 0);
+  // prices / cost are stored in 分 per 1M tokens
   return {
     inputTokens,
     outputTokens,
     cost: (inputTokens / 1_000_000) * inputPrice + (outputTokens / 1_000_000) * outputPrice,
+  };
+}
+
+function yuanToFen(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 0;
+  return Math.round(n * 100);
+}
+
+function fenBalancePayload(balance) {
+  return {
+    ...balance,
+    total_balance: yuanToFen(balance.total_balance),
+    granted_balance: yuanToFen(balance.granted_balance),
+    topped_up_balance: yuanToFen(balance.topped_up_balance),
+    unit: 'fen',
   };
 }
 
@@ -3266,6 +3618,112 @@ async function fetchDeepSeekBalance(apiKey) {
   return deepseekBalancePayload(body);
 }
 
+function aliyunPercentEncode(value) {
+  return encodeURIComponent(String(value))
+    .replace(/!/g, '%21')
+    .replace(/'/g, '%27')
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\*/g, '%2A');
+}
+
+async function fetchAliyunAccountBalance(accessKeyId, accessKeySecret) {
+  const params = {
+    Format: 'JSON',
+    Version: '2017-12-14',
+    AccessKeyId: accessKeyId,
+    SignatureMethod: 'HMAC-SHA1',
+    Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    SignatureVersion: '1.0',
+    SignatureNonce: crypto.randomUUID(),
+    Action: 'QueryAccountBalance',
+  };
+  const canonical = Object.keys(params).sort()
+    .map((key) => `${aliyunPercentEncode(key)}=${aliyunPercentEncode(params[key])}`)
+    .join('&');
+  const stringToSign = `GET&${aliyunPercentEncode('/')}&${aliyunPercentEncode(canonical)}`;
+  const signature = crypto.createHmac('sha1', `${accessKeySecret}&`).update(stringToSign).digest('base64');
+  const response = await fetch(`https://business.aliyuncs.com/?${canonical}&Signature=${aliyunPercentEncode(signature)}`);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok || body?.Success === false) {
+    throw new Error(body?.Message || body?.message || `Aliyun balance request failed: ${response.status}`);
+  }
+  const data = body?.Data || {};
+  const total = Number(String(data.AvailableAmount ?? data.AvailableCashAmount ?? '0').replace(/,/g, ''));
+  return {
+    is_available: Number.isFinite(total),
+    currency: data.Currency || 'CNY',
+    total_balance: Number.isFinite(total) ? total : 0,
+    granted_balance: 0,
+    topped_up_balance: Number(String(data.AvailableCashAmount || '0').replace(/,/g, '')) || 0,
+    source: 'aliyun_bss',
+  };
+}
+
+function volcHmac(key, message) {
+  return crypto.createHmac('sha256', key).update(message, 'utf8').digest();
+}
+
+async function fetchVolcAccountBalance(accessKeyId, secretKey) {
+  const service = 'billing';
+  const region = 'cn-north-1';
+  const host = 'billing.volcengineapi.com';
+  const method = 'POST';
+  const action = 'QueryBalanceAcct';
+  const version = '2022-01-01';
+  const body = '{}';
+  const now = new Date();
+  const xDate = now.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  const shortDate = xDate.slice(0, 8);
+  const contentType = 'application/json; charset=utf-8';
+  const contentSha256 = crypto.createHash('sha256').update(body, 'utf8').digest('hex');
+  const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-content-sha256:${contentSha256}\nx-date:${xDate}\n`;
+  const signedHeaders = 'content-type;host;x-content-sha256;x-date';
+  const canonicalQuery = `Action=${encodeURIComponent(action)}&Version=${encodeURIComponent(version)}`;
+  const canonicalRequest = [method, '/', canonicalQuery, canonicalHeaders, signedHeaders, contentSha256].join('\n');
+  const credentialScope = `${shortDate}/${region}/${service}/request`;
+  const stringToSign = ['HMAC-SHA256', xDate, credentialScope, crypto.createHash('sha256').update(canonicalRequest, 'utf8').digest('hex')].join('\n');
+  const kDate = volcHmac(secretKey, shortDate);
+  const kRegion = volcHmac(kDate, region);
+  const kService = volcHmac(kRegion, service);
+  const kSigning = volcHmac(kService, 'request');
+  const signature = crypto.createHmac('sha256', kSigning).update(stringToSign, 'utf8').digest('hex');
+  const authorization = `HMAC-SHA256 Credential=${accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+  const response = await fetch(`https://${host}/?Action=${action}&Version=${version}`, {
+    method,
+    headers: {
+      'Content-Type': contentType,
+      Host: host,
+      'X-Date': xDate,
+      'X-Content-Sha256': contentSha256,
+      Authorization: authorization,
+    },
+    body,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || payload?.ResponseMetadata?.Error) {
+    const err = payload?.ResponseMetadata?.Error;
+    throw new Error(err?.Message || err?.Code || payload?.message || `Volc balance request failed: ${response.status}`);
+  }
+  const result = payload?.Result || payload || {};
+  const total = Number(result.AvailableBalance ?? result.CashBalance ?? result.available_balance ?? 0);
+  return {
+    is_available: Number.isFinite(total),
+    currency: 'CNY',
+    total_balance: Number.isFinite(total) ? total : 0,
+    granted_balance: Number(result.CreditLimit || 0) || 0,
+    topped_up_balance: Number(result.CashBalance || 0) || 0,
+    source: 'volc_billing',
+  };
+}
+
+async function applyProviderBalance(providerId, balance) {
+  await pool.query(
+    'UPDATE providers SET balance=$1,currency=$2,status=$3,updated_at=now() WHERE id=$4',
+    [balance.total_balance, balance.currency || 'CNY', balance.is_available === false ? 'warning' : 'active', providerId]
+  );
+}
+
 async function refreshProviderBalances() {
   const rows = await pool.query(`
     SELECT DISTINCT ON (p.id) p.id provider_id, p.code, p.name, k.id key_id, k.api_key, k.api_key_encrypted, k.api_key_iv, k.api_key_tag
@@ -3276,16 +3734,43 @@ async function refreshProviderBalances() {
 
   const results = [];
   for (const row of rows.rows) {
-    if (row.code !== 'deepseek') {
-      results.push({ provider_id: row.provider_id, provider: row.name, skipped: true, reason: 'provider balance API not configured' });
-      continue;
-    }
     try {
-      const balance = await fetchDeepSeekBalance(decryptSecret(row));
-      await pool.query(
-        'UPDATE providers SET balance=$1,currency=$2,status=$3,updated_at=now() WHERE id=$4',
-        [balance.total_balance, balance.currency, balance.is_available ? 'active' : 'warning', row.provider_id]
-      );
+      let balance = null;
+      if (row.code === 'deepseek') {
+        balance = fenBalancePayload(await fetchDeepSeekBalance(decryptSecret(row)));
+        balance.source = 'deepseek_api';
+      } else if (row.code === 'qwen') {
+        if (!ALIYUN_ACCESS_KEY_ID || !ALIYUN_ACCESS_KEY_SECRET) {
+          results.push({
+            provider_id: row.provider_id,
+            provider: row.name,
+            skipped: true,
+            reason: '通义余额需配置 ALIYUN_ACCESS_KEY_ID / ALIYUN_ACCESS_KEY_SECRET（推理 API Key 无法查账户余额）',
+          });
+          continue;
+        }
+        balance = fenBalancePayload(await fetchAliyunAccountBalance(ALIYUN_ACCESS_KEY_ID, ALIYUN_ACCESS_KEY_SECRET));
+      } else if (row.code === 'doubao') {
+        if (!VOLC_ACCESS_KEY_ID || !VOLC_SECRET_ACCESS_KEY) {
+          results.push({
+            provider_id: row.provider_id,
+            provider: row.name,
+            skipped: true,
+            reason: '豆包余额需配置 VOLC_ACCESS_KEY_ID / VOLC_SECRET_ACCESS_KEY（方舟 API Key 无法查账户余额）',
+          });
+          continue;
+        }
+        balance = fenBalancePayload(await fetchVolcAccountBalance(VOLC_ACCESS_KEY_ID, VOLC_SECRET_ACCESS_KEY));
+      } else {
+        results.push({
+          provider_id: row.provider_id,
+          provider: row.name,
+          skipped: true,
+          reason: '该厂商暂无余额接口，可在厂商卡片上手动填写',
+        });
+        continue;
+      }
+      await applyProviderBalance(row.provider_id, balance);
       results.push({ provider_id: row.provider_id, provider: row.name, key_id: row.key_id, ok: true, ...balance });
     } catch (error) {
       results.push({ provider_id: row.provider_id, provider: row.name, key_id: row.key_id, ok: false, error: error.message });
@@ -3426,7 +3911,7 @@ async function deepseekLifeAsk(question, { timelineRows = [], searchBundle = nul
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         {
           role: 'system',
@@ -3459,7 +3944,7 @@ async function deepseekTwinDraft({ incoming, channel = 'wecom', profile = null, 
   const apiKey = await deepseekApiKey();
   if (!apiKey) {
     return {
-      draft: '（未配置 DeepSeek）先根据你以往语气，建议先简短确认对方需求，再给明确下一步。',
+      draft: '（未配置 AI 密钥）先根据你以往语气，建议先简短确认对方需求，再给明确下一步。',
       rationale: '缺少模型密钥，仅返回占位草稿。',
     };
   }
@@ -3467,7 +3952,7 @@ async function deepseekTwinDraft({ incoming, channel = 'wecom', profile = null, 
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         {
           role: 'system',
@@ -3552,17 +4037,48 @@ function buildDramaDoubaoPrompt({ project = null, characters = [], shot = {} } =
 async function getDramaProjectBundle(projectId) {
   const project = (await pool.query('SELECT * FROM drama_projects WHERE id=$1', [projectId])).rows[0];
   if (!project) return null;
-  const [characters, episodes] = await Promise.all([
+  const [characters, episodes, scenes, props] = await Promise.all([
     pool.query('SELECT * FROM drama_characters WHERE project_id=$1 ORDER BY sort_order, id', [projectId]),
     pool.query('SELECT * FROM drama_episodes WHERE project_id=$1 ORDER BY episode_no, sort_order, id', [projectId]),
+    pool.query('SELECT * FROM drama_scenes WHERE project_id=$1 ORDER BY sort_order, id', [projectId]),
+    pool.query('SELECT * FROM drama_props WHERE project_id=$1 ORDER BY sort_order, id', [projectId]),
   ]);
-  return { project, characters: characters.rows, episodes: episodes.rows };
+  return {
+    project,
+    characters: characters.rows,
+    episodes: episodes.rows,
+    scenes: scenes.rows,
+    props: props.rows,
+  };
+}
+
+async function deepseekChatJson({ system, user, temperature = 0.6 } = {}) {
+  const apiKey = await deepseekApiKey();
+  if (!apiKey) throw new Error('请先配置 AI API Key');
+  const response = await fetch('https://api.deepseek.com/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: DEEPSEEK_CHAT_MODEL,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: user },
+      ],
+      temperature,
+    }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error?.message || `DeepSeek request failed: ${response.status}`);
+  const content = body?.choices?.[0]?.message?.content || '';
+  const parsed = parseModelJson(content);
+  if (parsed == null) throw new Error('模型未返回可解析 JSON');
+  return { parsed, content };
 }
 
 async function deepseekDramaSplit({ project, episode, characters = [] } = {}) {
   const apiKey = await deepseekApiKey();
-  const synopsis = String(episode?.synopsis || project?.synopsis || '').trim();
-  if (!synopsis) throw new Error('请先填写分集梗概或项目梗概');
+  const synopsis = String(episode?.script_content || episode?.synopsis || project?.outline || project?.synopsis || '').trim();
+  if (!synopsis) throw new Error('请先填写剧本/大纲或分集梗概');
   if (!apiKey) {
     // Offline fallback: naive paragraph split
     const chunks = synopsis.split(/[\n。！？!?]+/).map((s) => s.trim()).filter((s) => s.length > 6).slice(0, 12);
@@ -3583,12 +4099,12 @@ async function deepseekDramaSplit({ project, episode, characters = [] } = {}) {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: 'deepseek-chat',
+      model: DEEPSEEK_CHAT_MODEL,
       messages: [
         {
           role: 'system',
           content: [
-            '你是短剧/漫剧分镜导演。根据梗概拆成可拍分镜。',
+            '你是短剧/漫剧分镜导演。根据剧本/梗概拆成可拍分镜。',
             '每镜适合 3–8 秒的 Seedance/豆包视频生成。',
             'visual_prompt 写具体可见画面（场景、动作、光影、情绪），避免抽象形容词堆砌。',
             'dialogue 只写该镜要说的对白，可空。',
@@ -3605,7 +4121,7 @@ async function deepseekDramaSplit({ project, episode, characters = [] } = {}) {
             `类型：${project?.genre || ''}`,
             `风格：${project?.style_guide || ''}`,
             `分集：第 ${episode?.episode_no || 1} 集 ${episode?.title || ''}`,
-            `梗概：\n${synopsis}`,
+            `剧本/梗概：\n${synopsis}`,
             `角色卡：\n${charText}`,
           ].join('\n'),
         },
@@ -3675,9 +4191,9 @@ function systemEventHref(row = {}) {
   const entityId = String(row.entity_id || '');
   if (entityType === 'backup' || action.startsWith('backup.')) return '/backup.html';
   if (entityType === 'wechat_retry' || action.startsWith('wechat.retry')) return '/wechat-inbox.html?status=failed';
-  if (entityType === 'wechat_push' || action.startsWith('wechat.push')) return '/wechat-diagnostics.html';
+  if (entityType === 'wechat_push' || action.startsWith('wechat.push')) return '/monitor.html';
   if (entityType === 'wechat_message' && entityId) return `/wechat-inbox.html?q=${encodeURIComponent(`#${entityId}`)}`;
-  if (entityType === 'assistant_memory' && entityId) return `/profile.html?memory=${encodeURIComponent(entityId)}`;
+  if (entityType === 'assistant_memory' && entityId) return '/hub.html';
   return '/monitor.html';
 }
 
@@ -4151,40 +4667,14 @@ async function handleApi(req, res, url) {
     return sendJson(res, 201, { kb, ...created });
   }
   if (url.pathname === '/api/finance/entries' && req.method === 'GET') {
-    const q = url.searchParams.get('q');
-    const category = url.searchParams.get('category');
-    const direction = url.searchParams.get('direction');
-    const result = await pool.query(`
-      SELECT * FROM finance_entries
-      WHERE ($1::text IS NULL OR title ILIKE '%'||$1||'%' OR note ILIKE '%'||$1||'%' OR category ILIKE '%'||$1||'%' OR raw_message ILIKE '%'||$1||'%')
-        AND ($2::text IS NULL OR category=$2)
-        AND ($3::text IS NULL OR direction=$3)
-      ORDER BY occurred_at DESC, id DESC LIMIT 300`, [q || null, category || null, direction || null]);
-    return sendJson(res, 200, result.rows);
+    return sendJson(res, 200, []);
   }
   if (url.pathname === '/api/finance/summary' && req.method === 'GET') {
-    const [month, categories, trend] = await Promise.all([
-      pool.query(`SELECT COALESCE(SUM(amount) FILTER (WHERE direction='expense'),0)::float expense, COALESCE(SUM(amount) FILTER (WHERE direction='income'),0)::float income FROM finance_entries WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'`),
-      pool.query(`SELECT category, direction, COUNT(*)::int count, COALESCE(SUM(amount),0)::float amount FROM finance_entries WHERE occurred_at >= date_trunc('month', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai' GROUP BY category,direction ORDER BY amount DESC LIMIT 20`),
-      pool.query(`SELECT (occurred_at AT TIME ZONE 'Asia/Shanghai')::date record_day, COALESCE(SUM(amount) FILTER (WHERE direction='expense'),0)::float expense, COALESCE(SUM(amount) FILTER (WHERE direction='income'),0)::float income FROM finance_entries WHERE occurred_at >= now() - interval '30 days' GROUP BY record_day ORDER BY record_day ASC`),
-    ]);
-    return sendJson(res, 200, { month: { ...month.rows[0], balance: Number(month.rows[0].income || 0) - Number(month.rows[0].expense || 0) }, categories: categories.rows, trend: trend.rows });
+    return sendJson(res, 200, { month: { expense: 0, income: 0, balance: 0 }, categories: [], trend: [], disabled: true });
   }
   const financeEntryMatch = url.pathname.match(/^\/api\/finance\/entries\/(\d+)$/);
-  if (financeEntryMatch && req.method === 'PATCH') {
-    const data = await jsonBody(req);
-    const result = await pool.query(`
-      UPDATE finance_entries
-      SET direction=COALESCE($1,direction), amount=COALESCE($2,amount), category=COALESCE($3,category), title=COALESCE($4,title), note=COALESCE($5,note), occurred_at=COALESCE(CASE WHEN $6::text IS NULL THEN NULL ELSE $6::timestamp AT TIME ZONE 'Asia/Shanghai' END, occurred_at)
-      WHERE id=$7 RETURNING *`, [data.direction || null, data.amount === undefined ? null : numberOrNull(data.amount), data.category || null, data.title || null, data.note === undefined ? null : String(data.note || ''), data.occurred_at || null, Number(financeEntryMatch[1])]);
-    await auditLog(req, { action: 'finance.update', entityType: 'finance_entry', entityId: financeEntryMatch[1], detail: data });
-    return sendJson(res, result.rowCount ? 200 : 404, result.rowCount ? result.rows[0] : { error: 'not found' });
-  }
-  if (financeEntryMatch && req.method === 'DELETE') {
-    await pool.query('UPDATE wechat_messages SET finance_entry_id=NULL WHERE finance_entry_id=$1', [Number(financeEntryMatch[1])]);
-    const result = await pool.query('DELETE FROM finance_entries WHERE id=$1', [Number(financeEntryMatch[1])]);
-    await auditLog(req, { action: 'finance.delete', entityType: 'finance_entry', entityId: financeEntryMatch[1], detail: { deleted: result.rowCount > 0 } });
-    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  if (financeEntryMatch && (req.method === 'PATCH' || req.method === 'DELETE')) {
+    return sendJson(res, 410, { error: '记账功能已下线' });
   }
   if (url.pathname === '/api/wechat/messages' && req.method === 'GET') {
     const result = await pool.query('SELECT * FROM wechat_messages ORDER BY received_at DESC, id DESC LIMIT 100');
@@ -4328,74 +4818,10 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === '/api/timeline' && req.method === 'GET') return sendJson(res, 200, await listTimeline(url));
   if (url.pathname === '/api/life/ask' && req.method === 'POST') {
-    const data = await jsonBody(req);
-    const question = String(data.question || data.query || '').trim();
-    if (!question) return sendJson(res, 400, { error: '请输入问题' });
-    const days = Math.min(90, Math.max(1, Number(data.days || 7)));
-    const since = data.since || new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
-    const until = data.until || new Date().toISOString();
-    const fromUser = data.from_user || null;
-    const timelineUrl = new URL('http://local/api/timeline');
-    timelineUrl.searchParams.set('limit', String(data.limit || 180));
-    timelineUrl.searchParams.set('since', since);
-    timelineUrl.searchParams.set('until', until);
-    if (fromUser) timelineUrl.searchParams.set('from_user', fromUser);
-    if (data.type) timelineUrl.searchParams.set('type', data.type);
-    if (data.q) timelineUrl.searchParams.set('q', data.q);
-    const [timelineRows, searchBundle, profile] = await Promise.all([
-      listTimeline(timelineUrl),
-      globalSearch(question, { fromUser, limit: 10 }).catch(() => ({ items: [], groups: {} })),
-      buildPersonalProfile(fromUser).catch(() => ({ summary: '' })),
-    ]);
-    const result = await deepseekLifeAsk(question, {
-      timelineRows,
-      searchBundle,
-      profile,
-      rangeLabel: `${since} → ${until}（约 ${days} 天）`,
-    });
-    return sendJson(res, 200, {
-      answer: result.answer,
-      stats: result.stats,
-      sources: result.sources,
-      range: { since, until, days },
-      profile_summary: profile?.summary || '',
-    });
+    return sendJson(res, 410, { error: '人生时间轴功能已下线' });
   }
   if (url.pathname === '/api/twin/draft' && req.method === 'POST') {
-    const data = await jsonBody(req);
-    const incoming = String(data.incoming_message || data.message || data.text || '').trim();
-    if (!incoming) return sendJson(res, 400, { error: '请输入对方发来的消息' });
-    const fromUser = data.from_user || null;
-    const kbId = data.kb_id || null;
-    const [profile, styleExamples, memoryContext, knowledgeHits, searchBundle] = await Promise.all([
-      buildPersonalProfile(fromUser).catch(() => ({ summary: '' })),
-      buildTwinStyleExamples(fromUser, 12).catch(() => '暂无历史回复样本'),
-      buildAssistantMemoryContext(fromUser, 20).catch(() => '暂无长期记忆'),
-      searchKnowledge(kbId, incoming, 5).catch(() => []),
-      globalSearch(incoming, { fromUser, kbId, limit: 6 }).catch(() => ({ items: [] })),
-    ]);
-    const knowledgeContext = (knowledgeHits || []).slice(0, 5).map((row, index) => (
-      `【知识${index + 1}】${row.document_title || row.filename || '片段'}\n${String(row.content || '').slice(0, 280)}`
-    )).join('\n\n') || '暂无知识库命中';
-    const drafted = await deepseekTwinDraft({
-      incoming,
-      channel: data.channel || 'wecom',
-      profile,
-      styleExamples,
-      memoryContext,
-      knowledgeContext,
-      searchContext: formatGlobalSearchContext(searchBundle, 8),
-    });
-    return sendJson(res, 200, {
-      ...drafted,
-      incoming_message: incoming,
-      style_examples_used: styleExamples,
-      profile_summary: profile?.summary || '',
-      knowledge_hits: (knowledgeHits || []).slice(0, 5).map((row) => ({
-        title: row.document_title || row.filename || '片段',
-        preview: String(row.content || '').slice(0, 160),
-      })),
-    });
+    return sendJson(res, 410, { error: '个人分身功能已下线' });
   }
 
   // --- Drama studio ---
@@ -4404,7 +4830,10 @@ async function handleApi(req, res, url) {
       SELECT p.*,
         (SELECT COUNT(*)::int FROM drama_characters c WHERE c.project_id=p.id) AS character_count,
         (SELECT COUNT(*)::int FROM drama_episodes e WHERE e.project_id=p.id) AS episode_count,
-        (SELECT COUNT(*)::int FROM drama_shots s WHERE s.project_id=p.id) AS shot_count
+        (SELECT COUNT(*)::int FROM drama_shots s WHERE s.project_id=p.id) AS shot_count,
+        (SELECT COUNT(*)::int FROM drama_scenes sc WHERE sc.project_id=p.id) AS scene_count,
+        (SELECT COUNT(*)::int FROM drama_props pr WHERE pr.project_id=p.id) AS prop_count,
+        (SELECT COUNT(*)::int FROM drama_episodes e WHERE e.project_id=p.id AND COALESCE(e.script_content,'') <> '') AS script_count
       FROM drama_projects p
       ORDER BY p.updated_at DESC, p.id DESC`);
     return sendJson(res, 200, result.rows);
@@ -4446,6 +4875,9 @@ async function handleApi(req, res, url) {
         synopsis=COALESCE($4, synopsis),
         style_guide=COALESCE($5, style_guide),
         status=COALESCE(NULLIF($6,''), status),
+        logline=COALESCE($7, logline),
+        outline=COALESCE($8, outline),
+        episode_hooks=COALESCE($9::jsonb, episode_hooks),
         updated_at=now()
       WHERE id=$1 RETURNING *`, [
       id,
@@ -4454,6 +4886,9 @@ async function handleApi(req, res, url) {
       data.synopsis != null ? String(data.synopsis).trim() : null,
       data.style_guide != null ? String(data.style_guide).trim() : null,
       data.status != null ? String(data.status).trim() : '',
+      data.logline != null ? String(data.logline).trim() : null,
+      data.outline != null ? String(data.outline).trim() : null,
+      data.episode_hooks != null ? JSON.stringify(data.episode_hooks) : null,
     ]);
     if (!result.rowCount) return sendJson(res, 404, { error: '项目不存在' });
     await auditLog(req, { action: 'drama.project.update', entityType: 'drama_project', entityId: String(id), detail: data });
@@ -4464,6 +4899,264 @@ async function handleApi(req, res, url) {
     const result = await pool.query('DELETE FROM drama_projects WHERE id=$1', [id]);
     await auditLog(req, { action: 'drama.project.delete', entityType: 'drama_project', entityId: id, detail: { deleted: result.rowCount > 0 } });
     return sendJson(res, 200, { deleted: result.rowCount > 0 });
+  }
+
+  const dramaGenerateOutlineMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/generate-outline$/);
+  if (dramaGenerateOutlineMatch && req.method === 'POST') {
+    const projectId = Number(dramaGenerateOutlineMatch[1]);
+    const data = await jsonBody(req);
+    const project = (await pool.query('SELECT * FROM drama_projects WHERE id=$1', [projectId])).rows[0];
+    if (!project) return sendJson(res, 404, { error: '项目不存在' });
+    const episodeCount = Math.min(12, Math.max(1, Number(data.episode_count) || 3));
+    const idea = String(data.idea || data.prompt || project.synopsis || project.outline || project.title || '').trim();
+    if (!idea) return sendJson(res, 400, { error: '请先填写想法或项目梗概' });
+    const { parsed } = await deepseekChatJson({
+      system: outlineSystemPrompt(),
+      user: buildOutlineUserPrompt({
+        idea,
+        title: project.title,
+        genre: data.genre || project.genre,
+        styleGuide: data.style_guide || project.style_guide,
+        episodeCount,
+      }),
+      temperature: 0.7,
+    });
+    const outline = String(parsed.synopsis || parsed.outline || '').trim();
+    if (!outline) return sendJson(res, 502, { error: '模型未返回大纲正文' });
+    const hooks = Array.isArray(parsed.episode_hooks) ? parsed.episode_hooks : [];
+    const result = await pool.query(`
+      UPDATE drama_projects SET
+        title=COALESCE(NULLIF($2,''), title),
+        genre=COALESCE(NULLIF($3,''), genre),
+        style_guide=COALESCE(NULLIF($4,''), style_guide),
+        logline=$5,
+        outline=$6,
+        synopsis=CASE WHEN COALESCE(synopsis,'')='' THEN $6 ELSE synopsis END,
+        episode_hooks=$7::jsonb,
+        updated_at=now()
+      WHERE id=$1 RETURNING *`, [
+      projectId,
+      String(parsed.title || '').trim(),
+      String(parsed.genre || '').trim(),
+      String(parsed.style || '').trim(),
+      String(parsed.logline || '').trim(),
+      outline,
+      JSON.stringify(hooks),
+    ]);
+    await auditLog(req, { action: 'drama.outline.generate', entityType: 'drama_project', entityId: String(projectId), detail: { episode_count: episodeCount } });
+    return sendJson(res, 200, { project: result.rows[0], suggested_episode_count: Number(parsed.suggested_episode_count) || episodeCount });
+  }
+
+  const dramaOutlineChatMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/outline-chat$/);
+  if (dramaOutlineChatMatch && req.method === 'POST') {
+    const projectId = Number(dramaOutlineChatMatch[1]);
+    const data = await jsonBody(req);
+    const project = (await pool.query('SELECT * FROM drama_projects WHERE id=$1', [projectId])).rows[0];
+    if (!project) return sendJson(res, 404, { error: '项目不存在' });
+    const message = String(data.message || '').trim();
+    if (!message) return sendJson(res, 400, { error: '请输入内容' });
+    const history = Array.isArray(data.history) ? data.history.slice(-10) : [];
+    const historyText = history.map((item) => `${item.role === 'assistant' ? '助手' : '用户'}：${item.content}`).join('\n');
+    let hooks = project.episode_hooks;
+    if (typeof hooks === 'string') {
+      try { hooks = JSON.parse(hooks); } catch (_) { hooks = []; }
+    }
+    if (!Array.isArray(hooks)) hooks = [];
+    const { parsed } = await deepseekChatJson({
+      system: outlineChatSystemPrompt(),
+      user: [
+        `【当前项目】`,
+        `标题：${project.title || ''}`,
+        `类型：${project.genre || ''}`,
+        `画风：${project.style_guide || ''}`,
+        `一句话：${project.logline || ''}`,
+        `大纲：\n${project.outline || project.synopsis || '（空）'}`,
+        `钩子：${JSON.stringify(hooks)}`,
+        `【最近对话】\n${historyText || '暂无'}`,
+        `【用户本轮】\n${message}`,
+      ].join('\n'),
+      temperature: 0.7,
+    });
+    const draft = parsed?.draft && typeof parsed.draft === 'object' ? parsed.draft : {};
+    const outline = String(draft.synopsis || draft.outline || project.outline || '').trim();
+    const nextHooks = Array.isArray(draft.episode_hooks) ? draft.episode_hooks : hooks;
+    const result = await pool.query(`
+      UPDATE drama_projects SET
+        title=COALESCE(NULLIF($2,''), title),
+        genre=COALESCE(NULLIF($3,''), genre),
+        style_guide=COALESCE(NULLIF($4,''), style_guide),
+        logline=COALESCE(NULLIF($5,''), logline),
+        outline=COALESCE(NULLIF($6,''), outline),
+        synopsis=CASE WHEN COALESCE(synopsis,'')='' THEN COALESCE(NULLIF($6,''), synopsis) ELSE synopsis END,
+        episode_hooks=$7::jsonb,
+        updated_at=now()
+      WHERE id=$1 RETURNING *`, [
+      projectId,
+      String(draft.title || '').trim(),
+      String(draft.genre || '').trim(),
+      String(draft.style || '').trim(),
+      String(draft.logline || '').trim(),
+      outline,
+      JSON.stringify(nextHooks),
+    ]);
+    return sendJson(res, 200, {
+      reply: String(parsed.reply || '已记下。').trim(),
+      ready: Boolean(parsed.ready) || outline.length >= 400,
+      project: result.rows[0],
+      suggested_episode_count: Number(draft.suggested_episode_count) || 3,
+    });
+  }
+
+  const dramaGenerateScriptsMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/generate-scripts$/);
+  if (dramaGenerateScriptsMatch && req.method === 'POST') {
+    const projectId = Number(dramaGenerateScriptsMatch[1]);
+    const data = await jsonBody(req);
+    const project = (await pool.query('SELECT * FROM drama_projects WHERE id=$1', [projectId])).rows[0];
+    if (!project) return sendJson(res, 404, { error: '项目不存在' });
+    const outline = String(project.outline || project.synopsis || '').trim();
+    if (!outline) return sendJson(res, 400, { error: '请先生成或填写大纲' });
+    let hooks = project.episode_hooks;
+    if (typeof hooks === 'string') {
+      try { hooks = JSON.parse(hooks); } catch (_) { hooks = []; }
+    }
+    if (!Array.isArray(hooks)) hooks = [];
+    const episodeCount = Math.min(12, Math.max(1, Number(data.episode_count) || hooks.length || 3));
+    const { parsed } = await deepseekChatJson({
+      system: storyExpansionSystemPrompt(episodeCount),
+      user: buildStoryUserPrompt({ project, outline, hooks, episodeCount }),
+      temperature: 0.65,
+    });
+    const scripts = normalizeEpisodeScripts(parsed, episodeCount);
+    if (!scripts.length) return sendJson(res, 502, { error: '模型未返回剧本' });
+    const existing = await pool.query('SELECT * FROM drama_episodes WHERE project_id=$1 ORDER BY episode_no, id', [projectId]);
+    const saved = [];
+    for (let i = 0; i < scripts.length; i += 1) {
+      const item = scripts[i];
+      const epNo = i + 1;
+      const current = existing.rows.find((row) => Number(row.episode_no) === epNo);
+      if (current) {
+        const updated = await pool.query(`
+          UPDATE drama_episodes SET title=$2, synopsis=CASE WHEN COALESCE(synopsis,'')='' THEN $3 ELSE synopsis END,
+            script_content=$4, updated_at=now()
+          WHERE id=$1 RETURNING *`, [current.id, item.title, item.content.slice(0, 400), item.content]);
+        saved.push(updated.rows[0]);
+      } else {
+        const inserted = await pool.query(`
+          INSERT INTO drama_episodes (project_id, episode_no, title, synopsis, script_content, sort_order)
+          VALUES ($1,$2,$3,$4,$5,$2) RETURNING *`, [projectId, epNo, item.title, item.content.slice(0, 400), item.content]);
+        saved.push(inserted.rows[0]);
+      }
+    }
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [projectId]);
+    await auditLog(req, { action: 'drama.scripts.generate', entityType: 'drama_project', entityId: String(projectId), detail: { episodes: saved.length } });
+    return sendJson(res, 200, { episodes: saved });
+  }
+
+  const dramaExtractAssetsMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/extract-assets$/);
+  if (dramaExtractAssetsMatch && req.method === 'POST') {
+    const projectId = Number(dramaExtractAssetsMatch[1]);
+    const data = await jsonBody(req);
+    const bundle = await getDramaProjectBundle(projectId);
+    if (!bundle) return sendJson(res, 404, { error: '项目不存在' });
+    const scriptText = collectScriptText(bundle.episodes, bundle.project);
+    if (!scriptText) return sendJson(res, 400, { error: '请先生成剧本或填写大纲' });
+    const types = Array.isArray(data.types) && data.types.length
+      ? data.types.map((t) => String(t))
+      : ['characters', 'scenes', 'props'];
+    const replace = data.replace !== false;
+    const style = bundle.project.style_guide || '';
+    const result = { characters: [], scenes: [], props: [] };
+
+    if (types.includes('characters')) {
+      const { parsed } = await deepseekChatJson({
+        system: characterExtractionSystemPrompt(style),
+        user: `剧本内容：\n${scriptText}`,
+        temperature: 0.4,
+      });
+      const chars = normalizeCharacters(parsed);
+      if (replace) await pool.query('DELETE FROM drama_characters WHERE project_id=$1', [projectId]);
+      for (let i = 0; i < chars.length; i += 1) {
+        const c = chars[i];
+        const row = await pool.query(`
+          INSERT INTO drama_characters (project_id, name, role, appearance, personality, voice_note, ref_prompt, description, sort_order)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`, [
+          projectId, c.name, c.role, c.appearance, c.personality, c.voice_note, c.ref_prompt, c.description, i + 1,
+        ]);
+        result.characters.push(row.rows[0]);
+      }
+    }
+
+    if (types.includes('scenes')) {
+      const { parsed } = await deepseekChatJson({
+        system: sceneExtractionSystemPrompt(style),
+        user: `剧本内容：\n${scriptText}`,
+        temperature: 0.35,
+      });
+      const scenes = normalizeScenes(parsed);
+      if (replace) await pool.query('DELETE FROM drama_scenes WHERE project_id=$1', [projectId]);
+      for (let i = 0; i < scenes.length; i += 1) {
+        const s = scenes[i];
+        const row = await pool.query(`
+          INSERT INTO drama_scenes (project_id, location, time_label, prompt, sort_order)
+          VALUES ($1,$2,$3,$4,$5) RETURNING *`, [projectId, s.location, s.time, s.prompt, i + 1]);
+        result.scenes.push(row.rows[0]);
+      }
+    }
+
+    if (types.includes('props')) {
+      const { parsed } = await deepseekChatJson({
+        system: propExtractionSystemPrompt(style),
+        user: `剧本内容：\n${scriptText}`,
+        temperature: 0.35,
+      });
+      const props = normalizeProps(parsed);
+      if (replace) await pool.query('DELETE FROM drama_props WHERE project_id=$1', [projectId]);
+      for (let i = 0; i < props.length; i += 1) {
+        const p = props[i];
+        const row = await pool.query(`
+          INSERT INTO drama_props (project_id, name, type, description, prompt, sort_order)
+          VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`, [projectId, p.name, p.type, p.description, p.prompt, i + 1]);
+        result.props.push(row.rows[0]);
+      }
+    }
+
+    await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [projectId]);
+    await auditLog(req, {
+      action: 'drama.assets.extract',
+      entityType: 'drama_project',
+      entityId: String(projectId),
+      detail: {
+        characters: result.characters.length,
+        scenes: result.scenes.length,
+        props: result.props.length,
+      },
+    });
+    return sendJson(res, 200, result);
+  }
+
+  const dramaExportLmdMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/export-lmd$/);
+  if (dramaExportLmdMatch && req.method === 'GET') {
+    const projectId = Number(dramaExportLmdMatch[1]);
+    const bundle = await getDramaProjectBundle(projectId);
+    if (!bundle) return sendJson(res, 404, { error: '项目不存在' });
+    const projectJson = buildLmdProjectJson({
+      project: bundle.project,
+      characters: bundle.characters,
+      scenes: bundle.scenes.map((s) => ({ ...s, time: s.time_label })),
+      props: bundle.props,
+      episodes: bundle.episodes,
+    });
+    const zip = buildZipBuffer([
+      { name: 'project.json', data: Buffer.from(JSON.stringify(projectJson, null, 2), 'utf8') },
+    ]);
+    const filename = safeZipFilename(bundle.project.title);
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Length': zip.length,
+      'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    });
+    res.end(zip);
+    return;
   }
 
   const dramaProjectCharsMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/characters$/);
@@ -4567,6 +5260,7 @@ async function handleApi(req, res, url) {
         synopsis=COALESCE($4, synopsis),
         status=COALESCE(NULLIF($5,''), status),
         sort_order=COALESCE($6, sort_order),
+        script_content=COALESCE($7, script_content),
         updated_at=now()
       WHERE id=$1 RETURNING *`, [
       dramaEpMatch[1],
@@ -4575,6 +5269,7 @@ async function handleApi(req, res, url) {
       data.synopsis != null ? String(data.synopsis).trim() : null,
       data.status != null ? String(data.status).trim() : '',
       data.sort_order != null ? Number(data.sort_order) : null,
+      data.script_content != null ? String(data.script_content) : null,
     ]);
     if (!result.rowCount) return sendJson(res, 404, { error: '分集不存在' });
     await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [result.rows[0].project_id]);
@@ -4790,6 +5485,22 @@ async function handleApi(req, res, url) {
   if (url.pathname === '/api/balances/refresh' && req.method === 'POST') {
     return sendJson(res, 200, { updated_at: new Date().toISOString(), results: await refreshProviderBalances() });
   }
+  const providerBalanceMatch = url.pathname.match(/^\/api\/providers\/(\d+)\/balance$/);
+  if (providerBalanceMatch && req.method === 'PUT') {
+    const id = Number(providerBalanceMatch[1]);
+    const data = await jsonBody(req);
+    const balance = Number(data.balance);
+    if (!Number.isFinite(balance) || balance < 0) return sendJson(res, 400, { error: 'balance must be a non-negative number (unit: fen)' });
+    const currency = String(data.currency || 'CNY').trim() || 'CNY';
+    const fen = Math.round(balance);
+    const result = await pool.query(
+      'UPDATE providers SET balance=$1,currency=$2,updated_at=now() WHERE id=$3 RETURNING *',
+      [fen, currency, id]
+    );
+    if (!result.rowCount) return sendJson(res, 404, { error: 'not found' });
+    await auditLog(req, { action: 'provider.balance_set', entityType: 'provider', entityId: id, detail: { balance: fen, currency, source: 'manual', unit: 'fen' } });
+    return sendJson(res, 200, { ...result.rows[0], source: 'manual', unit: 'fen' });
+  }
   if (url.pathname === '/api/providers' && req.method === 'GET') {
     const result = await pool.query(`
       SELECT p.*, COUNT(DISTINCT k.id)::int key_count, COUNT(DISTINCT m.id)::int model_count,
@@ -4812,6 +5523,35 @@ async function handleApi(req, res, url) {
       GROUP BY bucket
       ORDER BY bucket DESC`);
     return sendJson(res, 200, result.rows);
+  }
+  if (url.pathname === '/api/keys/login' && req.method === 'POST') {
+    const data = await jsonBody(req);
+    const user = String(data.username || data.user || '').trim();
+    const password = String(data.password || '');
+    if (!KEY_AUTH_USER || !KEY_AUTH_PASSWORD) return sendJson(res, 503, { error: 'Key 登录未配置' });
+    if (user !== KEY_AUTH_USER || password !== KEY_AUTH_PASSWORD) {
+      return sendJson(res, 401, { error: '用户名或密码错误' });
+    }
+    const token = createKeyAuthSession();
+    const maxAge = Math.floor(KEY_AUTH_TTL_MS / 1000);
+    const body = JSON.stringify({ ok: true, expires_in: maxAge });
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Set-Cookie': `aitoken_key_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`,
+    });
+    return res.end(body);
+  }
+  if (url.pathname === '/api/keys/logout' && req.method === 'POST') {
+    const token = readKeyAuthToken(req);
+    if (token) keyAuthSessions.delete(token);
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Set-Cookie': 'aitoken_key_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0',
+    });
+    return res.end(JSON.stringify({ ok: true }));
+  }
+  if (url.pathname === '/api/keys/session' && req.method === 'GET') {
+    return sendJson(res, 200, { ok: keyAuthorized(req) });
   }
   if (url.pathname === '/api/keys' && req.method === 'GET') {
     const result = await pool.query(`
@@ -4901,59 +5641,26 @@ async function handleApi(req, res, url) {
     return sendJson(res, 200, result.rows);
   }
   if (url.pathname === '/api/fitness/summary' && req.method === 'GET') {
-    const [latestWeight, weightTrend, todayMeals, todayWorkout, recentAdvice, dailyRecords] = await Promise.all([
-      pool.query("SELECT weight_kg, recorded_at FROM fitness_entries WHERE entry_type='weight' AND weight_kg IS NOT NULL ORDER BY recorded_at DESC LIMIT 1"),
-      pool.query("SELECT recorded_at, weight_kg FROM fitness_entries WHERE entry_type='weight' AND weight_kg IS NOT NULL AND recorded_at >= now() - interval '30 days' ORDER BY recorded_at ASC"),
-      pool.query("SELECT COUNT(*)::int count, COALESCE(SUM(calories),0)::float calories FROM fitness_entries WHERE entry_type='meal' AND recorded_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"),
-      pool.query("SELECT COUNT(*)::int count, COALESCE(SUM(duration_min),0)::int duration_min, COALESCE(SUM(burned_calories),0)::float burned_calories FROM fitness_entries WHERE entry_type='workout' AND recorded_at >= date_trunc('day', now() AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'Asia/Shanghai'"),
-      pool.query('SELECT r.* FROM fitness_ai_reports r JOIN fitness_entries e ON e.id=r.entry_id ORDER BY r.created_at DESC LIMIT 1'),
-      pool.query(`
-        SELECT (recorded_at AT TIME ZONE 'Asia/Shanghai')::date record_day,
-               COUNT(*) FILTER (WHERE entry_type='meal')::int meal_count,
-               COALESCE(SUM(calories) FILTER (WHERE entry_type='meal'),0)::float calories,
-               COALESCE(SUM(duration_min) FILTER (WHERE entry_type='workout'),0)::int workout_min,
-               COALESCE(SUM(burned_calories) FILTER (WHERE entry_type='workout'),0)::float burned_calories,
-               COALESCE(AVG(sleep_hours) FILTER (WHERE entry_type='sleep'),0)::float sleep_hours
-        FROM fitness_entries
-        WHERE recorded_at >= now() - interval '30 days'
-        GROUP BY record_day
-        ORDER BY record_day ASC`),
-    ]);
-    const weight = latestWeight.rows[0]?.weight_kg ? Number(latestWeight.rows[0].weight_kg) : null;
-    const heightM = PROFILE_HEIGHT_CM / 100;
-    const bmi = weight ? Number((weight / (heightM * heightM)).toFixed(1)) : null;
     return sendJson(res, 200, {
-      profile: { height_cm: PROFILE_HEIGHT_CM, bmi },
-      latest_weight: latestWeight.rows[0] || null,
-      weight_trend: weightTrend.rows,
-      daily_records: dailyRecords.rows,
-      today_meals: todayMeals.rows[0],
-      today_workout: todayWorkout.rows[0],
-      latest_advice: recentAdvice.rows[0] || null,
+      profile: { height_cm: PROFILE_HEIGHT_CM, bmi: null },
+      latest_weight: null,
+      weight_trend: [],
+      daily_records: [],
+      today_meals: { count: 0, calories: 0 },
+      today_workout: { count: 0, duration_min: 0, burned_calories: 0 },
+      latest_advice: null,
+      disabled: true,
     });
   }
   if (url.pathname === '/api/fitness/entries' && req.method === 'GET') {
-    const result = await pool.query(`
-      SELECT e.*, r.summary ai_summary, r.advice ai_advice, r.risk_level ai_risk_level
-      FROM fitness_entries e
-      LEFT JOIN LATERAL (
-        SELECT * FROM fitness_ai_reports r WHERE r.entry_id=e.id ORDER BY r.created_at DESC LIMIT 1
-      ) r ON true
-      ORDER BY e.recorded_at DESC, e.id DESC
-      LIMIT 100`);
-    return sendJson(res, 200, result.rows);
+    return sendJson(res, 200, []);
   }
   if (url.pathname === '/api/fitness/entries' && req.method === 'POST') {
-    const data = await jsonBody(req);
-    const created = await createFitnessEntry(data);
-    return sendJson(res, 201, created);
+    return sendJson(res, 410, { error: '健康功能已下线' });
   }
   const fitnessEntryMatch = url.pathname.match(/^\/api\/fitness\/entries\/(\d+)$/);
   if (fitnessEntryMatch && req.method === 'DELETE') {
-    await pool.query('UPDATE wechat_messages SET fitness_entry_id=NULL WHERE fitness_entry_id=$1', [Number(fitnessEntryMatch[1])]);
-    const result = await pool.query('DELETE FROM fitness_entries WHERE id=$1', [Number(fitnessEntryMatch[1])]);
-    await auditLog(req, { action: 'fitness.delete', entityType: 'fitness_entry', entityId: fitnessEntryMatch[1], detail: { deleted: result.rowCount > 0 } });
-    return sendJson(res, 200, { deleted: result.rowCount > 0 });
+    return sendJson(res, 410, { error: '健康功能已下线' });
   }
   if (url.pathname === '/api/knowledge/summary' && req.method === 'GET') {
     const [bases, docs, chunks, queries] = await Promise.all([
@@ -5272,35 +5979,10 @@ async function handleApi(req, res, url) {
   }
 
   if (url.pathname === '/api/companion/chat' && req.method === 'POST') {
-    pruneCompanionSessions();
-    const data = await jsonBody(req);
-    const text = String(data.text || '').trim();
-    if (!text) return sendJson(res, 400, { error: '请先说一句话' });
-    if (text.length > 500) return sendJson(res, 400, { error: '这句话有点长，精简一点再说' });
-    const { id: sessionId, session } = getCompanionSession(data.session_id);
-    const fromUser = data.from_user || null;
-    const [profile, userContext] = await Promise.all([
-      buildPersonalProfile(fromUser).catch(() => ({ summary: '' })),
-      buildWechatUserContext(fromUser, { light: true }).catch(() => ''),
-    ]);
-    const reply = await deepseekCompanionChat({
-      text,
-      history: session.messages,
-      profileSummary: profile?.summary || '',
-      userContext: typeof userContext === 'string' ? userContext : String(userContext || ''),
-    });
-    session.messages.push({ role: 'user', content: text });
-    session.messages.push({ role: 'assistant', content: reply });
-    if (session.messages.length > 24) session.messages = session.messages.slice(-24);
-    session.updatedAt = Date.now();
-    return sendJson(res, 200, { session_id: sessionId, reply, text });
+    return sendJson(res, 410, { error: '语音陪伴功能已下线' });
   }
   if (url.pathname === '/api/companion/session' && req.method === 'POST') {
-    pruneCompanionSessions();
-    const data = await jsonBody(req).catch(() => ({}));
-    if (data.session_id && companionSessions.has(data.session_id)) companionSessions.delete(data.session_id);
-    const { id } = getCompanionSession();
-    return sendJson(res, 200, { session_id: id });
+    return sendJson(res, 410, { error: '语音陪伴功能已下线' });
   }
 
   const historyMatch = url.pathname.match(/^\/api\/knowledge\/bases\/(\d+)\/queries$/);
@@ -5542,10 +6224,36 @@ http.createServer(async (req, res) => {
       if (!gatewayAuthorized(req)) return sendUnauthorized(res);
       return await handleGatewayChatCompletions(req, res);
     }
-    const publicPage = ['/wechat-upload.html', '/wechat-upload.js', '/theme.css', '/knowledge.css'].includes(url.pathname);
-    const publicApi = ['/api/health', '/api/wechat/webhook', '/api/wechat/work-webhook', '/api/wechat/upload-token'].includes(url.pathname);
+    const publicPage = [
+      '/',
+      '/index.html',
+      '/home.css',
+      '/home.js',
+      '/wechat-upload.html',
+      '/wechat-upload.js',
+      '/theme.css',
+      '/knowledge.css',
+      '/keys-login.html',
+      '/keys-login.js',
+    ].includes(url.pathname);
+    const publicApi = [
+      '/api/health',
+      '/api/wechat/webhook',
+      '/api/wechat/work-webhook',
+      '/api/wechat/upload-token',
+      '/api/keys/login',
+      '/api/keys/logout',
+      '/api/keys/session',
+    ].includes(url.pathname);
+    if (url.pathname === '/keys.html' && !keyAuthorized(req)) {
+      res.writeHead(302, { Location: '/keys-login.html' });
+      return res.end();
+    }
+    if (requiresKeyAuth(url.pathname) && !keyAuthorized(req)) {
+      return sendUnauthorized(res, '请先登录 Key 管理');
+    }
     if (publicPage) return await serveStatic(req, res, url);
-    if (!publicApi && !authorized(req)) return sendUnauthorized(res);
+    if (!publicApi && AUTH_USER && AUTH_PASSWORD && !authorized(req)) return sendUnauthorized(res, 'authentication required');
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url);
     return await serveStatic(req, res, url);
   } catch (error) {
@@ -5575,5 +6283,17 @@ http.createServer(async (req, res) => {
     setInterval(() => {
       runAutoBackup('auto').catch((error) => console.error('[backup] poll', error.message));
     }, AUTO_BACKUP_INTERVAL_MS);
+  }
+  if (BALANCE_REFRESH_MS > 0) {
+    const runBalanceSync = (reason) => refreshProviderBalances()
+      .then((results) => {
+        const ok = results.filter((item) => item.ok).length;
+        const skipped = results.filter((item) => item.skipped).length;
+        const failed = results.filter((item) => item.ok === false).length;
+        console.log(`[balance] ${reason}: ok=${ok} skipped=${skipped} failed=${failed}`);
+      })
+      .catch((error) => console.error('[balance] poll', error.message));
+    setTimeout(() => runBalanceSync('startup'), 8000);
+    setInterval(() => runBalanceSync('auto'), BALANCE_REFRESH_MS);
   }
 });

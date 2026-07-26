@@ -9,7 +9,7 @@
 </head>
 <body class="module knowledge-page ask-only-page compact-ask">
   <header class="kb-bar">
-    <a class="module-back" href="/">返回指挥台</a>
+    <a class="module-back" href="/hub.html">返回指挥台</a>
     <div class="module-title"><strong>知识库问答</strong><span>检索 · AI 回答</span></div>
     <a class="btn" href="/knowledge.html">管理文档</a>
   </header>
@@ -24,7 +24,7 @@
         <span id="askKbName">知识库</span>
       </div>
       <form id="askForm" class="compact-form ask-compact-form">
-        <textarea name="question" placeholder="输入问题，检索知识库后用 DeepSeek 回答"></textarea>
+        <textarea name="question" placeholder="输入问题，检索知识库后生成回答"></textarea>
         <div class="compact-actions">
           <span class="form-hint">回答会附带引用来源</span>
           <button class="btn btn-solid" type="submit">提问</button>
@@ -35,7 +35,7 @@
 
     <aside class="kb-side">
       <section class="kb-panel search-panel">
-        <div class="panel-head"><h2>检索测试</h2><span>不调大模型</span></div>
+        <div class="panel-head"><h2>检索测试</h2><span>仅检索，不生成回答</span></div>
         <form id="searchForm" class="compact-form search-compact-form">
           <div class="compact-row search-row">
             <input name="query" placeholder="先检索知识库内容" />

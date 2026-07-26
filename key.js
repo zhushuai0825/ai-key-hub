@@ -1,5 +1,5 @@
 const $ = (s) => document.querySelector(s);
-const money = (v) => `¥${Number(v || 0).toFixed(2)}`;
+const money = (v) => `${Math.round(Number(v || 0))} 分`;
 
 let providers = [];
 let keys = [];
@@ -11,6 +11,10 @@ let balanceSync = null;
 
 async function api(path, options = {}) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+  if (res.status === 401 && path.startsWith('/api/keys')) {
+    location.replace('/keys-login.html');
+    throw new Error('请先登录');
+  }
   if (!res.ok) throw new Error(await res.text() || '请求失败');
   return res.json();
 }
@@ -67,13 +71,16 @@ async function loadAll() {
 function renderStats(stats) {
   const active = keys.filter((k) => k.status === 'active').length;
   const synced = balanceSync?.results?.filter((item) => item.ok).length || 0;
+  const syncedAt = balanceSync?.updated_at
+    ? new Date(balanceSync.updated_at).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' })
+    : '--';
   const cards = [
     ['厂商', providers.length],
     ['Key', stats.key_count || keys.length],
     ['可用', active],
     ['余额', money(stats.total_balance)],
-    ['真实同步', synced ? `${synced} 个` : '未同步'],
-    ['模型', models.length],
+    ['已同步', synced ? `${synced} 个` : '0'],
+    ['同步于', syncedAt],
   ];
   $('#stats').innerHTML = cards.map(([label, val]) =>
     `<div class="stat"><span>${label}</span><strong>${val}</strong></div>`
@@ -86,22 +93,35 @@ function renderProviderFilter() {
   $('#providerFilter').value = selectedProvider;
 }
 
+function syncLabel(sync) {
+  if (!sync) return '待同步';
+  if (sync.ok) return sync.source === 'manual' ? '手动余额' : '真实余额';
+  if (sync.skipped) return '需手动/AK';
+  return '同步失败';
+}
+
 function renderProviderCards() {
   $('#providerCards').innerHTML = providers.map((p) => {
     const cnt = keys.filter((k) => Number(k.provider_id) === Number(p.id)).length;
     const low = Number(p.balance) < Number(p.low_balance_threshold);
     const on = Number(selectedProvider) === Number(p.id);
     const sync = balanceSync?.results?.find((item) => Number(item.provider_id) === Number(p.id));
-    const syncText = sync?.ok ? '真实余额' : (sync?.skipped ? '未接余额接口' : '同步失败');
     return `
       <div class="provider-row ${on ? 'active' : ''}" data-id="${p.id}">
-        <div><strong>${p.name}</strong><div class="sub">${cnt} 个 Key · ${syncText}</div></div>
-        <span class="bal ${low ? 'bad' : 'ok'}">${money(p.balance)}</span>
+        <div>
+          <strong>${p.name}</strong>
+          <div class="sub">${cnt} 个 Key · ${syncLabel(sync)}</div>
+        </div>
+        <div class="provider-bal">
+          <span class="bal ${low ? 'bad' : 'ok'}">${money(p.balance)}</span>
+          <button type="button" class="copy bal-set" data-set-balance="${p.id}">填余额</button>
+        </div>
       </div>`;
   }).join('');
 
   document.querySelectorAll('.provider-row').forEach((el) => {
-    el.onclick = () => {
+    el.onclick = (event) => {
+      if (event.target.closest('[data-set-balance]')) return;
       const id = el.dataset.id;
       selectedProvider = selectedProvider === id ? '' : id;
       $('#providerFilter').value = selectedProvider;
@@ -109,6 +129,27 @@ function renderProviderCards() {
       renderKeys();
     };
   });
+  document.querySelectorAll('[data-set-balance]').forEach((btn) => {
+    btn.onclick = (event) => {
+      event.stopPropagation();
+      setProviderBalance(Number(btn.dataset.setBalance));
+    };
+  });
+}
+
+async function setProviderBalance(id) {
+  const provider = providers.find((p) => Number(p.id) === Number(id));
+  if (!provider) return;
+  const input = prompt(`${provider.name} 当前余额（分，1 元 = 100 分）`, String(Math.round(Number(provider.balance || 0))));
+  if (input == null) return;
+  const balance = Math.round(Number(input));
+  if (!Number.isFinite(balance) || balance < 0) {
+    toast('请输入有效余额（分）');
+    return;
+  }
+  await api(`/api/providers/${id}/balance`, { method: 'PUT', body: JSON.stringify({ balance }) });
+  toast('余额已更新');
+  await loadAll();
 }
 
 function providerModels(pid) {
@@ -204,8 +245,10 @@ function renderAlerts() {
   const low = providers.filter((p) => Number(p.balance) < Number(p.low_balance_threshold));
   const bad = keys.filter((k) => k.status !== 'active');
   const syncErrors = balanceSync?.results?.filter((item) => item.ok === false) || [];
+  const skipped = balanceSync?.results?.filter((item) => item.skipped) || [];
   const items = [
     ...syncErrors.map((item) => ({ t: '余额同步失败', p: `${item.provider}：${item.error}`, lv: 'bad' })),
+    ...skipped.map((item) => ({ t: '余额未自动同步', p: `${item.provider}：${item.reason}`, lv: 'warn' })),
     ...low.map((p) => ({ t: '余额不足', p: `${p.name} 剩 ${money(p.balance)}`, lv: 'bad' })),
     ...bad.map((k) => ({ t: 'Key 异常', p: `${k.provider_name} / ${k.name} — ${statusText(k.status)}`, lv: k.status === 'warning' ? 'warn' : 'bad' })),
   ];
@@ -268,9 +311,17 @@ $('#providerFilter').onchange = () => { selectedProvider = $('#providerFilter').
 $('#statusFilter').onchange = () => { selectedStatus = $('#statusFilter').value; renderKeys(); };
 $('#searchInput').oninput = (e) => { searchQuery = e.target.value.trim(); renderKeys(); };
 $('#refreshBtn').onclick = () => loadAll().then(() => toast('已刷新')).catch((e) => toast(e.message));
+$('#logoutBtn').onclick = async () => {
+  await fetch('/api/keys/logout', { method: 'POST' }).catch(() => null);
+  location.replace('/keys-login.html');
+};
 $('#budgetForm').onsubmit = saveBudget;
 $('#budgetClose').onclick = closeBudgetModal;
 $('#budgetCancel').onclick = closeBudgetModal;
 $('#budgetModal').onclick = (event) => { if (event.target.id === 'budgetModal') closeBudgetModal(); };
 
 loadAll().catch((e) => toast(e.message));
+setInterval(() => {
+  if (document.hidden) return;
+  loadAll().catch(() => null);
+}, 60000);

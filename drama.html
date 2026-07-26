@@ -7,94 +7,119 @@
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page drama-page compact-search">
+<body class="module knowledge-page drama-page">
   <header class="kb-bar">
-    <a class="module-back" href="/">返回指挥台</a>
+    <a class="module-back" href="/hub.html">返回指挥台</a>
     <div class="module-title">
       <strong>漫剧工作室</strong>
-      <span>梗概 → 分镜 → 定妆 → 导出豆包提示词 → OpenCut 精剪</span>
+      <span id="headerHint">选择或新建项目</span>
     </div>
     <button class="btn btn-solid" id="newProjectBtn" type="button">新建项目</button>
   </header>
 
-  <main class="drama-shell">
-    <aside class="kb-panel drama-side">
-      <div class="panel-head"><h2>项目</h2><span id="projectCount">0</span></div>
-      <div id="projectList" class="drama-project-list"></div>
-    </aside>
+  <main class="drama-flow">
+    <!-- ① 项目列表 -->
+    <section id="viewList" class="drama-view">
+      <div class="drama-list-head">
+        <h1>全部剧本</h1>
+        <p>选一个继续，或新建后用对话写大纲</p>
+      </div>
+      <div id="projectGrid" class="drama-grid"></div>
+    </section>
 
-    <section class="kb-panel drama-main">
-      <div id="emptyProject" class="empty-state">左侧新建或选择一个漫剧项目</div>
-      <div id="projectWorkspace" class="drama-workspace" hidden>
-        <form id="projectForm" class="compact-form drama-project-form">
-          <div class="compact-row">
-            <input name="title" required placeholder="项目标题，例如：ENFP 咖啡店恋爱" />
-            <input name="genre" placeholder="类型：恋爱 / 职场 / MBTI IP" />
-          </div>
-          <textarea name="synopsis" rows="3" placeholder="一句话到三段梗概：谁、冲突、反转"></textarea>
-          <textarea name="style_guide" rows="2" placeholder="画风/质感：例如日系漫画线稿、暖色夜景、电影感浅景深"></textarea>
-          <div class="compact-actions">
-            <select name="status">
-              <option value="draft">草稿</option>
-              <option value="storyboard">分镜中</option>
-              <option value="producing">制作中</option>
-              <option value="done">已完成</option>
-            </select>
-            <button class="btn" type="button" id="deleteProjectBtn">删除项目</button>
-            <button class="btn btn-solid" type="submit">保存项目</button>
-          </div>
-        </form>
-
-        <div class="drama-tabs" role="tablist">
-          <button type="button" class="is-active" data-tab="shots">分镜台</button>
-          <button type="button" data-tab="characters">角色卡</button>
-          <button type="button" data-tab="episodes">分集</button>
+    <!-- ② 项目内流程 -->
+    <section id="viewWork" class="drama-view" hidden>
+      <div class="drama-work-bar">
+        <button type="button" class="btn" id="backListBtn">← 全部项目</button>
+        <div class="drama-work-title">
+          <strong id="workTitle">—</strong>
+          <span id="workMeta">—</span>
         </div>
-
-        <div class="drama-tab-panel" data-panel="episodes" hidden>
-          <form id="episodeForm" class="compact-form">
-            <div class="compact-row">
-              <input name="title" placeholder="分集标题" />
-              <button class="btn btn-solid" type="submit">新增分集</button>
-            </div>
-            <textarea name="synopsis" rows="2" placeholder="本集梗概（可选，默认用项目梗概）"></textarea>
-          </form>
-          <div id="episodeList" class="drama-episode-list"></div>
+        <div class="drama-work-actions">
+          <button type="button" class="btn" id="exportLmdBtn">导出 ZIP</button>
+          <button type="button" class="btn" id="deleteProjectBtn">删除</button>
         </div>
+      </div>
 
-        <div class="drama-tab-panel" data-panel="characters" hidden>
-          <form id="characterForm" class="compact-form">
-            <div class="compact-row">
-              <input name="name" required placeholder="角色名" />
-              <input name="mbti" placeholder="MBTI，如 ENFP" maxlength="8" />
-            </div>
-            <textarea name="appearance" rows="2" placeholder="外貌定妆：发型、服装、标志物"></textarea>
-            <textarea name="personality" rows="2" placeholder="性格与说话方式"></textarea>
-            <textarea name="ref_prompt" rows="2" placeholder="定妆/一致性提示词（可直接给豆包图生）"></textarea>
-            <div class="compact-actions">
-              <span class="form-hint">角色卡会自动拼进每镜豆包提示词</span>
-              <button class="btn btn-solid" type="submit">添加角色</button>
-            </div>
-          </form>
-          <div id="characterList" class="drama-character-list"></div>
-        </div>
+      <nav class="drama-steps" aria-label="创作步骤">
+        <button type="button" class="drama-step is-active" data-step="outline">1 对话写大纲</button>
+        <button type="button" class="drama-step" data-step="script">2 生成剧本</button>
+        <button type="button" class="drama-step" data-step="assets">3 识别数据</button>
+        <button type="button" class="drama-step" data-step="export">4 导出</button>
+      </nav>
 
-        <div class="drama-tab-panel is-active" data-panel="shots">
-          <div class="drama-shot-toolbar">
-            <select id="episodeSelect"></select>
-            <button class="btn btn-solid" type="button" id="splitBtn">AI 拆分镜</button>
-            <button class="btn" type="button" id="addShotBtn">加一镜</button>
-            <button class="btn" type="button" id="exportMdBtn">导出豆包 MD</button>
-            <button class="btn" type="button" id="exportCsvBtn">导出 CSV</button>
+      <div class="drama-step-panel is-active" data-panel="outline">
+        <div class="drama-outline-layout">
+          <div class="drama-outline-chat-col">
+            <div id="chatLog" class="drama-chat"></div>
+            <form id="chatForm" class="drama-chat-form">
+              <input id="chatInput" type="text" placeholder="说你的故事想法，例如：ENFP 开咖啡店遇到 ISTJ…" autocomplete="off" />
+              <button class="btn btn-solid" type="submit" id="chatSendBtn">发送</button>
+            </form>
           </div>
-          <form id="episodeSynopsisForm" class="compact-form drama-ep-synopsis">
-            <textarea name="synopsis" rows="2" placeholder="本集梗概：先写清冲突与节拍，再点「AI 拆分镜」"></textarea>
-            <div class="compact-actions">
-              <span class="form-hint" id="shotCountLabel">0 镜</span>
-              <button class="btn" type="submit">保存本集梗概</button>
-            </div>
-          </form>
-          <div id="shotList" class="drama-shot-list"></div>
+          <article class="drama-outline-live">
+            <header>
+              <strong>当前大纲</strong>
+              <span id="outlineStatus" class="form-hint">还没有大纲</span>
+            </header>
+            <div id="outlineLive" class="drama-preview">对话几轮后，这里会实时显示整理好的大纲。</div>
+          </article>
+        </div>
+        <div class="drama-step-footer">
+          <span class="form-hint">确认大纲没问题后，再去生成剧本</span>
+          <button type="button" class="btn btn-solid" id="gotoScriptBtn" disabled>大纲完成，去生成剧本 →</button>
+        </div>
+      </div>
+
+      <div class="drama-step-panel" data-panel="script" hidden>
+        <article class="drama-result">
+          <header>
+            <strong>当前大纲</strong>
+            <button type="button" class="btn" id="backOutlineBtn">改大纲</button>
+          </header>
+          <p id="outlinePreview" class="drama-preview">（还没有大纲）</p>
+        </article>
+        <div class="drama-primary-action">
+          <label class="drama-ep-count">集数
+            <input id="episodeCountInput" type="number" min="1" max="12" value="3" />
+          </label>
+          <button type="button" class="btn btn-solid" id="generateScriptsBtn">生成剧本</button>
+        </div>
+        <div id="scriptList" class="drama-result-list"></div>
+        <div class="drama-step-footer">
+          <button type="button" class="btn btn-solid" id="gotoAssetsBtn" disabled>剧本完成，去识别数据 →</button>
+        </div>
+      </div>
+
+      <div class="drama-step-panel" data-panel="assets" hidden>
+        <div class="drama-primary-action">
+          <p class="form-hint">从剧本里自动抽出人物、场景、道具</p>
+          <button type="button" class="btn btn-solid" id="extractAllBtn">一键识别</button>
+        </div>
+        <div class="drama-asset-cols">
+          <section>
+            <h3>人物 <span id="charCount">0</span></h3>
+            <div id="characterList"></div>
+          </section>
+          <section>
+            <h3>场景 <span id="sceneCount">0</span></h3>
+            <div id="sceneList"></div>
+          </section>
+          <section>
+            <h3>道具 <span id="propCount">0</span></h3>
+            <div id="propList"></div>
+          </section>
+        </div>
+        <div class="drama-step-footer">
+          <button type="button" class="btn btn-solid" id="gotoExportBtn">去导出 →</button>
+        </div>
+      </div>
+
+      <div class="drama-step-panel" data-panel="export" hidden>
+        <div class="drama-export-box">
+          <h2>导出到 LocalMiniDrama</h2>
+          <p>打包为 version 1.5 的 ZIP（含 project.json），可直接导入 LocalMiniDrama。</p>
+          <button type="button" class="btn btn-solid" id="exportLmdBtn2">下载 ZIP</button>
         </div>
       </div>
     </section>

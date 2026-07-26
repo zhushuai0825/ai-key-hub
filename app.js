@@ -13,53 +13,36 @@ const MODULE_GROUPS = [
   {
     id: 'ai',
     title: 'AI 与知识',
-    hint: 'Key、知识库、全局搜索',
+    hint: 'Key、知识库、漫剧',
     modules: [
       { id: 'aitoken', name: 'AIToken', desc: '厂商 API Key、真实余额、一键复制', icon: 'aitoken.svg', href: '/keys.html', status: 'online', metricKey: 'key_count', metricLabel: 'Key' },
       { id: 'knowledge', name: 'Knowledge', desc: '统一知识库检索与 AI 提问', icon: 'knowledge.svg', href: '/knowledge-ask.html', status: 'online', metricKey: 'knowledge_chunks', metricLabel: 'chunks' },
       { id: 'knowledge-manage', name: '知识库管理', desc: '上传文档、质量检测与重建向量', icon: 'knowledge.svg', href: '/knowledge.html', status: 'online' },
-      { id: 'drama', name: '漫剧工作室', desc: '梗概分镜、角色卡、导出豆包提示词', icon: 'agent.svg', href: '/drama.html', status: 'online' },
-      { id: 'search', name: 'Global Search', desc: '跨账本、健康、知识库与企微搜索', icon: 'knowledge.svg', href: '/global-search.html', status: 'online' },
-      { id: 'gateway', name: 'Gateway', desc: '统一模型路由、限流与故障切换', icon: 'gateway.svg', status: 'planned' },
-      { id: 'cost', name: 'Cost Lens', desc: '费用归因、预算预警与报表', icon: 'cost.svg', status: 'planned' },
+      { id: 'drama', name: '漫剧工作室', desc: '梗概分镜、角色卡、导出分镜提示词', icon: 'agent.svg', href: '/drama.html', status: 'online' },
     ],
   },
   {
     id: 'life',
     title: '生活助手',
-    hint: '数据、账本、健康、提醒、画像',
+    hint: '提醒任务',
     modules: [
-      { id: 'companion', name: '语音陪伴', desc: '打开即听，说完自动语音回复', icon: 'agent.svg', href: '/companion.html', status: 'online' },
-      { id: 'life', name: '人生时间轴', desc: '问「上周为什么烦」——跨企微账本任务叙事', icon: 'audit.svg', href: '/life.html', status: 'online' },
-      { id: 'twin', name: '个人分身', desc: '别人问你时，先起草你会怎么回', icon: 'agent.svg', href: '/twin.html', status: 'online' },
-      { id: 'cache', name: '我的数据', desc: '体重、账本、运动、睡眠与有价值问答', icon: 'audit.svg', href: '/assistant-cache.html', status: 'online', metricKey: 'cache_hits', metricLabel: 'hits' },
-      { id: 'finance', name: '账本', desc: '收支流水、分类统计与纠错', icon: 'cost.svg', href: '/finance.html', status: 'online' },
-      { id: 'fitlog', name: '健康', desc: '体重、饮食、运动与 AI 建议', icon: 'monitor.svg', href: '/fitness.html', status: 'online' },
       { id: 'tasks', name: '提醒', desc: '提醒任务、重复提醒、完成与暂停', icon: 'tasks.svg', href: '/tasks.html', status: 'online', metricKey: 'pending_tasks', metricLabel: 'tasks' },
-      { id: 'profile', name: '个人画像', desc: '长期记忆与数据偏好', icon: 'agent.svg', href: '/profile.html', status: 'online' },
-      { id: 'timeline', name: '全部动态', desc: '账本、健康、知识库、企微消息统一时间线', icon: 'audit.svg', href: '/timeline.html', status: 'online' },
-      { id: 'notifications', name: '通知订阅', desc: '日报、周报与系统通知开关', icon: 'tasks.svg', href: '/notifications.html', status: 'online' },
     ],
   },
   {
     id: 'wecom',
     title: '企业微信',
-    hint: '消息处理与链路诊断',
+    hint: '消息处理',
     modules: [
-      { id: 'wecom', name: '企微处理台', desc: '识别错了可重处理、改分类、撤销', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online' },
-      { id: 'wechat-diagnostics', name: '企微诊断', desc: '回调、上传、媒体与推送诊断', icon: 'monitor.svg', href: '/wechat-diagnostics.html', status: 'online' },
+      { id: 'wecom', name: '企微处理台', desc: '识别错了可重处理、改分类、撤销', icon: 'tasks.svg', href: '/wechat-inbox.html', status: 'online', metricKey: 'wecom_pending', metricLabel: 'pending' },
     ],
   },
   {
     id: 'ops',
     title: '系统运维',
-    hint: '先看日志，再看配置与备份',
+    hint: '健康状态与备份恢复',
     modules: [
-      { id: 'events', name: '系统日志', desc: '备份、失败重试、推送等自动任务记录', icon: 'audit.svg', href: '/events.html', status: 'online' },
-      { id: 'audit', name: '审计日志', desc: '网页管理操作：改 Key、纠错、删除、导入', icon: 'audit.svg', href: '/audit.html', status: 'online' },
-      { id: 'chat-log', name: '对话日志', desc: '企微发过的消息与系统回复，如「你好」', icon: 'tasks.svg', href: '/chat-log.html', status: 'online' },
       { id: 'monitor', name: '系统监控', desc: '数据库、Chroma、企微、OCR、网关健康', icon: 'monitor.svg', href: '/monitor.html', status: 'online' },
-      { id: 'config', name: '配置中心', desc: '环境变量与集成配置是否已设置', icon: 'gateway.svg', href: '/config.html', status: 'online' },
       { id: 'backup', name: '备份恢复', desc: '导出、本地备份与导入恢复', icon: 'audit.svg', href: '/backup.html', status: 'online' },
     ],
   },
@@ -73,8 +56,6 @@ let keys = [];
 let models = [];
 let usageSeries = [];
 let pulseChart;
-let fitnessSummary = null;
-let fitnessChart;
 let knowledgeSummary = null;
 let cacheSummary = null;
 let dashboardMemory = null;
@@ -89,24 +70,11 @@ function formatDashTime(value) {
 }
 
 function topicLabel(topic) {
-  return { fitness: '健康', finance: '账本', knowledge: '知识库' }[topic] || topic;
+  return { knowledge: '知识库', wechat: '企微', task: '提醒' }[topic] || topic;
 }
 
-function lifestyleTitle(row) {
-  if (row.entry_type === 'weight') return `体重 ${row.weight_kg}kg`;
-  if (row.entry_type === 'sleep') return `睡眠 ${row.sleep_hours}小时`;
-  if (row.entry_type === 'meal') return `${row.meal_type || '饮食'} ${row.food_text || row.note || ''}`;
-  return row.note || row.entry_type;
-}
-
-function lifestyleDetail(row) {
-  if (row.entry_type === 'meal') return `约 ${row.calories || 0} 千卡`;
-  if (row.entry_type === 'sleep') return `质量 ${row.sleep_quality || '一般'}`;
-  return row.note || '';
-}
-
-function lifestyleTag(row) {
-  return { weight: '体重', meal: '饮食', sleep: '睡眠' }[row.entry_type] || row.entry_type;
+function wecomStatusLabel(status) {
+  return { failed: '失败', processing: '处理中', recorded: '已记录', replied: '已回复', ignored: '忽略' }[status] || status || '未知';
 }
 
 function renderCacheHitFeed() {
@@ -120,37 +88,36 @@ function renderCacheHitFeed() {
         <p>${escapeHtml(row.answer)}</p>
         <span class="dash-time">${formatDashTime(row.last_hit_at || row.updated_at)}</span>
       </div>`).join('')
-    : '<div class="dash-row"><p>暂无命中缓存。重复问健康/账本/知识库问题后会出现在这里。</p></div>';
+    : '<div class="dash-row"><p>暂无命中缓存。重复问知识库问题后会出现在这里。</p></div>';
 }
 
-function renderLifestyleFeed() {
-  const rows = dashboardMemory?.lifestyle || [];
-  $('#lifestyleFeed').innerHTML = rows.length
+function renderWecomFeed() {
+  const rows = dashboardMemory?.wecom || [];
+  $('#wecomMeta').textContent = `${rows.length} 条`;
+  $('#wecomFeed').innerHTML = rows.length
     ? rows.map((row) => `
       <div class="dash-row">
-        <strong>${escapeHtml(lifestyleTitle(row))}<span class="dash-tag ${row.entry_type}">${lifestyleTag(row)}</span></strong>
-        <p>${escapeHtml(lifestyleDetail(row))}</p>
-        <span class="dash-time">${formatDashTime(row.recorded_at)}</span>
+        <strong>${escapeHtml(row.content || '[非文本]')}<span class="dash-tag ${row.parse_status === 'failed' ? 'hit' : ''}">${escapeHtml(wecomStatusLabel(row.parse_status))}</span></strong>
+        <p>${escapeHtml(row.intent || '未分类')} · ${escapeHtml((row.reply_text || '').slice(0, 80) || '暂无回复')}</p>
+        <span class="dash-time">${formatDashTime(row.received_at)}</span>
       </div>`).join('')
-    : '<div class="dash-row"><p>暂无记录。企微发送：体重 72.5、吃了鸡胸肉、睡了 7 小时。</p></div>';
+    : '<div class="dash-row"><p>暂无待处理企微消息。失败或处理中的会显示在这里。</p></div>';
 }
 
-function renderFinanceFeed() {
-  const rows = dashboardMemory?.finance || [];
-  const month = dashboardMemory?.month_stats || {};
-  $('#financeMonthMeta').textContent = `本月 收 ¥${fmtNum(month.income || 0, 0)} / 支 ¥${fmtNum(month.expense || 0, 0)}`;
-  $('#financeFeed').innerHTML = rows.length
+function renderKnowledgeFeed() {
+  const rows = dashboardMemory?.knowledge || [];
+  $('#knowledgeMeta').textContent = `${rows.length} 条`;
+  $('#knowledgeFeed').innerHTML = rows.length
     ? rows.map((row) => {
-      const label = row.direction === 'income' ? '收入' : '支出';
-      const tagClass = row.direction === 'income' ? 'income' : 'expense';
+      const isQuery = row.kind === 'query';
       return `
       <div class="dash-row">
-        <strong>${label} ¥${Number(row.amount).toFixed(2)} · ${escapeHtml(row.title)}<span class="dash-tag ${tagClass}">${escapeHtml(row.category || '未分类')}</span></strong>
-        <p>${escapeHtml(row.note || '')}</p>
-        <span class="dash-time">${formatDashTime(row.occurred_at)}</span>
+        <strong>${escapeHtml(row.title)}<span class="dash-tag">${isQuery ? '提问' : '入库'}</span></strong>
+        <p>${escapeHtml(row.preview || '')}</p>
+        <span class="dash-time">${formatDashTime(row.time)}</span>
       </div>`;
     }).join('')
-    : '<div class="dash-row"><p>暂无记账。企微发送：买咖啡 18、收入工资 5000。</p></div>';
+    : '<div class="dash-row"><p>暂无知识库动态。上传文档或提问后会出现在这里。</p></div>';
 }
 
 function isTaskDue(row) {
@@ -160,8 +127,7 @@ function isTaskDue(row) {
 
 function renderTasksFeed() {
   const rows = dashboardMemory?.tasks || [];
-  const dueCount = dashboardMemory?.counts?.tasks_due || rows.filter(isTaskDue).length;
-  $('#tasksMeta').textContent = rows.length ? `${dueCount} 项到期 / 共 ${rows.length} 项` : '0 项';
+  $('#tasksMeta').textContent = `${rows.length} 条`;
   $('#tasksFeed').innerHTML = rows.length
     ? rows.map((row) => `
       <div class="dash-row">
@@ -173,10 +139,9 @@ function renderTasksFeed() {
 }
 
 function renderMemoryDashboard() {
-  renderCacheHitFeed();
   renderTasksFeed();
-  renderLifestyleFeed();
-  renderFinanceFeed();
+  renderWecomFeed();
+  renderKnowledgeFeed();
 }
 
 async function api(path, options = {}) {
@@ -198,7 +163,7 @@ function fmtNum(n, digits = 0) {
 }
 
 function money(n) {
-  return `¥${fmtNum(n, 2)}`;
+  return `${Math.round(Number(n || 0)).toLocaleString('zh-CN')} 分`;
 }
 
 function renderTelemetry() {
@@ -260,19 +225,6 @@ function renderModules() {
   $('#nodeStatus').textContent = `${MODULES.length} modules · ${online} online`;
 }
 
-function renderSignals() {
-  const lowProviders = providers.filter((p) => Number(p.balance) < Number(p.low_balance_threshold));
-  const abnormalKeys = keys.filter((k) => k.status !== 'active');
-  const signals = [
-    ...lowProviders.map((p) => ({ level: 'high', title: `${p.name} 余额不足`, text: `当前余额 ${money(p.balance)}，低于阈值 ${money(p.low_balance_threshold)}。` })),
-    ...abnormalKeys.map((k) => ({ level: k.status === 'warning' ? 'mid' : 'high', title: `${k.provider_name} Key 状态异常`, text: `${k.name} 当前状态：${k.status}。` })),
-  ];
-  $('#alertCount').textContent = signals.length;
-  $('#signalFeed').innerHTML = signals.length
-    ? signals.map((s) => `<div class="signal-item ${s.level}"><strong>${s.title}</strong><p>${s.text}</p></div>`).join('')
-    : '<div class="empty-state">暂无真实预警</div>';
-}
-
 function buildUsageSeries(logs) {
   const hours = Array.from({ length: 24 }, (_, hour) => `${String(hour).padStart(2, '0')}:00`);
   const map = new Map(hours.map((hour) => [hour, 0]));
@@ -289,13 +241,6 @@ function initPulseChart() {
   if (!el || typeof echarts === 'undefined') return;
   pulseChart = echarts.init(el);
   renderPulseChart();
-}
-
-function initFitnessChart() {
-  const el = document.getElementById('fitnessChart');
-  if (!el || typeof echarts === 'undefined') return;
-  fitnessChart = echarts.init(el);
-  renderFitnessChart();
 }
 
 function renderPulseChart() {
@@ -320,36 +265,6 @@ function renderPulseChart() {
       lineStyle: { color: '#d4924a', width: 2 },
       areaStyle: { color: 'rgba(212,146,74,0.12)' },
     }],
-  });
-}
-
-function renderFitnessChart() {
-  if (!fitnessChart) return;
-  const weightRows = fitnessSummary?.weight_trend || [];
-  const dailyRows = fitnessSummary?.daily_records || [];
-  const labels = Array.from(new Set([
-    ...weightRows.map((row) => new Date(row.recorded_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5)),
-    ...dailyRows.map((row) => new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5)),
-  ]));
-  const weightMap = new Map(weightRows.map((row) => [new Date(row.recorded_at).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.weight_kg)]));
-  const calorieMap = new Map(dailyRows.map((row) => [new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.calories || 0)]));
-  const workoutMap = new Map(dailyRows.map((row) => [new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.workout_min || 0)]));
-  const sleepMap = new Map(dailyRows.map((row) => [new Date(row.record_day).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' }).slice(5), Number(row.sleep_hours || 0)]));
-  fitnessChart.setOption({
-    tooltip,
-    legend: { top: 0, right: 0, textStyle: axisStyle },
-    grid: { top: 38, right: 10, bottom: 24, left: 32 },
-    xAxis: { type: 'category', data: labels, axisLabel: axisStyle, axisLine: { lineStyle: gridLine }, axisTick: { show: false } },
-    yAxis: [
-      { type: 'value', scale: true, axisLabel: axisStyle, splitLine: { lineStyle: gridLine } },
-      { type: 'value', axisLabel: axisStyle, splitLine: { show: false } },
-    ],
-    series: [
-      { name: '体重kg', type: 'line', smooth: true, symbolSize: 5, data: labels.map((label) => weightMap.get(label) ?? null), lineStyle: { color: '#d4924a', width: 2 }, itemStyle: { color: '#d4924a' } },
-      { name: '摄入kcal', type: 'bar', yAxisIndex: 1, data: labels.map((label) => calorieMap.get(label) || 0), itemStyle: { color: 'rgba(212,146,74,.28)' } },
-      { name: '运动min', type: 'bar', yAxisIndex: 1, data: labels.map((label) => workoutMap.get(label) || 0), itemStyle: { color: 'rgba(61,154,106,.32)' } },
-      { name: '睡眠h', type: 'line', yAxisIndex: 1, smooth: true, symbolSize: 4, data: labels.map((label) => sleepMap.get(label) || 0), lineStyle: { color: '#a8b0bc', width: 1.5 }, itemStyle: { color: '#a8b0bc' } },
-    ],
   });
 }
 
@@ -382,35 +297,36 @@ function renderDataStream() {
 
 async function loadDashboard() {
   await api('/api/balances/refresh', { method: 'POST' }).catch(() => null);
-  [stats, providers, keys, models, usageSeries, fitnessSummary, knowledgeSummary, cacheSummary, dashboardMemory] = await Promise.all([
+  [stats, providers, keys, models, usageSeries, knowledgeSummary, cacheSummary, dashboardMemory] = await Promise.all([
     api('/api/stats'),
     api('/api/providers'),
-    api('/api/keys'),
+    Promise.resolve([]),
     api('/api/models'),
     api('/api/usage/hourly'),
-    api('/api/fitness/summary'),
     api('/api/knowledge/summary'),
     api('/api/assistant/cache/summary').catch(() => null),
     api('/api/dashboard/memory').catch(() => null),
   ]);
+  keys = [];
   stats.knowledge_chunks = knowledgeSummary?.chunks || 0;
   stats.knowledge_queries = knowledgeSummary?.queries || 0;
   stats.cache_hits = dashboardMemory?.counts?.cache_hits || cacheSummary?.total_hits || 0;
   stats.pending_tasks = dashboardMemory?.counts?.tasks || 0;
+  stats.wecom_pending = dashboardMemory?.counts?.wecom_pending || 0;
   renderTelemetry();
   renderModules();
-  renderSignals();
   renderMemoryDashboard();
   renderBudgetList();
   renderDataStream();
   renderPulseChart();
-  renderFitnessChart();
 }
 
 initPulseChart();
-initFitnessChart();
 loadDashboard().catch((error) => {
   console.error(error);
-  $('#signalFeed').innerHTML = `<div class="empty-state">加载真实数据失败：${error.message}</div>`;
 });
-window.addEventListener('resize', () => { pulseChart?.resize(); fitnessChart?.resize(); });
+setInterval(() => {
+  if (document.hidden) return;
+  loadDashboard().catch(() => null);
+}, 60000);
+window.addEventListener('resize', () => { pulseChart?.resize(); });

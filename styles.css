@@ -172,6 +172,12 @@ body.cockpit {
   text-align: right;
 }
 
+.zone-head-actions {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
 .hub-zone-ops .zone-kicker { color: var(--accent); }
 .hub-zone-life .zone-kicker { color: var(--ok); }
 .hub-zone-modules .zone-kicker { color: var(--ink-2); }
@@ -233,24 +239,13 @@ body.cockpit {
 
 .ops-panels {
   display: grid;
-  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr);
+  grid-template-columns: 1fr;
   gap: 12px;
   min-height: 0;
 }
 
 .ops-pulse {
-  min-height: 220px;
-}
-
-.ops-signals {
-  min-height: 220px;
-}
-
-.ops-signals .signal-feed {
-  flex: 1;
-  max-height: none;
-  min-height: 0;
-  overflow-y: auto;
+  min-height: 260px;
 }
 
 .life-trend {
@@ -263,7 +258,7 @@ body.cockpit {
 
 .memory-dashboard {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -276,19 +271,12 @@ body.cockpit {
   overflow: hidden;
 }
 
-.dash-panel-cache::before,
-.dash-panel-tasks::before,
-.dash-panel-lifestyle::before,
-.dash-panel-finance::before {
+.dash-panel::before {
   content: '';
   display: block;
   height: 2px;
+  background: var(--accent);
 }
-
-.dash-panel-cache::before { background: var(--accent); }
-.dash-panel-tasks::before { background: var(--warn); }
-.dash-panel-lifestyle::before { background: var(--ok); }
-.dash-panel-finance::before { background: #6b8cce; }
 
 .dash-head {
   display: flex;
@@ -300,15 +288,18 @@ body.cockpit {
 }
 
 .dash-head h2 {
+  margin: 0;
   font-size: 13px;
   letter-spacing: 0.04em;
 }
 
 .dash-meta {
+  flex-shrink: 0;
   font-size: 11px;
   color: var(--muted);
   font-family: var(--mono);
   white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 .dash-feed {

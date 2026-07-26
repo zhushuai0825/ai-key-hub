@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS providers (
   balance NUMERIC(12, 2) NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'CNY',
   status TEXT NOT NULL DEFAULT 'active',
-  low_balance_threshold NUMERIC(12, 2) NOT NULL DEFAULT 50,
+  low_balance_threshold NUMERIC(12, 2) NOT NULL DEFAULT 5000,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -328,6 +328,9 @@ CREATE TABLE IF NOT EXISTS drama_projects (
   synopsis TEXT NOT NULL DEFAULT '',
   style_guide TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
+  logline TEXT NOT NULL DEFAULT '',
+  outline TEXT NOT NULL DEFAULT '',
+  episode_hooks JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -337,10 +340,12 @@ CREATE TABLE IF NOT EXISTS drama_characters (
   project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   mbti TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'supporting',
   appearance TEXT NOT NULL DEFAULT '',
   personality TEXT NOT NULL DEFAULT '',
   voice_note TEXT NOT NULL DEFAULT '',
   ref_prompt TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -352,6 +357,7 @@ CREATE TABLE IF NOT EXISTS drama_episodes (
   episode_no INTEGER NOT NULL DEFAULT 1,
   title TEXT NOT NULL DEFAULT '',
   synopsis TEXT NOT NULL DEFAULT '',
+  script_content TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -376,7 +382,34 @@ CREATE TABLE IF NOT EXISTS drama_shots (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS drama_scenes (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  location TEXT NOT NULL DEFAULT '',
+  time_label TEXT NOT NULL DEFAULT '日',
+  prompt TEXT NOT NULL DEFAULT '',
+  episode_index INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drama_props (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT '关键道具',
+  description TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  episode_index INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_drama_characters_project ON drama_characters(project_id, sort_order, id);
 CREATE INDEX IF NOT EXISTS idx_drama_episodes_project ON drama_episodes(project_id, episode_no, id);
 CREATE INDEX IF NOT EXISTS idx_drama_shots_episode ON drama_shots(episode_id, shot_no, id);
 CREATE INDEX IF NOT EXISTS idx_drama_shots_project ON drama_shots(project_id, episode_id, shot_no);
+CREATE INDEX IF NOT EXISTS idx_drama_scenes_project ON drama_scenes(project_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_drama_props_project ON drama_props(project_id, sort_order, id);
