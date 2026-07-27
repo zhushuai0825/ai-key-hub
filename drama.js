@@ -25,8 +25,17 @@ async function api(path, options = {}) {
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.message || '请求失败');
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_) {
+    if (res.status === 504 || /504|Gateway Time-out/i.test(text)) {
+      throw new Error('识别超时（网关约 60 秒限制）。已改为分步识别，请再点一次「一键识别」');
+    }
+    throw new Error(res.status ? `请求失败（HTTP ${res.status}）` : '请求失败');
+  }
+  if (!res.ok) throw new Error(data.error || data.message || `请求失败（HTTP ${res.status}）`);
   return data;
 }
 
@@ -310,15 +319,30 @@ $('#generateScriptsBtn').addEventListener('click', async () => {
   const btn = $('#generateScriptsBtn');
   state.busy = true;
   btn.disabled = true;
-  btn.textContent = '生成中…';
+  const total = Math.min(12, Math.max(1, Number($('#episodeCountInput').value) || 3));
+  const batchSize = 2; // 每批 2 集，避开 nginx 60s 超时
+  let generated = 0;
   try {
-    const result = await api(`/api/drama/projects/${state.projectId}/generate-scripts`, {
-      method: 'POST',
-      body: JSON.stringify({ episode_count: Number($('#episodeCountInput').value) || 3 }),
-    });
-    await loadProject(state.projectId, { preferStep: 'script' });
-    toast(`已生成 ${result.episodes?.length || 0} 集剧本`);
+    for (let from = 1; from <= total; from += batchSize) {
+      const batch = Math.min(batchSize, total - from + 1);
+      const end = from + batch - 1;
+      btn.textContent = batch === 1
+        ? `生成第${from}集… ${from}/${total}`
+        : `生成第${from}-${end}集… ${end}/${total}`;
+      const result = await api(`/api/drama/projects/${state.projectId}/generate-scripts`, {
+        method: 'POST',
+        body: JSON.stringify({
+          episode_count: total,
+          from_episode: from,
+          batch_count: batch,
+        }),
+      });
+      generated += result.episodes?.length || 0;
+      await loadProject(state.projectId, { preferStep: 'script' });
+    }
+    toast(`已生成 ${generated} 集剧本`);
   } catch (err) {
+    await loadProject(state.projectId, { preferStep: 'script' }).catch(() => null);
     toast(err.message);
   } finally {
     state.busy = false;
@@ -333,15 +357,28 @@ $('#extractAllBtn').addEventListener('click', async () => {
   const btn = $('#extractAllBtn');
   state.busy = true;
   btn.disabled = true;
-  btn.textContent = '识别中…';
+  // 分步请求，避免 nginx 60s 网关超时（人物+场景+道具一次串行会超）
+  const steps = [
+    { type: 'characters', label: '人物' },
+    { type: 'scenes', label: '场景' },
+    { type: 'props', label: '道具' },
+  ];
   try {
-    const result = await api(`/api/drama/projects/${state.projectId}/extract-assets`, {
-      method: 'POST',
-      body: JSON.stringify({ types: ['characters', 'scenes', 'props'], replace: true }),
-    });
-    await loadProject(state.projectId, { preferStep: 'assets' });
-    toast(`人物 ${result.characters?.length || 0} · 场景 ${result.scenes?.length || 0} · 道具 ${result.props?.length || 0}`);
+    for (let i = 0; i < steps.length; i += 1) {
+      const step = steps[i];
+      btn.textContent = `识别${step.label}… ${i + 1}/${steps.length}`;
+      await api(`/api/drama/projects/${state.projectId}/extract-assets`, {
+        method: 'POST',
+        body: JSON.stringify({ types: [step.type], replace: true }),
+      });
+      await loadProject(state.projectId, { preferStep: 'assets' });
+    }
+    const chars = state.bundle?.characters?.length || 0;
+    const scenes = state.bundle?.scenes?.length || 0;
+    const props = state.bundle?.props?.length || 0;
+    toast(`人物 ${chars} · 场景 ${scenes} · 道具 ${props}`);
   } catch (err) {
+    await loadProject(state.projectId, { preferStep: 'assets' }).catch(() => null);
     toast(err.message);
   } finally {
     state.busy = false;

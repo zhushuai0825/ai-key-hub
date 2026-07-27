@@ -24,6 +24,7 @@ import {
   outlineChatSystemPrompt,
   storyExpansionSystemPrompt,
   characterExtractionSystemPrompt,
+  buildCharacterExtractionUserPrompt,
   sceneExtractionSystemPrompt,
   propExtractionSystemPrompt,
   buildOutlineUserPrompt,
@@ -4052,20 +4053,22 @@ async function getDramaProjectBundle(projectId) {
   };
 }
 
-async function deepseekChatJson({ system, user, temperature = 0.6 } = {}) {
+async function deepseekChatJson({ system, user, temperature = 0.6, max_tokens } = {}) {
   const apiKey = await deepseekApiKey();
   if (!apiKey) throw new Error('请先配置 AI API Key');
+  const payload = {
+    model: DEEPSEEK_CHAT_MODEL,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+    temperature,
+  };
+  if (Number(max_tokens) > 0) payload.max_tokens = Number(max_tokens);
   const response = await fetch('https://api.deepseek.com/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: DEEPSEEK_CHAT_MODEL,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: user },
-      ],
-      temperature,
-    }),
+    body: JSON.stringify(payload),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body?.error?.message || `DeepSeek request failed: ${response.status}`);
@@ -5020,19 +5023,37 @@ async function handleApi(req, res, url) {
       try { hooks = JSON.parse(hooks); } catch (_) { hooks = []; }
     }
     if (!Array.isArray(hooks)) hooks = [];
-    const episodeCount = Math.min(12, Math.max(1, Number(data.episode_count) || hooks.length || 3));
-    const { parsed } = await deepseekChatJson({
-      system: storyExpansionSystemPrompt(episodeCount),
-      user: buildStoryUserPrompt({ project, outline, hooks, episodeCount }),
-      temperature: 0.65,
-    });
-    const scripts = normalizeEpisodeScripts(parsed, episodeCount);
-    if (!scripts.length) return sendJson(res, 502, { error: '模型未返回剧本' });
+    const totalEpisodes = Math.min(12, Math.max(1, Number(data.episode_count) || hooks.length || 3));
+    const useBatch = data.from_episode != null || data.batch_count != null;
+    const fromEpisode = useBatch
+      ? Math.min(totalEpisodes, Math.max(1, Number(data.from_episode) || 1))
+      : 1;
+    // 前端分批时每批默认 2 集；未传分批参数则一次生成全部（本机调试）
+    const batchCount = useBatch
+      ? Math.min(totalEpisodes - fromEpisode + 1, Math.max(1, Number(data.batch_count) || 2))
+      : totalEpisodes;
     const existing = await pool.query('SELECT * FROM drama_episodes WHERE project_id=$1 ORDER BY episode_no, id', [projectId]);
+    const prevEp = existing.rows.find((row) => Number(row.episode_no) === fromEpisode - 1);
+    const previousEnding = String(prevEp?.script_content || '').trim().slice(-500);
+    const { parsed } = await deepseekChatJson({
+      system: storyExpansionSystemPrompt(batchCount, { fromEpisode, totalEpisodes }),
+      user: buildStoryUserPrompt({
+        project,
+        outline,
+        hooks,
+        episodeCount: totalEpisodes,
+        fromEpisode,
+        batchCount,
+        previousEnding,
+      }),
+      temperature: 0.65,
+      max_tokens: 8192,
+    });
+    const scripts = normalizeEpisodeScripts(parsed, batchCount, fromEpisode);
+    if (!scripts.length) return sendJson(res, 502, { error: '模型未返回剧本' });
     const saved = [];
-    for (let i = 0; i < scripts.length; i += 1) {
-      const item = scripts[i];
-      const epNo = i + 1;
+    for (const item of scripts) {
+      const epNo = Number(item.episode) || fromEpisode;
       const current = existing.rows.find((row) => Number(row.episode_no) === epNo);
       if (current) {
         const updated = await pool.query(`
@@ -5048,8 +5069,19 @@ async function handleApi(req, res, url) {
       }
     }
     await pool.query('UPDATE drama_projects SET updated_at=now() WHERE id=$1', [projectId]);
-    await auditLog(req, { action: 'drama.scripts.generate', entityType: 'drama_project', entityId: String(projectId), detail: { episodes: saved.length } });
-    return sendJson(res, 200, { episodes: saved });
+    await auditLog(req, {
+      action: 'drama.scripts.generate',
+      entityType: 'drama_project',
+      entityId: String(projectId),
+      detail: { episodes: saved.length, from_episode: fromEpisode, batch_count: batchCount, total: totalEpisodes },
+    });
+    return sendJson(res, 200, {
+      episodes: saved,
+      from_episode: fromEpisode,
+      batch_count: batchCount,
+      total_episodes: totalEpisodes,
+      next_from: fromEpisode + batchCount <= totalEpisodes ? fromEpisode + batchCount : null,
+    });
   }
 
   const dramaExtractAssetsMatch = url.pathname.match(/^\/api\/drama\/projects\/(\d+)\/extract-assets$/);
@@ -5070,8 +5102,9 @@ async function handleApi(req, res, url) {
     if (types.includes('characters')) {
       const { parsed } = await deepseekChatJson({
         system: characterExtractionSystemPrompt(style),
-        user: `剧本内容：\n${scriptText}`,
-        temperature: 0.4,
+        user: buildCharacterExtractionUserPrompt(scriptText),
+        temperature: 0.35,
+        max_tokens: 8192,
       });
       const chars = normalizeCharacters(parsed);
       if (replace) await pool.query('DELETE FROM drama_characters WHERE project_id=$1', [projectId]);
@@ -5089,8 +5122,9 @@ async function handleApi(req, res, url) {
     if (types.includes('scenes')) {
       const { parsed } = await deepseekChatJson({
         system: sceneExtractionSystemPrompt(style),
-        user: `剧本内容：\n${scriptText}`,
-        temperature: 0.35,
+        user: `剧本内容：\n${scriptText}\n\n请尽量拆全所有「地点+时间」组合，宁可多不可少。`,
+        temperature: 0.3,
+        max_tokens: 8192,
       });
       const scenes = normalizeScenes(parsed);
       if (replace) await pool.query('DELETE FROM drama_scenes WHERE project_id=$1', [projectId]);
@@ -5106,8 +5140,9 @@ async function handleApi(req, res, url) {
     if (types.includes('props')) {
       const { parsed } = await deepseekChatJson({
         system: propExtractionSystemPrompt(style),
-        user: `剧本内容：\n${scriptText}`,
-        temperature: 0.35,
+        user: `剧本内容：\n${scriptText}\n\n请提取值得单独出参考图的道具；穿在身上的衣服/鞋不要当道具，应归入角色形态。`,
+        temperature: 0.3,
+        max_tokens: 4096,
       });
       const props = normalizeProps(parsed);
       if (replace) await pool.query('DELETE FROM drama_props WHERE project_id=$1', [projectId]);
