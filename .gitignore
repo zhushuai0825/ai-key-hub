@@ -1,12 +1,14 @@
 node_modules/
 .DS_Store
 .env
+.env.*
+!.env.example
 *.log
 npm-debug.log*
 .cache/
+.cursor-tmp-ssh-pass
+*.pem
+*.key
 
 uploads/
 backups/
-
-# Vendor skill clones (installed copies live in .cursor/skills/)
-.tmp-skills/

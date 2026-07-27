@@ -7,194 +7,256 @@
   <link rel="stylesheet" href="./theme.css" />
   <link rel="stylesheet" href="./knowledge.css" />
 </head>
-<body class="module knowledge-page drama-page compact-search">
-  <header class="kb-bar">
-    <a class="module-back" href="/">返回指挥台</a>
+<body class="module knowledge-page drama-page">
+  <header class="kb-bar drama-topbar">
+    <div class="drama-top-left">
+      <a class="module-back" href="/hub.html" id="dramaHubLink">返回指挥台</a>
+      <button type="button" class="btn" id="dramaContactBtn">有事找我</button>
+    </div>
     <div class="module-title">
       <strong>漫剧工作室</strong>
-      <span>记人物 IP · 写分镜 · 导出提示词（不出片）</span>
+      <span id="headerHint">大纲 → 剧本 → 分镜 → 导出 · 知识库加持的漫剧流水线</span>
     </div>
-    <button class="btn btn-solid" id="newProjectBtn" type="button">新建项目</button>
+    <div class="drama-bar-actions">
+      <span id="dramaUserLabel" class="drama-user-chip"></span>
+      <button class="btn" id="dramaLogoutBtn" type="button">退出</button>
+      <button class="btn" id="remakeBtn" type="button">仿写爆款</button>
+      <button class="btn btn-solid" id="newProjectBtn" type="button">新建项目</button>
+    </div>
   </header>
 
-  <div class="drama-boundary" role="note">
-    <strong>Hub 边界</strong>
-    本页只到「导出提示词」。AI 拆分镜只用你在 Key 管理里配置的模型。定妆 / Seedance 出片 / OpenCut 精剪在 Cursor Skills 或站外完成。
-    导出 MD/CSV 已含<strong>首帧 / 尾帧</strong>提示；进 LocalMiniDrama 后请先<strong>采用分镜图</strong>再烧视频。
-  </div>
+  <main class="drama-flow">
+    <!-- ① 项目列表 -->
+    <section id="viewList" class="drama-view">
+      <div class="drama-list-head">
+        <h1>全部剧本</h1>
+        <div class="drama-intro">
+          <p><strong>这是什么</strong> — 微短剧 / 漫剧创作台：对话写大纲 → 生成剧本 → 识别人物场景 → 出即梦 / Seedance 分镜提示词 → 导出 LocalMiniDrama，从构思一路接到可拍素材。</p>
+          <p><strong>怎么用</strong> — 「新建项目」从零开写；「仿写爆款」粘贴参考剧做同构换皮；点卡片继续未完成进度。步骤：1 大纲 → 2 剧本 → 3 识别 → 4 分镜 → 5 导出。</p>
+          <p><strong>厉害在哪</strong> — 写稿自动检索知识库（开场钩子、集末事件钩、反 AI 腔对白、竖屏分镜、Seedance 句式等），只借规则不照搬情节；导出对齐 LocalMiniDrama，可直接下游出图出片。</p>
+        </div>
+      </div>
+      <div id="projectGrid" class="drama-grid"></div>
+    </section>
 
-  <main class="drama-shell">
-    <aside class="kb-panel drama-side">
-      <div class="panel-head"><h2>项目</h2><span id="projectCount">0</span></div>
-      <div id="projectList" class="drama-project-list"></div>
-    </aside>
-
-    <section class="kb-panel drama-main">
-      <div id="emptyProject" class="empty-state">左侧新建或选择一个漫剧项目</div>
-      <div id="projectWorkspace" class="drama-workspace" hidden>
-        <nav class="drama-steps" aria-label="创作步骤">
-          <button type="button" data-step="project">1 梗概</button>
-          <button type="button" data-step="characters">2 角色</button>
-          <button type="button" data-step="shots">3 分镜</button>
-          <button type="button" data-step="export">4 导出</button>
-        </nav>
-
-        <form id="projectForm" class="compact-form drama-project-form">
-          <div class="compact-row">
-            <input name="title" required placeholder="项目标题，例如：ENFP 咖啡店恋爱" />
-            <input name="genre" placeholder="类型：恋爱 / 职场 / MBTI IP" />
+    <!-- ①-b 仿写爆款 -->
+    <section id="viewRemake" class="drama-view" hidden>
+      <div class="drama-list-head">
+        <h1>仿写爆款</h1>
+        <p>粘贴参考剧本或详细梗概 → 拆功能骨架 → 选一个换皮方向开项目（不照搬原作表达）</p>
+      </div>
+      <div class="drama-remake-layout">
+        <article class="drama-remake-input">
+          <label class="form-hint" for="remakeSource">参考剧本 / 梗概</label>
+          <textarea id="remakeSource" rows="14" placeholder="粘贴参考剧本文本，或至少 80 字以上的详细剧情梗概…"></textarea>
+          <label class="form-hint" for="remakeHint">换皮意向（可选）</label>
+          <input id="remakeHint" type="text" placeholder="例如：改成校园、偏女性向、少虐…" />
+          <div class="drama-remake-actions">
+            <button type="button" class="btn" id="remakeBackBtn">← 返回列表</button>
+            <button type="button" class="btn btn-solid" id="remakeAnalyzeBtn">拆解并出换皮方向</button>
           </div>
-          <textarea name="synopsis" rows="3" placeholder="一句话到三段梗概：谁、冲突、反转"></textarea>
-          <textarea name="style_guide" rows="2" placeholder="画风/质感：例如日系漫画线稿、暖色夜景、电影感浅景深"></textarea>
-          <div class="compact-actions">
-            <select name="status">
-              <option value="draft">草稿</option>
-              <option value="storyboard">分镜中</option>
-              <option value="producing">站外制作中</option>
-              <option value="done">已归档</option>
-            </select>
-            <button class="btn" type="button" id="deleteProjectBtn">删除项目</button>
-            <button class="btn btn-solid" type="submit">保存项目</button>
+        </article>
+        <article class="drama-remake-result">
+          <header>
+            <strong>功能骨架</strong>
+            <span id="remakeSkeletonMeta" class="form-hint">分析后显示</span>
+          </header>
+          <pre id="remakeSkeleton" class="drama-preview">先粘贴参考内容并点击「拆解」。</pre>
+          <header class="drama-remake-concepts-head">
+            <strong>换皮方向</strong>
+            <span class="form-hint">选一个创建项目</span>
+          </header>
+          <div id="remakeConcepts" class="drama-remake-concepts"></div>
+        </article>
+      </div>
+    </section>
+
+    <!-- ② 项目内流程 -->
+    <section id="viewWork" class="drama-view" hidden>
+      <div class="drama-work-bar">
+        <button type="button" class="btn" id="backListBtn">← 全部项目</button>
+        <div class="drama-work-title">
+          <strong id="workTitle">—</strong>
+          <span id="workMeta">—</span>
+        </div>
+        <div class="drama-work-actions">
+          <button type="button" class="btn" id="exportLmdBtn">导出 ZIP</button>
+          <button type="button" class="btn" id="deleteProjectBtn">删除</button>
+        </div>
+      </div>
+
+      <nav class="drama-steps" aria-label="创作步骤">
+        <button type="button" class="drama-step is-active" data-step="outline">1 对话写大纲</button>
+        <button type="button" class="drama-step" data-step="script">2 生成剧本</button>
+        <button type="button" class="drama-step" data-step="assets">3 识别数据</button>
+        <button type="button" class="drama-step" data-step="storyboard">4 分镜提示词</button>
+        <button type="button" class="drama-step" data-step="export" id="dramaStepExport">5 导出</button>
+      </nav>
+
+      <div class="drama-step-panel is-active" data-panel="outline">
+        <div class="drama-outline-layout">
+          <div class="drama-outline-chat-col">
+            <div id="chatLog" class="drama-chat"></div>
+            <form id="chatForm" class="drama-chat-form">
+              <input id="chatInput" type="text" placeholder="说你的故事想法，例如：ENFP 开咖啡店遇到 ISTJ…" autocomplete="off" />
+              <button class="btn btn-solid" type="submit" id="chatSendBtn">发送</button>
+            </form>
           </div>
-        </form>
-
-        <div class="drama-tabs" role="tablist">
-          <button type="button" class="is-active" data-tab="shots">分镜台</button>
-          <button type="button" data-tab="characters">角色卡</button>
-          <button type="button" data-tab="library">人物库</button>
-          <button type="button" data-tab="episodes">分集</button>
+          <article class="drama-outline-live">
+            <header>
+              <strong>当前大纲</strong>
+              <span id="outlineStatus" class="form-hint">还没有大纲</span>
+            </header>
+            <div id="outlineLive" class="drama-preview">对话几轮后，这里会实时显示整理好的大纲。</div>
+          </article>
         </div>
-
-        <div class="drama-tab-panel" data-panel="episodes" hidden>
-          <form id="episodeForm" class="compact-form">
-            <div class="compact-row">
-              <input name="title" placeholder="分集标题" />
-              <button class="btn btn-solid" type="submit">新增分集</button>
-            </div>
-            <textarea name="synopsis" rows="2" placeholder="本集梗概（可选，默认用项目梗概）"></textarea>
-          </form>
-          <div id="episodeList" class="drama-episode-list"></div>
+        <div class="drama-step-footer">
+          <span class="form-hint">确认大纲没问题后，再去生成剧本</span>
+          <button type="button" class="btn btn-solid" id="gotoScriptBtn" disabled>大纲完成，去生成剧本 →</button>
         </div>
+      </div>
 
-        <div class="drama-tab-panel" data-panel="characters" hidden>
-          <details class="drama-import-box">
-            <summary>从 Cursor Skill 导入角色卡</summary>
-            <p class="form-hint">粘贴 short-drama `/角色卡`（Markdown：<code>- **名**</code> 或 <code>### 名</code>）或 JSON。可识别：性格关键词、外貌特征、视觉提示词、核心动机等。</p>
-            <textarea id="characterImportText" rows="5" placeholder="### 林晓&#10;性格关键词：ENFP、直觉强&#10;外貌特征：短发、锐利眼神&#10;核心动机：……&#10;视觉提示词：……"></textarea>
-            <div class="compact-actions">
-              <button class="btn btn-solid" type="button" id="characterImportBtn">导入角色</button>
-            </div>
-          </details>
-          <form id="characterForm" class="compact-form drama-char-form">
-            <input type="hidden" name="edit_id" value="" />
-            <div class="compact-row">
-              <input name="name" required placeholder="角色名" />
-              <select name="role">
-                <option value="main">主角</option>
-                <option value="supporting">配角</option>
-                <option value="minor">次要</option>
-              </select>
-              <input name="mbti" placeholder="MBTI，如 ENFP" maxlength="8" />
-            </div>
-            <textarea name="description" rows="2" placeholder="背景 / 关系 / 动机（写分镜会注入）"></textarea>
-            <textarea name="personality" rows="2" placeholder="性格与决策习惯"></textarea>
-            <div class="compact-row">
-              <textarea name="voice_note" rows="2" placeholder="说话方式 / 禁忌"></textarea>
-              <textarea name="catchphrases" rows="2" placeholder="口头禅，逗号或换行分隔"></textarea>
-            </div>
-            <textarea name="appearance" rows="2" placeholder="外貌定妆：发型、服装、标志物"></textarea>
-            <div class="drama-anchor-grid">
-              <input name="anchor_face" placeholder="脸型锚点，如鹅蛋脸" />
-              <input name="anchor_features" placeholder="五官，如杏眼、高鼻梁" />
-              <input name="anchor_marks" placeholder="标志，如左耳小痣" />
-              <input name="anchor_hair" placeholder="发型，如齐肩微卷" />
-            </div>
-            <textarea name="ref_prompt" rows="2" placeholder="定妆/一致性提示词（导出给站外出图用）"></textarea>
-            <div class="compact-actions">
-              <span class="form-hint" id="characterFormHint">角色卡会自动拼进每镜豆包提示词</span>
-              <button class="btn" type="button" id="resetCharacterBtn" hidden>取消编辑</button>
-              <button class="btn btn-solid" type="submit" id="characterSubmitBtn">添加角色</button>
-            </div>
-          </form>
-          <div id="characterList" class="drama-character-list"></div>
+      <div class="drama-step-panel" data-panel="script" hidden>
+        <article class="drama-result">
+          <header>
+            <strong>当前大纲</strong>
+            <button type="button" class="btn" id="backOutlineBtn">改大纲</button>
+          </header>
+          <p id="outlinePreview" class="drama-preview">（还没有大纲）</p>
+        </article>
+        <div class="drama-primary-action">
+          <label class="drama-ep-count">集数
+            <input id="episodeCountInput" type="number" min="1" max="12" value="3" />
+          </label>
+          <button type="button" class="btn btn-solid" id="generateScriptsBtn">生成剧本</button>
         </div>
-
-        <div class="drama-tab-panel" data-panel="library" hidden>
-          <p class="form-hint drama-lib-intro">全局人物 IP，可跨项目复用。先建库，再「加入当前项目」。</p>
-          <form id="libraryForm" class="compact-form drama-char-form">
-            <input type="hidden" name="edit_id" value="" />
-            <div class="compact-row">
-              <input name="name" required placeholder="库角色名" />
-              <select name="role">
-                <option value="main">主角</option>
-                <option value="supporting">配角</option>
-                <option value="minor">次要</option>
-              </select>
-              <input name="mbti" placeholder="MBTI" maxlength="8" />
-              <input name="tags" placeholder="标签：合租,恋爱" />
-            </div>
-            <textarea name="description" rows="2" placeholder="背景 / 关系 / 动机"></textarea>
-            <textarea name="personality" rows="2" placeholder="性格"></textarea>
-            <div class="compact-row">
-              <textarea name="voice_note" rows="2" placeholder="说话方式"></textarea>
-              <textarea name="catchphrases" rows="2" placeholder="口头禅"></textarea>
-            </div>
-            <textarea name="appearance" rows="2" placeholder="外貌"></textarea>
-            <div class="drama-anchor-grid">
-              <input name="anchor_face" placeholder="脸型" />
-              <input name="anchor_features" placeholder="五官" />
-              <input name="anchor_marks" placeholder="标志" />
-              <input name="anchor_hair" placeholder="发型" />
-            </div>
-            <textarea name="ref_prompt" rows="2" placeholder="定妆提示词"></textarea>
-            <div class="compact-actions">
-              <span class="form-hint" id="libraryFormHint">写入全局人物库</span>
-              <button class="btn" type="button" id="resetLibraryBtn" hidden>取消编辑</button>
-              <button class="btn btn-solid" type="submit" id="librarySubmitBtn">入库</button>
-            </div>
-          </form>
-          <div id="libraryList" class="drama-character-list"></div>
-        </div>
-
-        <div class="drama-tab-panel is-active" data-panel="shots">
-          <div class="drama-shot-toolbar">
-            <select id="episodeSelect"></select>
-            <select id="modelSelect" title="AI 拆分镜使用的配置模型">
-              <option value="">加载模型中…</option>
-            </select>
-            <label class="drama-check">
-              <input type="checkbox" id="splitReplace" checked /> 替换本集分镜
-            </label>
-            <button class="btn btn-solid" type="button" id="splitBtn">AI 拆分镜</button>
-            <button class="btn" type="button" id="addShotBtn">加一镜</button>
-            <button class="btn" type="button" id="exportMdBtn">导出豆包 MD</button>
-            <button class="btn" type="button" id="exportCsvBtn">导出 CSV</button>
-            <button class="btn" type="button" id="copyCursorPromptBtn">复制 Cursor 润色提示</button>
+        <div id="scriptEmpty" class="drama-empty-inline">点「生成剧本」后，可在左侧改正文，右侧用大模型改稿</div>
+        <div id="scriptEditorWrap" class="drama-script-wrap" hidden>
+          <div id="scriptEpTabs" class="drama-ep-tabs" role="tablist"></div>
+          <div class="drama-script-layout">
+            <article class="drama-script-editor">
+              <header>
+                <div>
+                  <strong id="scriptEpLabel">本集正文</strong>
+                  <span id="scriptMeta" class="form-hint"></span>
+                </div>
+                <button type="button" class="btn" id="saveScriptBtn">保存本集</button>
+              </header>
+              <label class="form-hint" for="scriptTitleInput">集标题</label>
+              <input id="scriptTitleInput" type="text" placeholder="本集标题" />
+              <label class="form-hint" for="scriptBodyInput">剧本正文（可直接改）</label>
+              <textarea id="scriptBodyInput" rows="18" placeholder="本集剧本正文…"></textarea>
+              <article class="drama-script-quality" id="scriptQualityPanel">
+                <header class="drama-script-quality-head">
+                  <div>
+                    <strong>剧本质检</strong>
+                    <span id="scriptQualityScore" class="drama-quality-score">—</span>
+                  </div>
+                  <div class="drama-script-quality-actions">
+                    <button type="button" class="btn" id="scriptReviewBtn">AI 质检</button>
+                    <button type="button" class="btn btn-solid" id="scriptPolishBtn">一键润色</button>
+                  </div>
+                </header>
+                <p id="scriptQualitySummary" class="form-hint drama-quality-summary"></p>
+                <ul id="scriptQualityIssues" class="drama-quality-list"></ul>
+              </article>
+            </article>
+            <article class="drama-script-chat-col">
+              <header>
+                <strong>AI 改稿</strong>
+                <span class="form-hint">按指令改当前这一集</span>
+              </header>
+              <div id="scriptChatLog" class="drama-chat"></div>
+              <form id="scriptChatForm" class="drama-chat-form">
+                <input id="scriptChatInput" type="text" placeholder="例如：开场冲突提前，对白更口语，结尾钩子更狠…" autocomplete="off" />
+                <button class="btn btn-solid" type="submit" id="scriptChatSendBtn">改稿</button>
+              </form>
+            </article>
           </div>
-          <details class="drama-import-box">
-            <summary>从 Cursor Skill 导入分镜 JSON</summary>
-            <p class="form-hint">仅 <code>{"shots":[...]}</code> 或 shots 数组（create-storyboard 整包 MD 需先转 JSON）。导入会<strong>顺序重排镜号</strong>；勾选「替换」则清空本集再导入。</p>
-            <textarea id="shotImportText" rows="5" placeholder='{"shots":[{"shot_no":1,"title":"开场","shot_size":"中景","action":"...","result":"...","dialogue":"","duration_sec":4}]}'></textarea>
-            <div class="compact-actions">
-              <label class="drama-check"><input type="checkbox" id="shotImportReplace" /> 替换本集</label>
-              <button class="btn btn-solid" type="button" id="shotImportBtn">导入分镜</button>
-            </div>
-          </details>
-          <form id="episodeSynopsisForm" class="compact-form drama-ep-synopsis">
-            <textarea name="synopsis" rows="2" placeholder="本集梗概：先写清冲突与节拍，再点「AI 拆分镜」"></textarea>
-            <div class="compact-actions">
-              <span class="form-hint" id="shotCountLabel">0 镜</span>
-              <span class="form-hint" id="modelHint">模型：—</span>
-              <button class="btn" type="submit">保存本集梗概</button>
-            </div>
-          </form>
-          <div id="shotList" class="drama-shot-list"></div>
+        </div>
+        <div class="drama-step-footer">
+          <button type="button" class="btn btn-solid" id="gotoAssetsBtn" disabled>剧本完成，去识别数据 →</button>
+        </div>
+      </div>
+
+      <div class="drama-step-panel" data-panel="assets" hidden>
+        <div class="drama-primary-action">
+          <p class="form-hint">从剧本里自动抽出人物、场景、道具</p>
+          <button type="button" class="btn btn-solid" id="extractAllBtn">一键识别</button>
+        </div>
+        <div class="drama-asset-cols">
+          <section>
+            <h3>人物 <span id="charCount">0</span></h3>
+            <div id="characterList"></div>
+          </section>
+          <section>
+            <h3>场景 <span id="sceneCount">0</span></h3>
+            <div id="sceneList"></div>
+          </section>
+          <section>
+            <h3>道具 <span id="propCount">0</span></h3>
+            <div id="propList"></div>
+          </section>
+        </div>
+        <div class="drama-step-footer">
+          <button type="button" class="btn btn-solid" id="gotoStoryboardBtn">去写分镜提示词 →</button>
+        </div>
+      </div>
+
+      <div class="drama-step-panel" data-panel="storyboard" hidden>
+        <div class="drama-primary-action">
+          <p class="form-hint">按集拆分镜，生成可粘进即梦/Seedance 的提示词（优先检索分镜类知识库；无人物卡会先自动识别本集角色）</p>
+          <button type="button" class="btn btn-solid" id="generateStoryboardBtn">生成本集分镜</button>
+        </div>
+        <div id="storyboardEpTabs" class="drama-ep-tabs" role="tablist"></div>
+        <div id="storyboardMeta" class="form-hint">先识别人物/场景，再生成分镜更稳</div>
+        <div id="shotList" class="drama-shot-list"></div>
+        <div class="drama-step-footer">
+          <button type="button" class="btn" id="exportShotsMdBtn">导出本集分镜 MD</button>
+          <button type="button" class="btn btn-solid" id="gotoExportFromSbBtn">去导出 ZIP →</button>
+        </div>
+      </div>
+
+      <div class="drama-step-panel" data-panel="export" hidden>
+        <div class="drama-export-box">
+          <h2>导出到 LocalMiniDrama</h2>
+          <p>下载 ZIP 后，在 LocalMiniDrama「导入项目」即可使用：剧本、人物/场景/道具生图词、分镜视频提示词已写入 <code>project.json</code>。</p>
+          <div class="drama-export-actions">
+            <button type="button" class="btn btn-solid" id="exportLmdBtn2">下载完整 ZIP（推荐）</button>
+          </div>
+          <h3 class="drama-export-sub">也可单独导出 Markdown</h3>
+          <div class="drama-export-actions drama-export-actions-secondary">
+            <button type="button" class="btn" id="exportScriptsMdBtn">剧本全集</button>
+            <button type="button" class="btn" id="exportImagePromptsBtn">生图提示词</button>
+            <button type="button" class="btn" id="exportAllStoryboardsBtn">分镜视频提示词</button>
+          </div>
+          <ul class="drama-export-hint">
+            <li>人物定妆 → <code>characters.polished_prompt</code></li>
+            <li>场景/道具 → <code>scenes.prompt</code> / <code>props.prompt</code></li>
+            <li>分镜视频 → <code>storyboards.video_prompt</code> / <code>universal_segment_text</code></li>
+          </ul>
         </div>
       </div>
     </section>
   </main>
 
   <div id="toast" class="toast"></div>
+
+  <div id="dramaContactModal" class="drama-contact-modal" hidden>
+    <button type="button" class="drama-contact-backdrop" id="dramaContactCloseBg" aria-label="关闭"></button>
+    <div class="drama-contact-card" role="dialog" aria-modal="true" aria-labelledby="dramaContactTitle">
+      <header>
+        <strong id="dramaContactTitle">有事扫码找我</strong>
+        <button type="button" class="btn" id="dramaContactCloseBtn">关闭</button>
+      </header>
+      <img src="./assets/wechat-contact-qr.png" alt="微信联系二维码" width="220" height="328" />
+      <p>注册登录或创作过程中有疑问，扫码加微信，通常当天回复。</p>
+      <div class="drama-contact-actions">
+        <a class="btn btn-solid" id="dramaContactDownload" href="./assets/wechat-contact-qr.png" download="wechat-contact-qr.png">下载图片</a>
+      </div>
+    </div>
+  </div>
+
   <script src="./drama.js"></script>
 </body>
 </html>

@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>注册 · AI Key Hub</title>
+  <link rel="stylesheet" href="./theme.css" />
+  <style>
+    body.app-login {
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse 70% 50% at 50% -10%, rgba(212,146,74,.12), transparent 55%),
+        var(--bg);
+    }
+    .login-card {
+      width: min(400px, 100%);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      padding: 28px 24px 22px;
+      box-shadow: 0 24px 60px rgba(0,0,0,.35);
+    }
+    .login-contact {
+      display: grid;
+      justify-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+      text-align: center;
+    }
+    .login-contact img {
+      width: min(168px, 58vw);
+      height: auto;
+      border-radius: 12px;
+      background: #fff;
+      padding: 8px;
+      box-sizing: border-box;
+    }
+    .login-contact strong {
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    .login-contact span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+      max-width: 28em;
+    }
+    .login-card h1 {
+      margin: 0 0 18px;
+      font-size: 22px;
+      letter-spacing: -0.02em;
+    }
+    .login-card label {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: var(--ink-2);
+    }
+    .login-card input {
+      height: 42px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--ink);
+      padding: 0 12px;
+      font: inherit;
+    }
+    .login-card input:focus {
+      outline: none;
+      border-color: rgba(212,146,74,.55);
+    }
+    .login-actions {
+      display: flex;
+      gap: 10px;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
+      flex-wrap: wrap;
+    }
+    .login-switch {
+      border: 0;
+      background: none;
+      color: var(--muted);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      padding: 0;
+    }
+    .login-switch:hover { color: var(--accent); }
+    .login-error {
+      min-height: 18px;
+      margin: 0 0 8px;
+      color: var(--bad);
+      font-size: 12px;
+    }
+    .login-ok {
+      min-height: 18px;
+      margin: 0 0 8px;
+      color: #6ee7a8;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body class="module app-login">
+  <div class="login-card">
+    <div class="login-contact">
+      <img src="./assets/wechat-contact-qr.png" alt="微信联系二维码" width="168" height="250" />
+      <strong>有事扫码找我</strong>
+      <span>注册登录遇到问题，或漫剧创作想商量一下，扫上方微信加我，通常当天回复。</span>
+    </div>
+    <h1 id="formTitle">注册</h1>
+    <form id="authForm">
+      <label>
+        用户名
+        <input name="username" id="usernameInput" type="text" autocomplete="username" required autofocus minlength="2" />
+      </label>
+      <label>
+        密码
+        <input name="password" id="passwordInput" type="password" autocomplete="new-password" required minlength="6" />
+      </label>
+      <p class="login-error" id="authError"></p>
+      <p class="login-ok" id="authOk"></p>
+      <div class="login-actions">
+        <button type="button" class="login-switch" id="modeSwitch">已有账号？去登录</button>
+        <button class="btn btn-solid" type="submit" id="authBtn">注册</button>
+      </div>
+    </form>
+  </div>
+  <script src="./login.js"></script>
+</body>
+</html>

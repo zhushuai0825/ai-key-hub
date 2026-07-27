@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS providers (
   balance NUMERIC(12, 2) NOT NULL DEFAULT 0,
   currency TEXT NOT NULL DEFAULT 'CNY',
   status TEXT NOT NULL DEFAULT 'active',
-  low_balance_threshold NUMERIC(12, 2) NOT NULL DEFAULT 50,
+  low_balance_threshold NUMERIC(12, 2) NOT NULL DEFAULT 5000,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -328,23 +328,21 @@ CREATE TABLE IF NOT EXISTS drama_projects (
   synopsis TEXT NOT NULL DEFAULT '',
   style_guide TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
+  logline TEXT NOT NULL DEFAULT '',
+  outline TEXT NOT NULL DEFAULT '',
+  episode_hooks JSONB NOT NULL DEFAULT '[]'::jsonb,
+  owner_username TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS drama_character_library (
+CREATE TABLE IF NOT EXISTS app_users (
   id SERIAL PRIMARY KEY,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'main',
-  mbti TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '',
-  personality TEXT NOT NULL DEFAULT '',
-  voice_note TEXT NOT NULL DEFAULT '',
-  catchphrases TEXT NOT NULL DEFAULT '',
-  appearance TEXT NOT NULL DEFAULT '',
-  identity_anchors JSONB NOT NULL DEFAULT '{}'::jsonb,
-  ref_prompt TEXT NOT NULL DEFAULT '',
-  tags TEXT NOT NULL DEFAULT '',
+  username TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  password_salt TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  enabled BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -352,17 +350,14 @@ CREATE TABLE IF NOT EXISTS drama_character_library (
 CREATE TABLE IF NOT EXISTS drama_characters (
   id SERIAL PRIMARY KEY,
   project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
-  library_id INTEGER REFERENCES drama_character_library(id) ON DELETE SET NULL,
   name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'main',
   mbti TEXT NOT NULL DEFAULT '',
-  description TEXT NOT NULL DEFAULT '',
+  role TEXT NOT NULL DEFAULT 'supporting',
   appearance TEXT NOT NULL DEFAULT '',
   personality TEXT NOT NULL DEFAULT '',
   voice_note TEXT NOT NULL DEFAULT '',
-  catchphrases TEXT NOT NULL DEFAULT '',
-  identity_anchors JSONB NOT NULL DEFAULT '{}'::jsonb,
   ref_prompt TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -374,6 +369,7 @@ CREATE TABLE IF NOT EXISTS drama_episodes (
   episode_no INTEGER NOT NULL DEFAULT 1,
   title TEXT NOT NULL DEFAULT '',
   synopsis TEXT NOT NULL DEFAULT '',
+  script_content TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
   sort_order INTEGER NOT NULL DEFAULT 0,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -385,21 +381,12 @@ CREATE TABLE IF NOT EXISTS drama_shots (
   project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
   episode_id INTEGER NOT NULL REFERENCES drama_episodes(id) ON DELETE CASCADE,
   shot_no INTEGER NOT NULL DEFAULT 1,
-  title TEXT NOT NULL DEFAULT '',
   shot_size TEXT NOT NULL DEFAULT '中景',
   visual_prompt TEXT NOT NULL DEFAULT '',
-  action TEXT NOT NULL DEFAULT '',
-  result TEXT NOT NULL DEFAULT '',
   dialogue TEXT NOT NULL DEFAULT '',
-  narration TEXT NOT NULL DEFAULT '',
-  atmosphere TEXT NOT NULL DEFAULT '',
-  emotion TEXT NOT NULL DEFAULT '',
   characters TEXT NOT NULL DEFAULT '',
-  character_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
   duration_sec NUMERIC(6, 1) NOT NULL DEFAULT 4,
-  movement TEXT NOT NULL DEFAULT '',
   camera_note TEXT NOT NULL DEFAULT '',
-  layout_description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'draft',
   doubao_prompt TEXT NOT NULL DEFAULT '',
   sort_order INTEGER NOT NULL DEFAULT 0,
@@ -407,8 +394,45 @@ CREATE TABLE IF NOT EXISTS drama_shots (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS drama_scenes (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  location TEXT NOT NULL DEFAULT '',
+  time_label TEXT NOT NULL DEFAULT '日',
+  prompt TEXT NOT NULL DEFAULT '',
+  episode_index INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS drama_props (
+  id SERIAL PRIMARY KEY,
+  project_id INTEGER NOT NULL REFERENCES drama_projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  type TEXT NOT NULL DEFAULT '关键道具',
+  description TEXT NOT NULL DEFAULT '',
+  prompt TEXT NOT NULL DEFAULT '',
+  episode_index INTEGER NOT NULL DEFAULT 0,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS idx_drama_characters_project ON drama_characters(project_id, sort_order, id);
-CREATE INDEX IF NOT EXISTS idx_drama_character_library_name ON drama_character_library(name);
 CREATE INDEX IF NOT EXISTS idx_drama_episodes_project ON drama_episodes(project_id, episode_no, id);
 CREATE INDEX IF NOT EXISTS idx_drama_shots_episode ON drama_shots(episode_id, shot_no, id);
 CREATE INDEX IF NOT EXISTS idx_drama_shots_project ON drama_shots(project_id, episode_id, shot_no);
+CREATE INDEX IF NOT EXISTS idx_drama_scenes_project ON drama_scenes(project_id, sort_order, id);
+CREATE INDEX IF NOT EXISTS idx_drama_props_project ON drama_props(project_id, sort_order, id);
+
+CREATE TABLE IF NOT EXISTS app_metric_events (
+  id BIGSERIAL PRIMARY KEY,
+  event_type TEXT NOT NULL,
+  username TEXT NOT NULL DEFAULT '',
+  value INTEGER NOT NULL DEFAULT 1,
+  meta JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_app_metric_events_type_time ON app_metric_events(event_type, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_app_metric_events_created ON app_metric_events(created_at DESC);

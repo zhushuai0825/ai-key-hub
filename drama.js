@@ -4,27 +4,18 @@ const state = {
   projects: [],
   projectId: null,
   bundle: null,
-  episodeId: null,
-  tab: 'shots',
-  library: [],
-  models: [],
-  selectedModel: '',
+  step: 'outline',
+  chat: [],
+  scriptChat: [],
+  activeEpisodeId: null,
+  storyboardEpisodeId: null,
+  shots: [],
+  scriptDirty: false,
+  scriptReviews: {},
+  user: null,
+  busy: false,
+  remake: { skeleton: null, concepts: [] },
 };
-
-const ROLE_LABEL = { main: '主角', supporting: '配角', minor: '次要' };
-const SHOT_STATUS = {
-  draft: '草稿',
-  ready: '可导出',
-  generated: '站外制作',
-  done: '已归档',
-};
-
-const CURSOR_POLISH_PROMPT = [
-  '请用 seedance-director（或 seedance-2.0）按我刚从 Hub 导出的分镜 MD，',
-  '逐镜润色成可直接粘贴的即梦/豆包 Seedance 提示词；',
-  '为每镜同时给出「首帧」「尾帧」提示；保留人物一致性与中文对白口型。不要改情节，只强化镜头、光、运动与角色锚点。',
-  '提醒：进 LocalMiniDrama 后须定妆齐再批量分镜图，并点「采用此图」后再烧视频。',
-].join('');
 
 function escapeHtml(value = '') {
   return String(value).replace(/[&<>'"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
@@ -34,810 +25,1119 @@ function toast(message) {
   const box = $('#toast');
   box.textContent = message;
   box.classList.add('show');
-  setTimeout(() => box.classList.remove('show'), 2800);
+  const ms = String(message || '').length > 36 ? 4800 : 2400;
+  setTimeout(() => box.classList.remove('show'), ms);
 }
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
     ...options,
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || data.message || '请求失败');
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (_) {
+    if (res.status === 504 || /504|Gateway Time-out/i.test(text)) {
+      throw new Error('识别超时（网关约 60 秒限制）。已改为分步识别，请再点一次「一键识别」');
+    }
+    throw new Error(res.status ? `请求失败（HTTP ${res.status}）` : '请求失败');
+  }
+  if (res.status === 401) {
+    location.href = `/login.html?next=${encodeURIComponent(location.pathname + location.search)}`;
+    throw new Error('请先登录');
+  }
+  if (!res.ok) {
+    const msg = typeof data.error === 'string'
+      ? data.error
+      : (data.error?.message || data.message || `请求失败（HTTP ${res.status}）`);
+    throw new Error(msg);
+  }
   return data;
 }
 
-function shortText(value = '', max = 64) {
+function shortText(value = '', max = 80) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function currentEpisode() {
-  return (state.bundle?.episodes || []).find((e) => e.id === state.episodeId) || null;
+function projectPhase(p) {
+  if (Number(p.shot_count || 0) > 0) return '已有分镜';
+  if ((p.character_count || 0) + (p.scene_count || 0) + (p.prop_count || 0) > 0) return '待分镜/导出';
+  if ((p.script_count || 0) > 0 || (p.has_script)) return '待识别';
+  if (p.has_outline) return '待写剧本';
+  return '待写大纲';
 }
 
-function parseAnchors(value) {
-  if (!value) return {};
-  if (typeof value === 'object') return value;
-  try {
-    return JSON.parse(value) || {};
-  } catch (_) {
-    return {};
+function currentOutline() {
+  return String(state.bundle?.project?.outline || state.bundle?.project?.synopsis || '').trim();
+}
+
+function hasScripts() {
+  return (state.bundle?.episodes || []).some((ep) => String(ep.script_content || '').trim().length > 40);
+}
+
+function hasAssets() {
+  return (state.bundle?.characters?.length || 0) + (state.bundle?.scenes?.length || 0) + (state.bundle?.props?.length || 0) > 0;
+}
+
+function showList() {
+  state.projectId = null;
+  state.bundle = null;
+  state.chat = [];
+  $('#viewList').hidden = false;
+  $('#viewRemake').hidden = true;
+  $('#viewWork').hidden = true;
+  $('#headerHint').textContent = '大纲 → 剧本 → 分镜 → 导出 · 知识库加持的漫剧流水线';
+  $('#remakeBtn').hidden = false;
+  $('#newProjectBtn').hidden = false;
+  renderProjects();
+}
+
+function showRemake() {
+  state.projectId = null;
+  state.bundle = null;
+  $('#viewList').hidden = true;
+  $('#viewRemake').hidden = false;
+  $('#viewWork').hidden = true;
+  $('#headerHint').textContent = '仿写爆款 · 同构换皮';
+  $('#remakeBtn').hidden = true;
+  $('#newProjectBtn').hidden = true;
+}
+
+function showWork() {
+  $('#viewList').hidden = true;
+  $('#viewRemake').hidden = true;
+  $('#viewWork').hidden = false;
+  $('#headerHint').textContent = (state.user && !state.user.is_admin)
+    ? '大纲 → 剧本 → 识别 → 分镜'
+    : '大纲 → 剧本 → 识别 → 分镜 → 导出';
+  $('#remakeBtn').hidden = true;
+  $('#newProjectBtn').hidden = true;
+}
+
+function setStep(step) {
+  if (step === 'export' && state.user && !state.user.is_admin) {
+    step = 'storyboard';
+  }
+  state.step = step;
+  document.querySelectorAll('.drama-step').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.step === step);
+  });
+  document.querySelectorAll('.drama-step-panel').forEach((panel) => {
+    const on = panel.dataset.panel === step;
+    panel.hidden = !on;
+    panel.classList.toggle('is-active', on);
+  });
+  if (step === 'outline') renderChat();
+  if (step === 'script') renderScriptStep();
+  if (step === 'assets') renderAssets();
+  if (step === 'storyboard') {
+    renderStoryboardStep().catch((err) => toast(err.message || '加载分镜失败'));
   }
 }
 
-function anchorsFromForm(form) {
-  const anchors = {};
-  const face = form.anchor_face?.value?.trim();
-  const features = form.anchor_features?.value?.trim();
-  const marks = form.anchor_marks?.value?.trim();
-  const hair = form.anchor_hair?.value?.trim();
-  if (face) anchors.face_shape = face;
-  if (features) anchors.facial_features = features;
-  if (marks) anchors.unique_marks = marks;
-  if (hair) anchors.hair_style = hair;
-  return anchors;
-}
-
-function fillAnchorFields(form, anchors = {}) {
-  const a = parseAnchors(anchors);
-  if (form.anchor_face) form.anchor_face.value = a.face_shape || '';
-  if (form.anchor_features) form.anchor_features.value = a.facial_features || '';
-  if (form.anchor_marks) form.anchor_marks.value = a.unique_marks || '';
-  if (form.anchor_hair) form.anchor_hair.value = a.hair_style || '';
-}
-
-function characterPayloadFromForm(form) {
-  return {
-    name: form.name.value,
-    role: form.role.value,
-    mbti: form.mbti.value,
-    description: form.description.value,
-    personality: form.personality.value,
-    voice_note: form.voice_note.value,
-    catchphrases: form.catchphrases.value,
-    appearance: form.appearance.value,
-    identity_anchors: anchorsFromForm(form),
-    ref_prompt: form.ref_prompt.value,
-    tags: form.tags?.value || undefined,
-  };
-}
-
-function updateSteps() {
-  const project = state.bundle?.project;
-  const chars = state.bundle?.characters?.length || 0;
-  const hasSynopsis = Boolean(project?.synopsis || currentEpisode()?.synopsis);
-  const shotCount = Number(($('#shotCountLabel')?.textContent || '0').replace(/\D/g, '')) || 0;
-  const flags = {
-    project: Boolean(project?.title),
-    characters: chars > 0,
-    shots: shotCount > 0 || hasSynopsis,
-    export: shotCount > 0,
-  };
-  document.querySelectorAll('.drama-steps button').forEach((btn) => {
-    btn.classList.toggle('is-done', Boolean(flags[btn.dataset.step]));
-    btn.classList.toggle('is-active', btn.dataset.step === (
-      !flags.project ? 'project'
-        : !flags.characters ? 'characters'
-          : !flags.export ? 'shots'
-            : 'export'
-    ));
-  });
-}
-
-function setTab(tab) {
-  state.tab = tab;
-  document.querySelectorAll('.drama-tabs button').forEach((btn) => {
-    btn.classList.toggle('is-active', btn.dataset.tab === tab);
-  });
-  document.querySelectorAll('.drama-tab-panel').forEach((panel) => {
-    const active = panel.dataset.panel === tab;
-    panel.hidden = !active;
-    panel.classList.toggle('is-active', active);
-  });
-  if (tab === 'library') loadLibrary().catch((err) => toast(err.message));
-}
-
-function renderModels() {
-  const select = $('#modelSelect');
-  if (!state.models.length) {
-    select.innerHTML = '<option value="">未配置可用模型（去 Key 管理）</option>';
-    $('#modelHint').textContent = '模型：未配置';
-    return;
-  }
-  if (!state.selectedModel || !state.models.some((m) => m.model === state.selectedModel)) {
-    state.selectedModel = state.models[0].model;
-  }
-  select.innerHTML = state.models.map((m) => (
-    `<option value="${escapeHtml(m.model)}" ${m.model === state.selectedModel ? 'selected' : ''}>${escapeHtml(m.label)}</option>`
-  )).join('');
-  $('#modelHint').textContent = `模型：${state.selectedModel}`;
+function pickInitialStep() {
+  if (Number(state.bundle?.project?.shot_count || 0) > 0) return 'storyboard';
+  if (hasAssets() && hasScripts()) return 'storyboard';
+  if (hasScripts()) return 'assets';
+  if (currentOutline().length >= 80) return 'script';
+  return 'outline';
 }
 
 function renderProjects() {
-  $('#projectCount').textContent = String(state.projects.length);
-  $('#projectList').innerHTML = state.projects.length
-    ? state.projects.map((p) => `
-      <button type="button" class="drama-project-item ${p.id === state.projectId ? 'is-active' : ''}" data-id="${p.id}">
-        <strong>${escapeHtml(p.title)}</strong>
-        <span>${escapeHtml(p.genre || '未分类')} · ${p.episode_count || 0} 集 · ${p.shot_count || 0} 镜</span>
-      </button>`).join('')
-    : '<div class="empty-state">还没有项目</div>';
-}
-
-function fillProjectForm(project) {
-  const form = $('#projectForm');
-  form.title.value = project.title || '';
-  form.genre.value = project.genre || '';
-  form.synopsis.value = project.synopsis || '';
-  form.style_guide.value = project.style_guide || '';
-  form.status.value = project.status || 'draft';
-}
-
-function renderEpisodes() {
-  const episodes = state.bundle?.episodes || [];
-  $('#episodeList').innerHTML = episodes.length
-    ? episodes.map((ep) => `
-      <article class="drama-card ${ep.id === state.episodeId ? 'is-active' : ''}" data-ep="${ep.id}">
-        <div class="drama-card-head">
-          <strong>第${ep.episode_no}集 · ${escapeHtml(ep.title || '未命名')}</strong>
-          <div class="drama-card-actions">
-            <button type="button" data-act="select" data-id="${ep.id}">分镜</button>
-            <button type="button" data-act="delete-ep" data-id="${ep.id}">删除</button>
-          </div>
+  const grid = $('#projectGrid');
+  if (!state.projects.length) {
+    grid.innerHTML = `
+      <div class="drama-empty">
+        <strong>还没有剧本项目</strong>
+        <p>新建空白项目，或粘贴参考剧「仿写爆款」</p>
+        <div class="drama-empty-actions">
+          <button type="button" class="btn" id="emptyRemakeBtn">仿写爆款</button>
+          <button type="button" class="btn btn-solid" id="emptyNewBtn">新建项目</button>
         </div>
-        <p>${escapeHtml(shortText(ep.synopsis || '（无梗概）', 120))}</p>
-      </article>`).join('')
-    : '<div class="empty-state">先新增一集</div>';
-
-  const select = $('#episodeSelect');
-  select.innerHTML = episodes.map((ep) => (
-    `<option value="${ep.id}" ${ep.id === state.episodeId ? 'selected' : ''}>第${ep.episode_no}集 · ${escapeHtml(ep.title || '未命名')}</option>`
-  )).join('') || '<option value="">暂无分集</option>';
-}
-
-function resetCharacterForm() {
-  const form = $('#characterForm');
-  form.reset();
-  form.edit_id.value = '';
-  form.role.value = 'main';
-  $('#characterSubmitBtn').textContent = '添加角色';
-  $('#resetCharacterBtn').hidden = true;
-  $('#characterFormHint').textContent = '角色卡会自动拼进每镜豆包提示词';
-}
-
-function fillCharacterForm(c) {
-  const form = $('#characterForm');
-  form.edit_id.value = String(c.id);
-  form.name.value = c.name || '';
-  form.role.value = c.role || 'main';
-  form.mbti.value = c.mbti || '';
-  form.description.value = c.description || '';
-  form.personality.value = c.personality || '';
-  form.voice_note.value = c.voice_note || '';
-  form.catchphrases.value = c.catchphrases || '';
-  form.appearance.value = c.appearance || '';
-  form.ref_prompt.value = c.ref_prompt || '';
-  fillAnchorFields(form, c.identity_anchors);
-  $('#characterSubmitBtn').textContent = '保存修改';
-  $('#resetCharacterBtn').hidden = false;
-  $('#characterFormHint').textContent = `编辑中：${c.name}`;
-  setTab('characters');
-  form.name.focus();
-}
-
-function renderCharacters() {
-  const chars = state.bundle?.characters || [];
-  $('#characterList').innerHTML = chars.length
-    ? chars.map((c) => {
-      const role = ROLE_LABEL[c.role] || c.role || '';
-      const bits = [role, c.mbti, c.description, c.appearance, c.personality, c.voice_note].filter(Boolean);
-      return `
-      <article class="drama-card ${Number($('#characterForm').edit_id.value) === c.id ? 'is-active' : ''}" data-char="${c.id}">
-        <div class="drama-card-head">
-          <strong>${escapeHtml(c.name)} ${c.mbti ? `<em>${escapeHtml(c.mbti)}</em>` : ''}${role ? `<em>${escapeHtml(role)}</em>` : ''}</strong>
-          <div class="drama-card-actions">
-            <button type="button" data-act="edit-char" data-id="${c.id}">编辑</button>
-            <button type="button" data-act="to-library" data-id="${c.id}">存入人物库</button>
-            <button type="button" data-act="delete-char" data-id="${c.id}">删除</button>
-          </div>
-        </div>
-        <p>${escapeHtml(shortText(bits.join(' / '), 160))}</p>
-        ${c.library_id ? `<p class="form-hint">已关联人物库 #${c.library_id}</p>` : ''}
-      </article>`;
-    }).join('')
-    : '<div class="empty-state">添加角色卡，从人物库引入，或从 Cursor Skill 导入</div>';
-}
-
-function resetLibraryForm() {
-  const form = $('#libraryForm');
-  form.reset();
-  form.edit_id.value = '';
-  form.role.value = 'main';
-  $('#librarySubmitBtn').textContent = '入库';
-  $('#resetLibraryBtn').hidden = true;
-  $('#libraryFormHint').textContent = '写入全局人物库';
-}
-
-function fillLibraryForm(c) {
-  const form = $('#libraryForm');
-  form.edit_id.value = String(c.id);
-  form.name.value = c.name || '';
-  form.role.value = c.role || 'main';
-  form.mbti.value = c.mbti || '';
-  form.tags.value = c.tags || '';
-  form.description.value = c.description || '';
-  form.personality.value = c.personality || '';
-  form.voice_note.value = c.voice_note || '';
-  form.catchphrases.value = c.catchphrases || '';
-  form.appearance.value = c.appearance || '';
-  form.ref_prompt.value = c.ref_prompt || '';
-  fillAnchorFields(form, c.identity_anchors);
-  $('#librarySubmitBtn').textContent = '保存库角色';
-  $('#resetLibraryBtn').hidden = false;
-  $('#libraryFormHint').textContent = `编辑库角色：${c.name}`;
-}
-
-function renderLibrary() {
-  $('#libraryList').innerHTML = state.library.length
-    ? state.library.map((c) => {
-      const role = ROLE_LABEL[c.role] || c.role || '';
-      const bits = [role, c.mbti, c.tags, c.description, c.appearance].filter(Boolean);
-      return `
-      <article class="drama-card" data-lib="${c.id}">
-        <div class="drama-card-head">
-          <strong>${escapeHtml(c.name)} ${c.mbti ? `<em>${escapeHtml(c.mbti)}</em>` : ''}</strong>
-          <div class="drama-card-actions">
-            <button type="button" data-act="import-lib" data-id="${c.id}">加入当前项目</button>
-            <button type="button" data-act="edit-lib" data-id="${c.id}">编辑</button>
-            <button type="button" data-act="delete-lib" data-id="${c.id}">删除</button>
-          </div>
-        </div>
-        <p>${escapeHtml(shortText(bits.join(' / '), 160))}</p>
-      </article>`;
-    }).join('')
-    : '<div class="empty-state">人物库为空。可在此新建，或从项目角色「存入人物库」。</div>';
-}
-
-function renderShots(shots = []) {
-  $('#shotCountLabel').textContent = `${shots.length} 镜`;
-  const ep = currentEpisode();
-  $('#episodeSynopsisForm').synopsis.value = ep?.synopsis || '';
-
-  $('#shotList').innerHTML = shots.length
-    ? shots.map((s) => `
-      <article class="drama-shot" data-shot="${s.id}">
-        <div class="drama-shot-head">
-          <strong>镜 ${s.shot_no}${s.title ? ` · ${escapeHtml(s.title)}` : ''}</strong>
-          <select data-field="shot_size">
-            ${['远景', '全景', '中景', '近景', '特写'].map((v) => `<option ${s.shot_size === v ? 'selected' : ''}>${v}</option>`).join('')}
-          </select>
-          <input data-field="duration_sec" type="number" min="1" max="30" step="0.5" value="${escapeHtml(s.duration_sec)}" title="秒" />
-          <select data-field="status">
-            ${Object.entries(SHOT_STATUS).map(([value, label]) => (
-              `<option value="${value}" ${s.status === value ? 'selected' : ''}>${label}</option>`
-            )).join('')}
-          </select>
-          <button type="button" data-act="save-shot">保存</button>
-          <button type="button" data-act="rebuild-prompt">重建提示词</button>
-          <button type="button" data-act="copy-prompt">复制提示词</button>
-          <button type="button" data-act="delete-shot">删除</button>
-        </div>
-        <div class="drama-shot-grid">
-          <input data-field="title" placeholder="镜头标题" value="${escapeHtml(s.title || '')}" />
-          <input data-field="characters" placeholder="出场角色，逗号分隔（会匹配角色卡）" value="${escapeHtml(s.characters || '')}" />
-          <input data-field="movement" placeholder="运镜：固定/推/拉/摇/跟…" value="${escapeHtml(s.movement || s.camera_note || '')}" />
-          <input data-field="camera_note" placeholder="机位补充" value="${escapeHtml(s.camera_note || '')}" />
-          <textarea data-field="action" rows="2" placeholder="动作：谁在做什么">${escapeHtml(s.action || '')}</textarea>
-          <textarea data-field="result" rows="2" placeholder="结果：这镜结束画面变成啥">${escapeHtml(s.result || '')}</textarea>
-          <textarea data-field="dialogue" rows="2" placeholder="对白">${escapeHtml(s.dialogue || '')}</textarea>
-          <textarea data-field="narration" rows="2" placeholder="旁白">${escapeHtml(s.narration || '')}</textarea>
-          <input data-field="atmosphere" placeholder="氛围" value="${escapeHtml(s.atmosphere || '')}" />
-          <input data-field="emotion" placeholder="情绪" value="${escapeHtml(s.emotion || '')}" />
-          <textarea data-field="visual_prompt" rows="2" placeholder="画面补充">${escapeHtml(s.visual_prompt || '')}</textarea>
-          <textarea data-field="layout_description" rows="2" placeholder="空间布局（可选，导出为首尾帧站位参考）">${escapeHtml(s.layout_description || '')}</textarea>
-          <textarea data-field="doubao_prompt" rows="4" placeholder="豆包提示词（手改后点「保存」会保留；要按字段重算点「重建提示词」）">${escapeHtml(s.doubao_prompt || '')}</textarea>
-        </div>
-        <p class="form-hint drama-shot-hint">保存保留手改｜重建按角色卡+字段重算｜导出含首/尾帧提示｜Local 出片前点「采用此图」｜润色用 Cursor seedance-director / seedance-2.0</p>
-      </article>`).join('')
-    : '<div class="empty-state">本集还没有分镜。写好梗概后选模型点「AI 拆分镜」，或导入 Cursor 分镜 JSON。</div>';
-  updateSteps();
-}
-
-async function loadModels() {
-  try {
-    state.models = await api('/api/drama/models');
-  } catch (_) {
-    state.models = [];
+      </div>`;
+    $('#emptyNewBtn')?.addEventListener('click', () => createProject().catch((e) => toast(e.message)));
+    $('#emptyRemakeBtn')?.addEventListener('click', () => showRemake());
+    return;
   }
-  renderModels();
+  grid.innerHTML = state.projects.map((p) => `
+    <button type="button" class="drama-card-btn" data-id="${p.id}">
+      <strong>${escapeHtml(p.title)}</strong>
+      <span class="drama-card-phase">${escapeHtml(projectPhase(p))}</span>
+      <span>${escapeHtml(p.genre || '未分类')} · ${p.episode_count || 0} 集</span>
+      <em>${escapeHtml(shortText(p.logline || p.synopsis || p.outline || '尚未开始写大纲', 72))}</em>
+    </button>`).join('');
+}
+
+function renderWorkBar() {
+  const p = state.bundle?.project;
+  if (!p) return;
+  $('#workTitle').textContent = p.title || '未命名';
+  $('#workMeta').textContent = [
+    p.genre || '未分类',
+    p.logline ? shortText(p.logline, 40) : '',
+  ].filter(Boolean).join(' · ');
+}
+
+function renderChat() {
+  const log = $('#chatLog');
+  const outline = currentOutline();
+  const live = $('#outlineLive');
+  const status = $('#outlineStatus');
+  $('#gotoScriptBtn').disabled = outline.length < 80;
+  status.textContent = outline
+    ? `${outline.length} 字${outline.length >= 80 ? ' · 可生成剧本' : ' · 继续补充'}`
+    : '还没有大纲';
+  live.textContent = outline || '对话几轮后，这里会实时显示整理好的大纲。';
+
+  if (!state.chat.length) {
+    log.innerHTML = `
+      <div class="drama-bubble assistant">
+        <p>你好，我们用对话写大纲。</p>
+        <p>直接说题材、主角、冲突就行。例如：「MBTI 咖啡店恋爱，ENFP 店长遇上 ISTJ 常客，三集。」</p>
+      </div>`;
+    return;
+  }
+  log.innerHTML = state.chat.map((item) => `
+    <div class="drama-bubble ${item.role}">
+      <p>${escapeHtml(item.content).replace(/\n/g, '<br>')}</p>
+    </div>`).join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+function renderScriptStep() {
+  const outline = currentOutline();
+  $('#outlinePreview').textContent = outline || '（还没有大纲，请先回到上一步）';
+  $('#generateScriptsBtn').disabled = outline.length < 40;
+  const episodes = (state.bundle?.episodes || [])
+    .sort((a, b) => Number(a.episode_no) - Number(b.episode_no));
+  const withScript = episodes.filter((ep) => String(ep.script_content || '').trim().length > 0);
+  $('#gotoAssetsBtn').disabled = withScript.length === 0;
+
+  const wrap = $('#scriptEditorWrap');
+  const empty = $('#scriptEmpty');
+  if (!withScript.length) {
+    wrap.hidden = true;
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  wrap.hidden = false;
+
+  if (!state.activeEpisodeId || !withScript.some((ep) => Number(ep.id) === Number(state.activeEpisodeId))) {
+    state.activeEpisodeId = withScript[0].id;
+    state.scriptChat = [{
+      role: 'assistant',
+      content: '选中这一集后，可直接改左边正文，或在右边说怎么改，例如「结尾钩子更狠」「对白更口语」。',
+    }];
+    state.scriptDirty = false;
+  }
+
+  $('#scriptEpTabs').innerHTML = withScript.map((ep) => `
+    <button type="button" class="drama-ep-tab ${Number(ep.id) === Number(state.activeEpisodeId) ? 'is-active' : ''}" data-ep-id="${ep.id}">
+      第${ep.episode_no}集
+    </button>`).join('');
+
+  const ep = withScript.find((row) => Number(row.id) === Number(state.activeEpisodeId)) || withScript[0];
+  $('#scriptEpLabel').textContent = `第${ep.episode_no}集 · ${ep.title || '未命名'}`;
+  if (!state.scriptDirty) {
+    $('#scriptTitleInput').value = ep.title || '';
+    $('#scriptBodyInput').value = ep.script_content || '';
+  }
+  const bodyLen = String($('#scriptBodyInput').value || '').length;
+  $('#scriptMeta').textContent = state.scriptDirty
+    ? `${bodyLen} 字 · 未保存`
+    : `${bodyLen} 字`;
+  renderScriptChat();
+  renderScriptQuality({ quick: true }).catch(() => null);
+}
+
+function qualityScoreClass(score) {
+  if (score >= 85) return 'is-good';
+  if (score >= 70) return 'is-ok';
+  if (score >= 55) return 'is-warn';
+  return 'is-bad';
+}
+
+function renderScriptQualityView(review) {
+  const scoreEl = $('#scriptQualityScore');
+  const summaryEl = $('#scriptQualitySummary');
+  const listEl = $('#scriptQualityIssues');
+  if (!scoreEl || !listEl) return;
+  if (!review) {
+    scoreEl.textContent = '—';
+    scoreEl.className = 'drama-quality-score';
+    if (summaryEl) summaryEl.textContent = '保存或生成后会做规则扫描；点「AI 质检」得详细报告。';
+    listEl.innerHTML = '';
+    return;
+  }
+  scoreEl.textContent = `${review.score} 分 · ${review.grade || ''}`;
+  scoreEl.className = `drama-quality-score ${qualityScoreClass(review.score)}`;
+  if (summaryEl) {
+    summaryEl.textContent = review.summary
+      || `约 ${review.heuristics?.word_count || review.word_count || '—'} 字 · 对白占比约 ${review.heuristics?.dialogue_ratio ?? review.dialogue_ratio ?? '—'}%`;
+  }
+  const issues = review.issues || [];
+  if (!issues.length) {
+    listEl.innerHTML = '<li class="drama-quality-item is-good">未发现明显问题</li>';
+    return;
+  }
+  listEl.innerHTML = issues.map((item) => `
+    <li class="drama-quality-item is-${item.severity || 'warn'}">
+      <strong>${escapeHtml(item.message)}</strong>
+      ${item.fix_hint ? `<span>${escapeHtml(item.fix_hint)}</span>` : ''}
+    </li>`).join('');
+}
+
+async function renderScriptQuality({ quick = false } = {}) {
+  const ep = currentScriptEpisode();
+  if (!ep) return;
+  const body = String($('#scriptBodyInput')?.value || ep.script_content || '').trim();
+  if (!body) {
+    renderScriptQualityView(null);
+    return;
+  }
+  if (!quick && state.scriptReviews[ep.id]) {
+    renderScriptQualityView(state.scriptReviews[ep.id]);
+    return;
+  }
+  try {
+    const review = await api(`/api/drama/episodes/${ep.id}/script-review`, {
+      method: 'POST',
+      body: JSON.stringify({
+        script_content: body,
+        use_ai: false,
+      }),
+    });
+    state.scriptReviews[ep.id] = review;
+    renderScriptQualityView(review);
+  } catch (_) {
+    renderScriptQualityView(state.scriptReviews[ep.id] || null);
+  }
+}
+
+async function runScriptReview() {
+  if (state.busy) return;
+  const ep = currentScriptEpisode();
+  if (!ep) return toast('请先选择一集');
+  const body = String($('#scriptBodyInput')?.value || '').trim();
+  if (body.length < 80) return toast('正文太短，无法质检');
+  state.busy = true;
+  $('#scriptReviewBtn').disabled = true;
+  try {
+    const review = await api(`/api/drama/episodes/${ep.id}/script-review`, {
+      method: 'POST',
+      body: JSON.stringify({
+        script_content: body,
+        title: String($('#scriptTitleInput')?.value || '').trim(),
+        use_ai: true,
+      }),
+    });
+    state.scriptReviews[ep.id] = review;
+    renderScriptQualityView(review);
+    const hits = Number(review.knowledge_hits) || 0;
+    toast(hits > 0 ? `质检完成（参考知识库 ${hits} 条）` : '质检完成');
+  } catch (err) {
+    toast(err.message || '质检失败');
+  } finally {
+    state.busy = false;
+    $('#scriptReviewBtn').disabled = false;
+  }
+}
+
+async function runScriptPolish() {
+  if (state.busy) return;
+  const ep = currentScriptEpisode();
+  if (!ep) return toast('请先选择一集');
+  const body = String($('#scriptBodyInput')?.value || '').trim();
+  if (body.length < 80) return toast('正文太短，无法润色');
+  const review = state.scriptReviews[ep.id];
+  const warn = review?.score != null && review.score < 55
+    ? window.confirm(`当前得分 ${review.score}，润色会改写全文。继续？`)
+    : window.confirm('将按质检结果润色本集正文并自动保存，继续？');
+  if (!warn) return;
+  state.busy = true;
+  $('#scriptPolishBtn').disabled = true;
+  $('#scriptReviewBtn').disabled = true;
+  try {
+    const result = await api(`/api/drama/episodes/${ep.id}/script-polish`, {
+      method: 'POST',
+      body: JSON.stringify({
+        script_content: body,
+        title: String($('#scriptTitleInput')?.value || '').trim(),
+        review: review?.issues?.length ? review : undefined,
+        auto_review: true,
+      }),
+    });
+    if (result.episode) {
+      const list = state.bundle?.episodes || [];
+      const idx = list.findIndex((row) => Number(row.id) === Number(result.episode.id));
+      if (idx >= 0) list[idx] = { ...list[idx], ...result.episode };
+      state.scriptDirty = false;
+      $('#scriptTitleInput').value = result.episode.title || '';
+      $('#scriptBodyInput').value = result.episode.script_content || '';
+    }
+    state.scriptReviews[ep.id] = result.review_after || result.review_before || review;
+    renderScriptQualityView(state.scriptReviews[ep.id]);
+    renderScriptStep();
+    const before = result.review_before?.score;
+    const after = result.review_after?.score;
+    const delta = before != null && after != null ? ` ${before}→${after}` : '';
+    toast(`润色完成${delta}：${result.reply || '已保存'}`);
+  } catch (err) {
+    toast(err.message || '润色失败');
+  } finally {
+    state.busy = false;
+    $('#scriptPolishBtn').disabled = false;
+    $('#scriptReviewBtn').disabled = false;
+  }
+}
+
+function renderScriptChat() {
+  const log = $('#scriptChatLog');
+  if (!log) return;
+  if (!state.scriptChat.length) {
+    log.innerHTML = `
+      <div class="drama-bubble assistant">
+        <p>告诉我怎么改这一集，例如：「把开场冲突提前」「压缩中段废话」「结尾换成可见事件钩」。</p>
+      </div>`;
+    return;
+  }
+  log.innerHTML = state.scriptChat.map((item) => `
+    <div class="drama-bubble ${item.role}">
+      <p>${escapeHtml(item.content).replace(/\n/g, '<br>')}</p>
+    </div>`).join('');
+  log.scrollTop = log.scrollHeight;
+}
+
+function currentScriptEpisode() {
+  return (state.bundle?.episodes || []).find((ep) => Number(ep.id) === Number(state.activeEpisodeId)) || null;
+}
+
+async function selectScriptEpisode(id, { force = false } = {}) {
+  if (!force && Number(id) === Number(state.activeEpisodeId)) return;
+  if (state.scriptDirty) {
+    const ok = window.confirm('本集有未保存修改，先保存再切换？\n确定=保存，取消=丢弃修改');
+    if (ok) {
+      await saveCurrentScript();
+    } else {
+      state.scriptDirty = false;
+    }
+  }
+  state.activeEpisodeId = Number(id);
+  state.scriptChat = [{
+    role: 'assistant',
+    content: '已切换到这一集。直接改左边，或在右边下指令让我改稿。',
+  }];
+  state.scriptDirty = false;
+  renderScriptStep();
+}
+
+async function saveCurrentScript() {
+  const ep = currentScriptEpisode();
+  if (!ep) return toast('请先选择一集');
+  const title = String($('#scriptTitleInput')?.value || '').trim();
+  const script_content = String($('#scriptBodyInput')?.value || '');
+  const saved = await api(`/api/drama/episodes/${ep.id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title, script_content }),
+  });
+  const list = state.bundle?.episodes || [];
+  const idx = list.findIndex((row) => Number(row.id) === Number(saved.id));
+  if (idx >= 0) list[idx] = { ...list[idx], ...saved };
+  state.scriptDirty = false;
+  renderScriptStep();
+  toast('本集已保存');
+  return saved;
+}
+
+function renderAssets() {
+  const chars = state.bundle?.characters || [];
+  const scenes = state.bundle?.scenes || [];
+  const props = state.bundle?.props || [];
+  $('#charCount').textContent = String(chars.length);
+  $('#sceneCount').textContent = String(scenes.length);
+  $('#propCount').textContent = String(props.length);
+  $('#characterList').innerHTML = chars.length
+    ? chars.map((c) => `<article class="drama-mini"><strong>${escapeHtml(c.name)}</strong><p>${escapeHtml(shortText(c.appearance || c.personality || '', 90))}</p></article>`).join('')
+    : '<p class="form-hint">暂无</p>';
+  $('#sceneList').innerHTML = scenes.length
+    ? scenes.map((s) => `<article class="drama-mini"><strong>${escapeHtml(s.location)} · ${escapeHtml(s.time_label || '日')}</strong><p>${escapeHtml(shortText(s.prompt || '', 90))}</p></article>`).join('')
+    : '<p class="form-hint">暂无</p>';
+  $('#propList').innerHTML = props.length
+    ? props.map((p) => `<article class="drama-mini"><strong>${escapeHtml(p.name)}</strong><p>${escapeHtml(shortText(p.description || p.prompt || '', 90))}</p></article>`).join('')
+    : '<p class="form-hint">暂无</p>';
+}
+
+function scriptEpisodes() {
+  return (state.bundle?.episodes || [])
+    .filter((ep) => String(ep.script_content || '').trim().length > 40)
+    .sort((a, b) => Number(a.episode_no) - Number(b.episode_no));
+}
+
+async function renderStoryboardStep() {
+  const eps = scriptEpisodes();
+  const tabs = $('#storyboardEpTabs');
+  const list = $('#shotList');
+  const meta = $('#storyboardMeta');
+  if (!eps.length) {
+    tabs.innerHTML = '';
+    list.innerHTML = '<div class="drama-empty-inline">请先生成剧本，再来拆分镜</div>';
+    meta.textContent = '暂无可用分集';
+    $('#generateStoryboardBtn').disabled = true;
+    return;
+  }
+  $('#generateStoryboardBtn').disabled = false;
+  if (!state.storyboardEpisodeId || !eps.some((ep) => Number(ep.id) === Number(state.storyboardEpisodeId))) {
+    state.storyboardEpisodeId = eps[0].id;
+  }
+  tabs.innerHTML = eps.map((ep) => `
+    <button type="button" class="drama-ep-tab ${Number(ep.id) === Number(state.storyboardEpisodeId) ? 'is-active' : ''}" data-sb-ep-id="${ep.id}">
+      第${ep.episode_no}集
+    </button>`).join('');
+  const ep = eps.find((row) => Number(row.id) === Number(state.storyboardEpisodeId)) || eps[0];
+  try {
+    state.shots = await api(`/api/drama/episodes/${ep.id}/shots`);
+  } catch (_) {
+    state.shots = [];
+  }
+  meta.textContent = `第${ep.episode_no}集 · ${ep.title || '未命名'} · ${state.shots.length} 镜 · 人物 ${(state.bundle?.characters || []).length} · 场景 ${(state.bundle?.scenes || []).length}`;
+  if (!(state.bundle?.characters || []).length) {
+    meta.textContent += state.shots.length
+      ? ' · 有分镜但无人物卡，重新生成会先自动识别'
+      : ' · 无人物卡时会先自动识别本集角色';
+  }
+  if (!state.shots.length) {
+    list.innerHTML = '<div class="drama-empty-inline">点「生成本集分镜」：会参考知识库分镜规则；若无人物卡会先自动识别</div>';
+    return;
+  }
+  list.innerHTML = state.shots.map((s) => `
+    <article class="drama-shot-card" data-shot-id="${s.id}">
+      <header>
+        <strong>#${s.shot_no} · ${escapeHtml(s.shot_size || '中景')} · ${escapeHtml(s.camera_note || '固定')} · ${s.duration_sec || 4}s</strong>
+        <button type="button" class="btn shot-copy-btn" data-shot-id="${s.id}">复制提示词</button>
+      </header>
+      <p class="drama-shot-visual">${escapeHtml(s.visual_prompt || '')}</p>
+      ${s.dialogue ? `<p class="drama-shot-dialogue">对白：${escapeHtml(s.dialogue)}</p>` : ''}
+      ${s.characters ? `<p class="form-hint">角色：${escapeHtml(s.characters)}</p>` : ''}
+      <label class="form-hint">Seedance / 即梦提示词</label>
+      <textarea class="shot-prompt-input" data-shot-id="${s.id}" rows="3">${escapeHtml(s.doubao_prompt || '')}</textarea>
+      <div class="drama-shot-actions">
+        <button type="button" class="btn shot-save-btn" data-shot-id="${s.id}">保存本镜</button>
+      </div>
+    </article>`).join('');
 }
 
 async function loadProjects() {
-  state.projects = await api('/api/drama/projects');
+  const rows = await api('/api/drama/projects');
+  state.projects = rows.map((p) => ({
+    ...p,
+    has_outline: Boolean(String(p.outline || p.synopsis || '').trim()),
+    has_script: Number(p.script_count || 0) > 0,
+  }));
   renderProjects();
 }
 
-async function loadLibrary() {
-  state.library = await api('/api/drama/library');
-  renderLibrary();
-}
-
-async function loadProject(id) {
-  state.projectId = Number(id);
+async function loadProject(id, { preferStep } = {}) {
+  const nextId = Number(id);
+  if (state.scriptDirty && state.projectId && nextId !== Number(state.projectId)) {
+    const ok = window.confirm('当前分集有未保存修改，先保存再切换项目？\n确定=保存，取消=丢弃修改');
+    if (ok) {
+      await saveCurrentScript();
+    } else {
+      state.scriptDirty = false;
+    }
+  }
+  const keepEpisodeId = state.activeEpisodeId;
+  const keepScriptChat = state.scriptChat;
+  const keepDirty = state.scriptDirty;
+  const dirtyTitle = keepDirty ? String($('#scriptTitleInput')?.value || '') : '';
+  const dirtyBody = keepDirty ? String($('#scriptBodyInput')?.value || '') : '';
+  state.projectId = nextId;
   state.bundle = await api(`/api/drama/projects/${id}`);
-  $('#emptyProject').hidden = true;
-  $('#projectWorkspace').hidden = false;
-  fillProjectForm(state.bundle.project);
-  if (!state.episodeId || !(state.bundle.episodes || []).some((e) => e.id === state.episodeId)) {
-    state.episodeId = state.bundle.episodes?.[0]?.id || null;
+  state.chat = [];
+  showWork();
+  renderWorkBar();
+  const outline = currentOutline();
+  if (outline) {
+    state.chat = [{
+      role: 'assistant',
+      content: `已有大纲（约 ${outline.length} 字）。继续补充设定，或点下方进入「生成剧本」。`,
+    }];
   }
-  resetCharacterForm();
-  renderEpisodes();
-  renderCharacters();
-  renderProjects();
-  await loadShots();
-  updateSteps();
-}
-
-async function loadShots() {
-  if (!state.episodeId) {
-    renderShots([]);
-    return;
+  const nextStep = preferStep || pickInitialStep();
+  if (nextStep === 'script' && keepEpisodeId) {
+    const still = (state.bundle?.episodes || []).some((ep) => Number(ep.id) === Number(keepEpisodeId));
+    state.activeEpisodeId = still ? keepEpisodeId : null;
+    state.scriptChat = still && keepScriptChat?.length ? keepScriptChat : state.scriptChat;
+    state.scriptDirty = still && keepDirty;
+  } else if (nextStep !== 'script') {
+    state.activeEpisodeId = null;
+    state.scriptChat = [];
+    state.scriptDirty = false;
   }
-  const shots = await api(`/api/drama/episodes/${state.episodeId}/shots`);
-  renderShots(shots);
-}
-
-function collectShotPayload(article, { rebuild = false } = {}) {
-  const payload = { rebuild_prompt: rebuild };
-  article.querySelectorAll('[data-field]').forEach((el) => {
-    payload[el.dataset.field] = el.value;
-  });
-  if (payload.movement && !payload.camera_note) payload.camera_note = payload.movement;
-  if (rebuild) delete payload.doubao_prompt;
-  else payload.rebuild_prompt = false;
-  return payload;
+  setStep(nextStep);
+  if (state.scriptDirty) {
+    $('#scriptTitleInput').value = dirtyTitle;
+    $('#scriptBodyInput').value = dirtyBody;
+    renderScriptStep();
+  }
+  await loadProjects();
 }
 
 async function createProject() {
-  const title = window.prompt('项目标题', '新的漫剧项目');
-  if (!title) return;
-  const project = await api('/api/drama/projects', {
-    method: 'POST',
-    body: JSON.stringify({ title: title.trim(), genre: 'MBTI 短剧' }),
-  });
-  await loadProjects();
-  await loadProject(project.id);
-  setTab('shots');
-  toast('项目已创建');
+  if (state.busy) return;
+  state.busy = true;
+  try {
+    const stamp = new Date().toLocaleString('zh-CN', {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+      timeZone: 'Asia/Shanghai',
+    });
+    const project = await api('/api/drama/projects', {
+      method: 'POST',
+      body: JSON.stringify({ title: `新的漫剧 ${stamp}` }),
+    });
+    await loadProjects();
+    await loadProject(project.id, { preferStep: 'outline' });
+    toast('已创建，直接说故事想法吧');
+    $('#chatInput')?.focus();
+  } finally {
+    state.busy = false;
+  }
 }
 
-async function copyText(text) {
-  await navigator.clipboard.writeText(text);
+function formatRemakeSkeleton(skeleton) {
+  if (!skeleton) return '先粘贴参考内容并点击「拆解」。';
+  const lines = [];
+  if (skeleton.story_promise) lines.push(`故事承诺：${skeleton.story_promise}`);
+  if (skeleton.main_conflict) lines.push(`主冲突：${skeleton.main_conflict}`);
+  if (skeleton.emotional_engine) lines.push(`情绪引擎：${skeleton.emotional_engine}`);
+  if (skeleton.must_replace?.length) {
+    lines.push(`必须换掉：${skeleton.must_replace.join('；')}`);
+  }
+  if (skeleton.episode_functions?.length) {
+    lines.push('分集职责：');
+    skeleton.episode_functions.slice(0, 12).forEach((row) => {
+      lines.push(`  第${row.episode}集 · ${row.function || '—'}${row.hook_function ? ` → 钩：${row.hook_function}` : ''}`);
+    });
+  }
+  return lines.join('\n') || '（骨架为空，请重试拆解）';
 }
 
-$('#newProjectBtn').addEventListener('click', () => {
-  createProject().catch((err) => toast(err.message));
+function renderRemakeConcepts() {
+  const box = $('#remakeConcepts');
+  const concepts = state.remake.concepts || [];
+  if (!concepts.length) {
+    box.innerHTML = '<p class="form-hint">拆解后会出现 3 个换皮方向，点「用这个开项目」即可。</p>';
+    return;
+  }
+  box.innerHTML = concepts.map((c, index) => `
+    <article class="drama-remake-card" data-concept-index="${index}">
+      <header>
+        <strong>${escapeHtml(c.title || `方向 ${index + 1}`)}</strong>
+        <span>${escapeHtml([c.genre, c.suggested_episode_count ? `${c.suggested_episode_count}集` : ''].filter(Boolean).join(' · ') || '换皮方向')}</span>
+      </header>
+      <p class="drama-remake-logline">${escapeHtml(c.logline || shortText(c.synopsis, 80))}</p>
+      <p class="drama-remake-note">${escapeHtml(c.remake_note || shortText(c.synopsis, 120))}</p>
+      <button type="button" class="btn btn-solid remake-apply-btn" data-concept-index="${index}">用这个开项目</button>
+    </article>`).join('');
+}
+
+async function analyzeRemake() {
+  if (state.busy) return;
+  const source = String($('#remakeSource')?.value || '').trim();
+  if (source.length < 80) {
+    toast('请粘贴至少约 80 字的参考剧本或详细梗概');
+    return;
+  }
+  state.busy = true;
+  const btn = $('#remakeAnalyzeBtn');
+  const prev = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '拆解中…';
+  $('#remakeSkeletonMeta').textContent = '模型分析中，约需几十秒';
+  try {
+    const data = await api('/api/drama/remake/analyze', {
+      method: 'POST',
+      body: JSON.stringify({
+        source_text: source,
+        hint: String($('#remakeHint')?.value || '').trim(),
+      }),
+    });
+    state.remake.skeleton = data.skeleton || null;
+    state.remake.concepts = Array.isArray(data.concepts) ? data.concepts : [];
+    $('#remakeSkeleton').textContent = formatRemakeSkeleton(state.remake.skeleton);
+    $('#remakeSkeletonMeta').textContent = `已出 ${state.remake.concepts.length} 个方向`;
+    renderRemakeConcepts();
+    toast('拆解完成，选一个方向开项目');
+  } catch (err) {
+    toast(err.message || '拆解失败');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = prev;
+    state.busy = false;
+  }
+}
+
+async function applyRemakeConcept(index) {
+  if (state.busy) return;
+  const concept = state.remake.concepts[Number(index)];
+  if (!concept) return toast('请先拆解并选择方向');
+  state.busy = true;
+  try {
+    const data = await api('/api/drama/remake/apply', {
+      method: 'POST',
+      body: JSON.stringify({
+        concept,
+        skeleton: state.remake.skeleton,
+      }),
+    });
+    const project = data.project;
+    toast(`已创建「${project.title}」，可继续对话细化大纲`);
+    await loadProjects();
+    await loadProject(project.id, { preferStep: 'outline' });
+    $('#chatInput')?.focus();
+  } catch (err) {
+    toast(err.message || '创建失败');
+  } finally {
+    state.busy = false;
+  }
+}
+
+function exportLmdZip() {
+  if (!state.projectId) return toast('请先打开项目');
+  if (state.user && !state.user.is_admin) return toast('普通用户不可下载压缩包');
+  window.open(`/api/drama/projects/${state.projectId}/export-lmd`, '_blank');
+}
+
+function exportProjectMd(format) {
+  if (!state.projectId) return toast('请先打开项目');
+  window.open(`/api/drama/projects/${state.projectId}/export?format=${format}`, '_blank');
+}
+
+$('#newProjectBtn').addEventListener('click', () => createProject().catch((e) => toast(e.message)));
+$('#remakeBtn').addEventListener('click', () => showRemake());
+$('#remakeBackBtn').addEventListener('click', () => showList());
+$('#remakeAnalyzeBtn').addEventListener('click', () => analyzeRemake());
+$('#remakeConcepts').addEventListener('click', (e) => {
+  const btn = e.target.closest('.remake-apply-btn');
+  if (!btn) return;
+  applyRemakeConcept(btn.dataset.conceptIndex).catch((err) => toast(err.message));
 });
+$('#backListBtn').addEventListener('click', () => showList());
+$('#exportLmdBtn').addEventListener('click', exportLmdZip);
+$('#exportLmdBtn2').addEventListener('click', exportLmdZip);
+$('#exportScriptsMdBtn')?.addEventListener('click', () => exportProjectMd('scripts'));
+$('#exportImagePromptsBtn')?.addEventListener('click', () => exportProjectMd('images'));
+$('#exportAllStoryboardsBtn')?.addEventListener('click', () => exportProjectMd('storyboards'));
 
-$('#projectList').addEventListener('click', (e) => {
+$('#projectGrid').addEventListener('click', (e) => {
   const btn = e.target.closest('[data-id]');
   if (!btn) return;
   loadProject(btn.dataset.id).catch((err) => toast(err.message));
 });
 
-document.querySelectorAll('.drama-tabs button').forEach((btn) => {
-  btn.addEventListener('click', () => setTab(btn.dataset.tab));
-});
-
-document.querySelectorAll('.drama-steps button').forEach((btn) => {
-  btn.addEventListener('click', () => {
-    const step = btn.dataset.step;
-    if (step === 'project') {
-      $('#projectForm').synopsis?.focus();
-      return;
-    }
-    if (step === 'characters') return setTab('characters');
-    if (step === 'shots' || step === 'export') return setTab('shots');
-  });
-});
-
-$('#modelSelect').addEventListener('change', (e) => {
-  state.selectedModel = e.target.value;
-  $('#modelHint').textContent = state.selectedModel ? `模型：${state.selectedModel}` : '模型：未配置';
-});
-
-$('#projectForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (!state.projectId) return;
-  const form = e.currentTarget;
-  try {
-    await api(`/api/drama/projects/${state.projectId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({
-        title: form.title.value,
-        genre: form.genre.value,
-        synopsis: form.synopsis.value,
-        style_guide: form.style_guide.value,
-        status: form.status.value,
-      }),
-    });
-    await loadProjects();
-    await loadProject(state.projectId);
-    toast('项目已保存');
-  } catch (err) {
-    toast(err.message);
-  }
+document.querySelectorAll('.drama-step').forEach((btn) => {
+  btn.addEventListener('click', () => setStep(btn.dataset.step));
 });
 
 $('#deleteProjectBtn').addEventListener('click', async () => {
-  if (!state.projectId || !window.confirm('删除项目及全部角色/分集/分镜？')) return;
+  if (!state.projectId || !window.confirm('删除这个项目？')) return;
   try {
     await api(`/api/drama/projects/${state.projectId}`, { method: 'DELETE' });
-    state.projectId = null;
-    state.bundle = null;
-    state.episodeId = null;
-    $('#projectWorkspace').hidden = true;
-    $('#emptyProject').hidden = false;
-    await loadProjects();
     toast('已删除');
+    await loadProjects();
+    showList();
   } catch (err) {
     toast(err.message);
   }
 });
 
-$('#episodeForm').addEventListener('submit', async (e) => {
+$('#chatForm').addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (!state.projectId) return;
-  const form = e.currentTarget;
+  if (!state.projectId || state.busy) return;
+  const input = $('#chatInput');
+  const message = input.value.trim();
+  if (!message) return;
+  state.chat.push({ role: 'user', content: message });
+  input.value = '';
+  renderChat();
+  state.busy = true;
+  $('#chatSendBtn').disabled = true;
   try {
-    const ep = await api(`/api/drama/projects/${state.projectId}/episodes`, {
+    const history = state.chat.slice(0, -1).map(({ role, content }) => ({ role, content }));
+    const result = await api(`/api/drama/projects/${state.projectId}/outline-chat`, {
+      method: 'POST',
+      body: JSON.stringify({ message, history }),
+    });
+    state.bundle.project = result.project;
+    state.chat.push({ role: 'assistant', content: result.reply || '已更新大纲。' });
+    renderWorkBar();
+    renderChat();
+    if (result.suggested_episode_count) $('#episodeCountInput').value = result.suggested_episode_count;
+    if (result.knowledge_hits > 0) toast(`大纲已参考知识库 ${result.knowledge_hits} 条`);
+  } catch (err) {
+    state.chat.push({ role: 'assistant', content: `出错了：${err.message}` });
+    renderChat();
+  } finally {
+    state.busy = false;
+    $('#chatSendBtn').disabled = false;
+    input.focus();
+  }
+});
+
+$('#gotoScriptBtn').addEventListener('click', () => setStep('script'));
+$('#backOutlineBtn').addEventListener('click', () => setStep('outline'));
+$('#gotoAssetsBtn').addEventListener('click', () => setStep('assets'));
+$('#gotoStoryboardBtn')?.addEventListener('click', () => setStep('storyboard'));
+$('#gotoExportFromSbBtn')?.addEventListener('click', () => setStep('export'));
+$('#gotoExportBtn')?.addEventListener('click', () => setStep('export'));
+
+$('#storyboardEpTabs')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-sb-ep-id]');
+  if (!btn) return;
+  state.storyboardEpisodeId = Number(btn.dataset.sbEpId);
+  renderStoryboardStep().catch((err) => toast(err.message));
+});
+
+$('#generateStoryboardBtn')?.addEventListener('click', async () => {
+  if (state.busy) return;
+  const epId = state.storyboardEpisodeId;
+  if (!epId) return toast('请先选择一集');
+  const btn = $('#generateStoryboardBtn');
+  state.busy = true;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  const needExtract = !(state.bundle?.characters || []).length;
+  btn.textContent = needExtract ? '识别人物并拆分镜…' : '拆分镜中…';
+  try {
+    const result = await api(`/api/drama/episodes/${epId}/split`, {
+      method: 'POST',
+      body: JSON.stringify({ replace: true }),
+    });
+    state.shots = result.shots || [];
+    if (result.characters) {
+      if (!state.bundle) state.bundle = {};
+      state.bundle.characters = result.characters;
+    }
+    if (result.scenes) {
+      if (!state.bundle) state.bundle = {};
+      state.bundle.scenes = result.scenes;
+    }
+    await renderStoryboardStep();
+    const parts = [`已生成 ${result.count || state.shots.length} 镜`];
+    if (result.knowledge_hits > 0) parts.push(`知识库 ${result.knowledge_hits} 条`);
+    if (result.auto_extracted) parts.push('已自动识别人物');
+    toast(parts.join(' · '));
+  } catch (err) {
+    toast(err.message || '拆分镜失败');
+  } finally {
+    state.busy = false;
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
+});
+
+$('#exportShotsMdBtn')?.addEventListener('click', () => {
+  const epId = state.storyboardEpisodeId;
+  if (!epId) return toast('请先选择一集');
+  window.open(`/api/drama/episodes/${epId}/export?format=md`, '_blank');
+});
+
+$('#shotList')?.addEventListener('click', async (e) => {
+  const copyBtn = e.target.closest('.shot-copy-btn');
+  if (copyBtn) {
+    const id = copyBtn.dataset.shotId;
+    const ta = $(`.shot-prompt-input[data-shot-id="${id}"]`);
+    const text = ta?.value || '';
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('已复制提示词');
+    } catch (_) {
+      ta?.select();
+      toast('请手动复制选中文本');
+    }
+    return;
+  }
+  const saveBtn = e.target.closest('.shot-save-btn');
+  if (!saveBtn) return;
+  const id = saveBtn.dataset.shotId;
+  const ta = $(`.shot-prompt-input[data-shot-id="${id}"]`);
+  try {
+    const saved = await api(`/api/drama/shots/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ doubao_prompt: ta?.value || '' }),
+    });
+    const idx = state.shots.findIndex((s) => Number(s.id) === Number(id));
+    if (idx >= 0) state.shots[idx] = { ...state.shots[idx], ...saved };
+    toast('本镜已保存');
+  } catch (err) {
+    toast(err.message || '保存失败');
+  }
+});
+
+$('#scriptEpTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-ep-id]');
+  if (!btn) return;
+  selectScriptEpisode(btn.dataset.epId).catch((err) => toast(err.message));
+});
+
+$('#scriptTitleInput').addEventListener('input', () => {
+  state.scriptDirty = true;
+  $('#scriptMeta').textContent = `${String($('#scriptBodyInput').value || '').length} 字 · 未保存`;
+});
+$('#scriptBodyInput').addEventListener('input', () => {
+  state.scriptDirty = true;
+  $('#scriptMeta').textContent = `${String($('#scriptBodyInput').value || '').length} 字 · 未保存`;
+  clearTimeout(window.__scriptQualityTimer);
+  window.__scriptQualityTimer = setTimeout(() => {
+    renderScriptQuality({ quick: true }).catch(() => null);
+  }, 600);
+});
+$('#scriptReviewBtn')?.addEventListener('click', () => {
+  runScriptReview().catch((err) => toast(err.message));
+});
+$('#scriptPolishBtn')?.addEventListener('click', () => {
+  runScriptPolish().catch((err) => toast(err.message));
+});
+$('#saveScriptBtn').addEventListener('click', () => {
+  saveCurrentScript().catch((err) => toast(err.message));
+});
+
+$('#scriptChatForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (state.busy) return;
+  const ep = currentScriptEpisode();
+  if (!ep) return toast('请先生成并选择一集');
+  const input = $('#scriptChatInput');
+  const message = input.value.trim();
+  if (!message) return;
+  state.scriptChat.push({ role: 'user', content: message });
+  input.value = '';
+  renderScriptChat();
+  state.busy = true;
+  $('#scriptChatSendBtn').disabled = true;
+  try {
+    const history = state.scriptChat.slice(0, -1).map(({ role, content }) => ({ role, content }));
+    const result = await api(`/api/drama/episodes/${ep.id}/script-chat`, {
       method: 'POST',
       body: JSON.stringify({
-        title: form.title.value || undefined,
-        synopsis: form.synopsis.value,
+        message,
+        history,
+        script_content: String($('#scriptBodyInput').value || ''),
+        title: String($('#scriptTitleInput').value || ''),
       }),
     });
-    form.reset();
-    state.episodeId = ep.id;
-    await loadProject(state.projectId);
-    setTab('shots');
-    toast('分集已添加');
+    state.scriptChat.push({ role: 'assistant', content: result.reply || '已处理。' });
+    if (result.episode) {
+      const list = state.bundle?.episodes || [];
+      const idx = list.findIndex((row) => Number(row.id) === Number(result.episode.id));
+      if (idx >= 0) list[idx] = { ...list[idx], ...result.episode };
+      state.scriptDirty = false;
+      $('#scriptTitleInput').value = result.episode.title || '';
+      $('#scriptBodyInput').value = result.episode.script_content || '';
+    }
+    renderScriptStep();
+    if (result.applied) {
+      toast(result.knowledge_hits > 0
+        ? `已改好并保存（参考知识库 ${result.knowledge_hits} 条）`
+        : '已按指令改好并保存');
+    }
   } catch (err) {
-    toast(err.message);
+    state.scriptChat.push({ role: 'assistant', content: `出错了：${err.message}` });
+    renderScriptChat();
+  } finally {
+    state.busy = false;
+    $('#scriptChatSendBtn').disabled = false;
+    input.focus();
   }
 });
 
-$('#episodeList').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-act]');
-  if (!btn) return;
-  const id = Number(btn.dataset.id);
+$('#generateScriptsBtn').addEventListener('click', async () => {
+  if (!state.projectId || state.busy) return;
+  const btn = $('#generateScriptsBtn');
+  state.busy = true;
+  btn.disabled = true;
+  const total = Math.min(12, Math.max(1, Number($('#episodeCountInput').value) || 3));
+  const batchSize = 2; // 每批 2 集，控制单次生成耗时
+  let generated = 0;
+  let knowledgeHits = 0;
+  const allQuality = [];
   try {
-    if (btn.dataset.act === 'select') {
-      state.episodeId = id;
-      setTab('shots');
-      renderEpisodes();
-      await loadShots();
-      return;
-    }
-    if (btn.dataset.act === 'delete-ep') {
-      if (!window.confirm('删除这一集及分镜？')) return;
-      await api(`/api/drama/episodes/${id}`, { method: 'DELETE' });
-      if (state.episodeId === id) state.episodeId = null;
-      await loadProject(state.projectId);
-      toast('分集已删除');
-    }
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#characterForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (!state.projectId) return;
-  const form = e.currentTarget;
-  const editId = form.edit_id.value;
-  const payload = characterPayloadFromForm(form);
-  try {
-    if (editId) {
-      await api(`/api/drama/characters/${editId}`, { method: 'PATCH', body: JSON.stringify(payload) });
-      toast('角色已更新');
-    } else {
-      await api(`/api/drama/projects/${state.projectId}/characters`, { method: 'POST', body: JSON.stringify(payload) });
-      toast('角色已添加');
-    }
-    resetCharacterForm();
-    await loadProject(state.projectId);
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#resetCharacterBtn').addEventListener('click', () => {
-  resetCharacterForm();
-  renderCharacters();
-});
-
-$('#characterImportBtn').addEventListener('click', async () => {
-  if (!state.projectId) return toast('请先选择项目');
-  const text = $('#characterImportText').value.trim();
-  if (!text) return toast('请粘贴角色卡文本');
-  try {
-    const result = await api(`/api/drama/projects/${state.projectId}/characters/import`, {
-      method: 'POST',
-      body: JSON.stringify({ text }),
-    });
-    $('#characterImportText').value = '';
-    await loadProject(state.projectId);
-    toast(`已导入 ${result.count} 个角色`);
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#characterList').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-act]');
-  if (!btn) return;
-  const id = Number(btn.dataset.id);
-  const char = (state.bundle?.characters || []).find((c) => c.id === id);
-  try {
-    if (btn.dataset.act === 'edit-char') {
-      if (!char) return;
-      fillCharacterForm(char);
-      renderCharacters();
-      return;
-    }
-    if (btn.dataset.act === 'to-library') {
-      if (!char) return;
-      const created = await api('/api/drama/library', {
+    for (let from = 1; from <= total; from += batchSize) {
+      const batch = Math.min(batchSize, total - from + 1);
+      const end = from + batch - 1;
+      btn.textContent = batch === 1
+        ? `生成第${from}集… ${from}/${total}`
+        : `生成第${from}-${end}集… ${end}/${total}`;
+      const result = await api(`/api/drama/projects/${state.projectId}/generate-scripts`, {
         method: 'POST',
         body: JSON.stringify({
-          name: char.name,
-          role: char.role,
-          mbti: char.mbti,
-          description: char.description,
-          personality: char.personality,
-          voice_note: char.voice_note,
-          catchphrases: char.catchphrases,
-          appearance: char.appearance,
-          identity_anchors: char.identity_anchors,
-          ref_prompt: char.ref_prompt,
+          episode_count: total,
+          from_episode: from,
+          batch_count: batch,
         }),
       });
-      await api(`/api/drama/characters/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ library_id: created.id }),
-      });
-      await loadProject(state.projectId);
-      await loadLibrary();
-      toast('已存入人物库');
-      return;
+      generated += result.episodes?.length || 0;
+      knowledgeHits = Math.max(knowledgeHits, Number(result.knowledge_hits) || 0);
+      if (Array.isArray(result.quality)) allQuality.push(...result.quality);
+      await loadProject(state.projectId, { preferStep: 'script' });
     }
-    if (btn.dataset.act === 'delete-char') {
-      if (!window.confirm('删除这个角色？')) return;
-      await api(`/api/drama/characters/${id}`, { method: 'DELETE' });
-      if (Number($('#characterForm').edit_id.value) === id) resetCharacterForm();
-      await loadProject(state.projectId);
-      toast('角色已删除');
+    toast(knowledgeHits > 0
+      ? `已生成 ${generated} 集（参考知识库 ${knowledgeHits} 条）`
+      : `已生成 ${generated} 集剧本`);
+    const low = allQuality.filter((q) => q.score < 70);
+    if (low.length) {
+      toast(`生成完成；第 ${low.map((q) => q.episode_no).join('、')} 集规则分偏低，建议点「AI 质检」→「一键润色」`);
     }
   } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#libraryForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const form = e.currentTarget;
-  const editId = form.edit_id.value;
-  const payload = characterPayloadFromForm(form);
-  payload.tags = form.tags.value;
-  try {
-    if (editId) {
-      await api(`/api/drama/library/${editId}`, { method: 'PATCH', body: JSON.stringify(payload) });
-      toast('库角色已更新');
-    } else {
-      await api('/api/drama/library', { method: 'POST', body: JSON.stringify(payload) });
-      toast('已入库');
-    }
-    resetLibraryForm();
-    await loadLibrary();
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#resetLibraryBtn').addEventListener('click', () => {
-  resetLibraryForm();
-  renderLibrary();
-});
-
-$('#libraryList').addEventListener('click', async (e) => {
-  const btn = e.target.closest('[data-act]');
-  if (!btn) return;
-  const id = Number(btn.dataset.id);
-  const row = state.library.find((c) => c.id === id);
-  try {
-    if (btn.dataset.act === 'edit-lib') {
-      if (!row) return;
-      fillLibraryForm(row);
-      return;
-    }
-    if (btn.dataset.act === 'import-lib') {
-      if (!state.projectId) return toast('请先选择项目');
-      await api(`/api/drama/projects/${state.projectId}/characters/from-library`, {
-        method: 'POST',
-        body: JSON.stringify({ library_id: id }),
-      });
-      await loadProject(state.projectId);
-      setTab('characters');
-      toast('已加入当前项目');
-      return;
-    }
-    if (btn.dataset.act === 'delete-lib') {
-      if (!window.confirm('从人物库删除？项目内已引入的角色仍会保留。')) return;
-      await api(`/api/drama/library/${id}`, { method: 'DELETE' });
-      if (Number($('#libraryForm').edit_id.value) === id) resetLibraryForm();
-      await loadLibrary();
-      toast('已从人物库删除');
-    }
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#episodeSelect').addEventListener('change', async (e) => {
-  state.episodeId = Number(e.target.value) || null;
-  await loadShots().catch((err) => toast(err.message));
-});
-
-$('#episodeSynopsisForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (!state.episodeId) return;
-  try {
-    await api(`/api/drama/episodes/${state.episodeId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ synopsis: e.currentTarget.synopsis.value }),
-    });
-    await loadProject(state.projectId);
-    toast('本集梗概已保存');
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-$('#splitBtn').addEventListener('click', async () => {
-  if (!state.episodeId) return toast('请先选择分集');
-  if (!state.selectedModel) return toast('请先在 Key 管理配置可用模型');
-  const synopsis = $('#episodeSynopsisForm').synopsis.value.trim()
-    || state.bundle?.project?.synopsis
-    || '';
-  if (!synopsis) return toast('请先写本集或项目梗概');
-  const replace = $('#splitReplace').checked;
-  const msg = replace
-    ? `将用配置模型 ${state.selectedModel} 拆分镜并替换本集现有分镜，继续？`
-    : `将用配置模型 ${state.selectedModel} 拆分镜并追加到本集，继续？`;
-  if (!window.confirm(msg)) return;
-  $('#splitBtn').disabled = true;
-  try {
-    const result = await api(`/api/drama/episodes/${state.episodeId}/split`, {
-      method: 'POST',
-      body: JSON.stringify({ synopsis, replace, model: state.selectedModel }),
-    });
-    await loadProject(state.projectId);
-    toast(`已生成 ${result.count} 镜（${result.model || state.selectedModel}）`);
-  } catch (err) {
+    await loadProject(state.projectId, { preferStep: 'script' }).catch(() => null);
     toast(err.message);
   } finally {
-    $('#splitBtn').disabled = false;
+    state.busy = false;
+    btn.disabled = false;
+    btn.textContent = '生成剧本';
+    renderScriptStep();
   }
 });
 
-$('#addShotBtn').addEventListener('click', async () => {
-  if (!state.episodeId) return toast('请先选择分集');
+$('#extractAllBtn').addEventListener('click', async () => {
+  if (!state.projectId || state.busy) return;
+  const btn = $('#extractAllBtn');
+  state.busy = true;
+  btn.disabled = true;
+  // 人物/场景/道具分步；长剧再按集分批，每批单独请求，避免单次过长
+  const steps = [
+    { type: 'characters', label: '人物' },
+    { type: 'scenes', label: '场景' },
+    { type: 'props', label: '道具' },
+  ];
   try {
-    await api(`/api/drama/episodes/${state.episodeId}/shots`, {
-      method: 'POST',
-      body: JSON.stringify({ visual_prompt: '', shot_size: '中景', duration_sec: 4 }),
-    });
-    await loadShots();
-    toast('已加一镜');
+    for (let i = 0; i < steps.length; i += 1) {
+      const step = steps[i];
+      let batchIndex = 0;
+      let done = false;
+      let totalBatches = 1;
+      while (!done) {
+        btn.textContent = totalBatches > 1
+          ? `识别${step.label}… ${i + 1}/${steps.length} · 批 ${batchIndex + 1}/${totalBatches}`
+          : `识别${step.label}… ${i + 1}/${steps.length}`;
+        const result = await api(`/api/drama/projects/${state.projectId}/extract-assets`, {
+          method: 'POST',
+          body: JSON.stringify({
+            types: [step.type],
+            replace: batchIndex === 0,
+            batch_index: batchIndex,
+          }),
+        });
+        totalBatches = Math.max(1, Number(result.batches) || 1);
+        if (!result.batched) {
+          done = true;
+        } else {
+          done = Boolean(result.done) || batchIndex + 1 >= totalBatches;
+          batchIndex += 1;
+        }
+        await loadProject(state.projectId, { preferStep: 'assets' });
+      }
+    }
+    const chars = state.bundle?.characters?.length || 0;
+    const scenes = state.bundle?.scenes?.length || 0;
+    const props = state.bundle?.props?.length || 0;
+    toast(`人物 ${chars} · 场景 ${scenes} · 道具 ${props}`);
   } catch (err) {
+    await loadProject(state.projectId, { preferStep: 'assets' }).catch(() => null);
     toast(err.message);
+  } finally {
+    state.busy = false;
+    btn.disabled = false;
+    btn.textContent = '一键识别';
+    renderAssets();
   }
 });
 
-$('#shotImportBtn').addEventListener('click', async () => {
-  if (!state.episodeId) return toast('请先选择分集');
-  const text = $('#shotImportText').value.trim();
-  if (!text) return toast('请粘贴分镜 JSON');
+const bootId = Number(new URLSearchParams(location.search).get('id') || 0);
+
+async function loadCurrentUser() {
   try {
-    const result = await api(`/api/drama/episodes/${state.episodeId}/shots/import`, {
-      method: 'POST',
-      body: JSON.stringify({ text, replace: $('#shotImportReplace').checked }),
-    });
-    $('#shotImportText').value = '';
-    await loadShots();
-    await loadProjects();
-    toast(`已导入 ${result.count} 镜`);
-  } catch (err) {
-    toast(err.message);
-  }
-});
-
-function downloadExport(format) {
-  if (!state.episodeId) return toast('请先选择分集');
-  window.open(`/api/drama/episodes/${state.episodeId}/export?format=${format}`, '_blank');
+    const data = await api('/api/auth/session');
+    state.user = data.user || null;
+    const label = $('#dramaUserLabel');
+    if (label && data.user) {
+      label.textContent = data.user.is_admin
+        ? `${data.user.username} · 管理员`
+        : data.user.username;
+    }
+    applyDramaRoleUi();
+  } catch (_) { /* ignore */ }
 }
 
-$('#exportMdBtn').addEventListener('click', () => downloadExport('md'));
-$('#exportCsvBtn').addEventListener('click', () => downloadExport('csv'));
+function applyDramaRoleUi() {
+  const isAdmin = Boolean(state.user?.is_admin);
+  const hub = $('#dramaHubLink');
+  if (hub) hub.hidden = !isAdmin;
+  ['#exportLmdBtn', '#exportLmdBtn2', '#gotoExportFromSbBtn', '#dramaStepExport'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.hidden = !isAdmin;
+  });
+  const exportPanel = document.querySelector('.drama-step-panel[data-panel="export"]');
+  if (exportPanel && !isAdmin) exportPanel.hidden = true;
+}
 
-$('#copyCursorPromptBtn').addEventListener('click', async () => {
+$('#dramaLogoutBtn')?.addEventListener('click', async () => {
   try {
-    await copyText(CURSOR_POLISH_PROMPT);
-    toast('已复制：粘贴到 Cursor，配合导出的 MD 润色');
-  } catch (_) {
-    toast('复制失败，请手动复制');
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch (_) { /* ignore */ }
+  location.href = '/login.html';
+});
+
+function openDramaContact() {
+  const modal = $('#dramaContactModal');
+  if (modal) modal.hidden = false;
+}
+function closeDramaContact() {
+  const modal = $('#dramaContactModal');
+  if (modal) modal.hidden = true;
+}
+$('#dramaContactBtn')?.addEventListener('click', openDramaContact);
+$('#dramaContactCloseBtn')?.addEventListener('click', closeDramaContact);
+$('#dramaContactCloseBg')?.addEventListener('click', closeDramaContact);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeDramaContact();
+});
+$('#dramaContactDownload')?.addEventListener('click', async (e) => {
+  // 部分浏览器对跨路径 download 不稳定，兜底拉取再触发下载
+  try {
+    e.preventDefault();
+    const res = await fetch('./assets/wechat-contact-qr.png', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('图片加载失败');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'wechat-contact-qr.png';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast('已开始下载');
+  } catch (err) {
+    toast(err.message || '下载失败，可长按图片保存');
   }
 });
 
-$('#shotList').addEventListener('click', async (e) => {
-  const article = e.target.closest('.drama-shot');
-  if (!article) return;
-  const id = article.dataset.shot;
-  const act = e.target.closest('[data-act]')?.dataset.act;
-  if (!act) return;
-
-  if (act === 'copy-prompt') {
-    const text = article.querySelector('[data-field="doubao_prompt"]')?.value || '';
-    try {
-      await copyText(text);
-      toast('提示词已复制');
-    } catch (_) {
-      toast('复制失败，请手动选中');
-    }
-    return;
-  }
-
-  if (act === 'delete-shot') {
-    if (!window.confirm('删除这一镜？')) return;
-    try {
-      await api(`/api/drama/shots/${id}`, { method: 'DELETE' });
-      await loadShots();
-      await loadProjects();
-      toast('已删除');
-    } catch (err) {
-      toast(err.message);
-    }
-    return;
-  }
-
-  if (act === 'save-shot' || act === 'rebuild-prompt') {
-    const rebuild = act === 'rebuild-prompt';
-    const payload = collectShotPayload(article, { rebuild });
-    try {
-      const row = await api(`/api/drama/shots/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify(payload),
-      });
-      article.querySelector('[data-field="doubao_prompt"]').value = row.doubao_prompt || '';
-      if (row.characters != null) {
-        const charsEl = article.querySelector('[data-field="characters"]');
-        if (charsEl) charsEl.value = row.characters || '';
-      }
-      toast(rebuild ? '提示词已重建' : '分镜已保存（保留手改提示词）');
-    } catch (err) {
-      toast(err.message);
-    }
-  }
-});
-
-setTab('shots');
-Promise.all([loadModels(), loadProjects()])
+loadCurrentUser();
+loadProjects()
   .then(() => {
-    if (state.projects[0]) return loadProject(state.projects[0].id);
+    if (bootId) return loadProject(bootId);
+    showList();
     return null;
   })
   .catch((err) => toast(err.message));

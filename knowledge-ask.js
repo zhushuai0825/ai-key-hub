@@ -121,7 +121,7 @@ $('#askForm').onsubmit = async (event) => {
     requireKb();
     const payload = Object.fromEntries(new FormData(event.currentTarget).entries());
     if (!payload.question?.trim()) throw new Error('请输入问题');
-    $('#answerBox').textContent = '正在检索知识库并调用 DeepSeek…';
+    $('#answerBox').textContent = '正在检索知识库并生成回答…';
     const data = await api('/api/knowledge/ask', { method: 'POST', body: JSON.stringify({ kb_id: activeKbId, question: payload.question }) });
     renderAnswer(data);
     summary = await api('/api/knowledge/summary');

@@ -30,14 +30,17 @@
 ## 导入契约（避免空导入）
 
 **角色**：JSON `{"characters":[…]}` 或 Markdown 块。可识别字段：
-`背景/简介/核心动机`、`性格/性格关键词`、`外貌/外貌特征`、`定妆/视觉提示词`、`说话`、`口头禅`。
+`背景/简介/核心动机`、`性格/性格关键词`、`外貌/外貌特征`、`定妆/视觉提示词`、`说话`、`口头禅`、`stages`（多阶段造型）。
 
-**分镜**：必须是 JSON。create-storyboard 生产包 **不能** 直接粘贴；先抽出 shots 数组。
+**分镜**：JSON `{"shots":[…]}`、create-storyboard 精简包（含 `shots` / `clip_plan.shots`）、或 Hub 导出 MD（`### 镜 N`）。
+导入会顺序重排镜号。整包目录 MD 需先抽出 shots JSON。
+
+**Hub → Local**：Hub 导出 MD/CSV 后，在 LocalMiniDrama 首页点「导入 Hub」。
 
 ## 边界
 
 - Hub：**记人物、写分镜、导出提示词**；不出视频。
-- LocalMiniDrama：渲染层（图/视频/本机库）。
+- LocalMiniDrama：渲染层（图/视频/本机库）；支持 Hub 导入、采用后再出片、连贯帧、剪辑包（shot_list + SRT）。
 - Skills：创作与站外提示词润色；产物靠导入/粘贴进 Hub 或 Local。
 
 ## 源仓库（`.tmp-skills/` 仅本地缓存）

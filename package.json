@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "node server.js",
-    "start": "node server.js"
+    "start": "node server.js",
+    "seed:knowledge": "node scripts/seed-drama-knowledge.mjs"
   },
   "dependencies": {
     "@chroma-core/default-embed": "^0.1.9",
